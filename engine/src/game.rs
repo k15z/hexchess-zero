@@ -110,15 +110,19 @@ impl GameState {
         self.status() != GameStatus::Ongoing
     }
 
-    /// Numeric outcome value: 1.0 white wins, -1.0 black wins, 0.0 draw, None ongoing.
+    /// Outcome from the **side to move's** perspective.
+    /// +1.0 = side to move won, -1.0 = side to move lost, 0.0 = draw, None = ongoing.
     pub fn outcome_value(&self) -> Option<f32> {
         match self.status() {
             GameStatus::Ongoing => None,
-            GameStatus::Checkmate(winner) => match winner {
-                Color::White => Some(1.0),
-                Color::Black => Some(-1.0),
-            },
-            _ => Some(0.0), // all draws
+            GameStatus::Checkmate(winner) => {
+                if winner == self.side_to_move() {
+                    Some(1.0)  // side to move won
+                } else {
+                    Some(-1.0) // side to move lost (they're checkmated)
+                }
+            }
+            _ => Some(0.0),
         }
     }
 
