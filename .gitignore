@@ -1,0 +1,35 @@
+# Build artifacts
+/target/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+dist/
+
+# Models (large checkpoints — small ONNX files are OK)
+models/*.pt
+models/*.pth
+models/*.bin
+
+# Node
+node_modules/
+web/dist/
+*.wasm
+
+# Misc
+.env

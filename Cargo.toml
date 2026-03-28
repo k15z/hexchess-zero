@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = [
+    "engine",
+    # "bindings/wasm",
+    # "bindings/python",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+rand = "0.9"
