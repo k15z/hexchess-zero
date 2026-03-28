@@ -8,6 +8,6 @@ name = "hexchess"
 crate-type = ["cdylib"]
 
 [dependencies]
-hexchess-engine = { path = "../../engine" }
+hexchess-engine = { path = "../../engine", features = ["onnx"] }
 pyo3 = { version = "0.24", features = ["extension-module"] }
 numpy = "0.24"

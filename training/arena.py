@@ -17,17 +17,17 @@ except ImportError:
 def play_arena_game(
     simulations: int,
     new_goes_first: bool,
+    new_model_path: str | None = None,
+    old_model_path: str | None = None,
 ) -> str:
     """
-    Play one arena game between two random-evaluator MCTS agents.
-
-    In the initial version (no trained models), both sides use the engine's
-    built-in RandomEvaluator via hexchess.MctsSearch. Once we have ONNX models,
-    this will be extended to load different models for each side.
+    Play one arena game between two MCTS agents.
 
     Args:
         simulations: Number of MCTS simulations per move.
         new_goes_first: If True, the "new" model plays White.
+        new_model_path: ONNX model for the new agent (None = random).
+        old_model_path: ONNX model for the old/best agent (None = random).
 
     Returns:
         "new", "old", or "draw"
@@ -36,8 +36,8 @@ def play_arena_game(
         raise ImportError("hexchess bindings not available")
 
     game = hexchess.Game()
-    search_new = hexchess.MctsSearch(simulations=simulations)
-    search_old = hexchess.MctsSearch(simulations=simulations)
+    search_new = hexchess.MctsSearch(simulations=simulations, model_path=new_model_path)
+    search_old = hexchess.MctsSearch(simulations=simulations, model_path=old_model_path)
 
     move_count = 0
     max_moves = 300  # safety limit
@@ -86,7 +86,11 @@ def run_arena(config: Config | None = None) -> dict:
     """
     cfg = config or Config()
 
-    print(f"Arena: playing {cfg.arena_games} games...")
+    new_model = cfg.model_dir / "latest.onnx"
+    old_model = cfg.best_model_path
+    new_path = str(new_model) if new_model.exists() else None
+    old_path = str(old_model) if old_model.exists() else None
+    print(f"Arena: {cfg.arena_games} games | new={'NN' if new_path else 'random'} vs old={'NN' if old_path else 'random'}", flush=True)
 
     new_wins = 0
     old_wins = 0
@@ -99,6 +103,8 @@ def run_arena(config: Config | None = None) -> dict:
         result = play_arena_game(
             simulations=cfg.arena_simulations,
             new_goes_first=new_goes_first,
+            new_model_path=new_path,
+            old_model_path=old_path,
         )
 
         if result == "new":

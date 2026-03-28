@@ -7,7 +7,19 @@ use numpy::{IntoPyArray, PyArray3, PyArray4};
 
 use hexchess_engine::board::{self, HexCoord, PieceKind};
 use hexchess_engine::game::GameState;
-use hexchess_engine::mcts::{DirichletConfig, MctsSearch as EngineSearch, RandomEvaluator};
+use hexchess_engine::inference::OnnxEvaluator;
+use hexchess_engine::mcts::{DirichletConfig, Evaluator, MctsSearch as EngineSearch, RandomEvaluator};
+
+use std::sync::Arc;
+
+/// Wrapper to use Arc<dyn Evaluator> as Box<dyn Evaluator>.
+struct ArcEvaluator(Arc<dyn Evaluator>);
+
+impl Evaluator for ArcEvaluator {
+    fn evaluate(&self, state: &GameState) -> (Vec<f32>, f32) {
+        self.0.evaluate(state)
+    }
+}
 use hexchess_engine::movegen;
 use hexchess_engine::serialization;
 
@@ -155,22 +167,31 @@ impl PyGame {
 struct PyMctsSearch {
     simulations: u32,
     c_puct: f32,
+    evaluator: Arc<dyn Evaluator>,
 }
 
 #[pymethods]
 impl PyMctsSearch {
+    /// Create an MCTS search engine.
+    ///
+    /// If `model_path` is provided, loads the ONNX neural network once and
+    /// uses it as the evaluator for all subsequent `run()` calls.
+    /// Otherwise, uses a random evaluator (uniform policy, zero value).
     #[new]
-    #[pyo3(signature = (simulations=800, c_puct=1.5))]
-    fn new(simulations: u32, c_puct: f32) -> Self {
-        PyMctsSearch { simulations, c_puct }
+    #[pyo3(signature = (simulations=800, c_puct=1.5, model_path=None))]
+    fn new(simulations: u32, c_puct: f32, model_path: Option<String>) -> PyResult<Self> {
+        let evaluator: Arc<dyn Evaluator> = match model_path {
+            Some(path) => {
+                let eval = OnnxEvaluator::from_path(&path)
+                    .map_err(|e| PyValueError::new_err(format!("failed to load ONNX model '{path}': {e}")))?;
+                Arc::new(eval)
+            }
+            None => Arc::new(RandomEvaluator),
+        };
+        Ok(PyMctsSearch { simulations, c_puct, evaluator })
     }
 
     /// Run MCTS search. Returns dict {best_move, policy, value, nodes}.
-    ///
-    /// Optional parameters:
-    ///   temperature: float (default 0.0 = greedy)
-    ///   dirichlet_epsilon: float (default None = no noise)
-    ///   dirichlet_alpha: float (default 0.3)
     #[pyo3(signature = (game, temperature=None, dirichlet_epsilon=None, dirichlet_alpha=None))]
     fn run<'py>(
         &self,
@@ -180,7 +201,7 @@ impl PyMctsSearch {
         dirichlet_epsilon: Option<f32>,
         dirichlet_alpha: Option<f64>,
     ) -> PyResult<Bound<'py, PyDict>> {
-        let mut search = EngineSearch::new(Box::new(RandomEvaluator));
+        let mut search = EngineSearch::new(Box::new(ArcEvaluator(self.evaluator.clone())));
         search.set_c_puct(self.c_puct);
 
         if let Some(epsilon) = dirichlet_epsilon {

@@ -17,7 +17,7 @@ except ImportError:
 
 
 
-def play_one_game(config: Config) -> list[dict]:
+def play_one_game(config: Config) -> tuple[str, list[dict]]:
     """
     Play a single self-play game and return a list of training samples.
 
@@ -32,7 +32,11 @@ def play_one_game(config: Config) -> list[dict]:
         )
 
     game = hexchess.Game()
-    search = hexchess.MctsSearch(simulations=config.num_simulations)
+    model_path = str(config.best_model_path) if config.best_model_path.exists() else None
+    search = hexchess.MctsSearch(
+        simulations=config.num_simulations,
+        model_path=model_path,
+    )
     num_indices = hexchess.num_move_indices()
 
     samples = []  # list of (board_tensor, policy_vector, side_to_move)

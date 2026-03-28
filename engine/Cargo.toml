@@ -3,8 +3,14 @@ name = "hexchess-engine"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = []
+onnx = ["ort", "ndarray"]
+
 [dependencies]
 rand = { workspace = true }
+ort = { version = "2.0.0-rc.12", optional = true }
+ndarray = { version = "0.16", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
