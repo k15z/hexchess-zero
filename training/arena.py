@@ -92,17 +92,15 @@ def run_arena(config: Config | None = None) -> dict:
     old_wins = 0
     draws = 0
 
+    t0 = time.time()
     for i in range(cfg.arena_games):
-        # Alternate who plays White
         new_goes_first = (i % 2 == 0)
-        t0 = time.time()
 
         result = play_arena_game(
             simulations=cfg.arena_simulations,
             new_goes_first=new_goes_first,
         )
 
-        elapsed = time.time() - t0
         if result == "new":
             new_wins += 1
         elif result == "old":
@@ -111,20 +109,21 @@ def run_arena(config: Config | None = None) -> dict:
             draws += 1
 
         total_decided = new_wins + old_wins
-        current_rate = new_wins / total_decided if total_decided > 0 else 0.5
+        rate = new_wins / total_decided if total_decided > 0 else 0.5
+        elapsed = time.time() - t0
         print(
-            f"  Game {i + 1}/{cfg.arena_games}: {result} "
+            f"  {i+1}/{cfg.arena_games} games "
             f"(new={new_wins} old={old_wins} draw={draws} "
-            f"rate={current_rate:.2f}) [{elapsed:.1f}s]"
+            f"rate={rate:.0%}) {elapsed:.0f}s",
+            end="\r", flush=True,
         )
 
+    print(flush=True)  # newline
     total_decided = new_wins + old_wins
     win_rate = new_wins / total_decided if total_decided > 0 else 0.5
     promoted = win_rate >= cfg.win_threshold
 
-    print(f"\nArena result: new_wins={new_wins}, old_wins={old_wins}, draws={draws}")
-    print(f"Win rate: {win_rate:.2%} (threshold: {cfg.win_threshold:.0%})")
-    print(f"Promoted: {promoted}")
+    print(f"Arena result: new={new_wins} old={old_wins} draw={draws} rate={win_rate:.0%} -> {'PROMOTED' if promoted else 'kept current'}", flush=True)
 
     return {
         "new_wins": new_wins,

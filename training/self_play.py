@@ -99,15 +99,7 @@ def play_one_game(config: Config) -> list[dict]:
 def _play_game_worker(args: tuple) -> list[dict]:
     """Worker function for multiprocessing."""
     config, game_idx = args
-    print(f"  Starting game {game_idx + 1}...")
-    t0 = time.time()
-    samples = play_one_game(config)
-    elapsed = time.time() - t0
-    print(
-        f"  Game {game_idx + 1} done: {len(samples)} positions, "
-        f"{elapsed:.1f}s"
-    )
-    return samples
+    return play_one_game(config)
 
 
 def run_self_play(config: Config | None = None) -> Path:
@@ -131,17 +123,31 @@ def run_self_play(config: Config | None = None) -> Path:
     )
 
     all_samples: list[dict] = []
+    t0 = time.time()
 
     if cfg.num_self_play_workers > 1:
         args = [(cfg, i) for i in range(cfg.num_self_play_games)]
         with Pool(processes=cfg.num_self_play_workers) as pool:
-            results = pool.map(_play_game_worker, args)
-        for game_samples in results:
-            all_samples.extend(game_samples)
+            for i, game_samples in enumerate(pool.imap_unordered(_play_game_worker, args)):
+                all_samples.extend(game_samples)
+                elapsed = time.time() - t0
+                print(
+                    f"  {i+1}/{cfg.num_self_play_games} games, "
+                    f"{len(all_samples)} positions, {elapsed:.0f}s",
+                    end="\r", flush=True,
+                )
+            print(flush=True)  # newline after progress
     else:
         for i in range(cfg.num_self_play_games):
             samples = _play_game_worker((cfg, i))
             all_samples.extend(samples)
+            elapsed = time.time() - t0
+            print(
+                f"  {i+1}/{cfg.num_self_play_games} games, "
+                f"{len(all_samples)} positions, {elapsed:.0f}s",
+                end="\r", flush=True,
+            )
+        print(flush=True)
 
     if not all_samples:
         print("Warning: no samples generated.")
