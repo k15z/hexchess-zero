@@ -396,11 +396,20 @@ impl MctsSearch {
                     }
                 }
             } else {
-                // Apply temperature then normalize.
+                // Apply temperature via log-space to avoid f32 overflow.
+                // p_i' = exp(log(p_i) / temp), then normalize.
                 let inv_temp = 1.0 / temperature;
+                let mut max_log = f32::NEG_INFINITY;
+                for p in policy.iter() {
+                    if *p > 0.0 {
+                        let lp = p.ln() * inv_temp;
+                        if lp > max_log { max_log = lp; }
+                    }
+                }
+                // Subtract max for numerical stability, then exponentiate
                 for p in &mut policy {
                     if *p > 0.0 {
-                        *p = p.powf(inv_temp);
+                        *p = (p.ln() * inv_temp - max_log).exp();
                     }
                 }
                 let sum: f32 = policy.iter().sum();

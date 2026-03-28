@@ -1,8 +1,12 @@
 from __future__ import annotations
 """Training loop for the policy + value network."""
 
+import sys
 import time
 from pathlib import Path
+
+# Ensure progress output is visible immediately
+sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, 'reconfigure') else None
 
 import numpy as np
 import torch
@@ -84,7 +88,12 @@ def train(config: Config | None = None) -> Path:
     cfg = config or Config()
     cfg.ensure_dirs()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
     print(f"Training on device: {device}")
 
     # Load data
@@ -116,6 +125,7 @@ def train(config: Config | None = None) -> Path:
 
     # Training loop
     model.train()
+    total_batches = (len(dataset) + cfg.batch_size - 1) // cfg.batch_size
     for epoch in range(cfg.training_epochs):
         epoch_policy_loss = 0.0
         epoch_value_loss = 0.0
@@ -153,6 +163,13 @@ def train(config: Config | None = None) -> Path:
             epoch_total_loss += total_loss.item()
             num_batches += 1
 
+            if num_batches % 20 == 0 or num_batches == total_batches:
+                print(
+                    f"  batch {num_batches}/{total_batches} "
+                    f"loss={total_loss.item():.4f}",
+                    end="\r", flush=True,
+                )
+
         elapsed = time.time() - t0
         if num_batches > 0:
             print(
@@ -160,7 +177,8 @@ def train(config: Config | None = None) -> Path:
                 f"[{elapsed:.1f}s] "
                 f"policy_loss={epoch_policy_loss / num_batches:.4f} "
                 f"value_loss={epoch_value_loss / num_batches:.4f} "
-                f"total_loss={epoch_total_loss / num_batches:.4f}"
+                f"total_loss={epoch_total_loss / num_batches:.4f}",
+                flush=True,
             )
 
     # Save checkpoint
