@@ -15,6 +15,21 @@ pub enum GameStatus {
     DrawByInsufficientMaterial,
 }
 
+impl GameStatus {
+    /// Lowercase string for FFI/serialization.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GameStatus::Ongoing => "ongoing",
+            GameStatus::Checkmate(Color::White) => "checkmate_white",
+            GameStatus::Checkmate(Color::Black) => "checkmate_black",
+            GameStatus::Stalemate => "stalemate",
+            GameStatus::DrawByRepetition => "draw_repetition",
+            GameStatus::DrawByFiftyMoves => "draw_fifty",
+            GameStatus::DrawByInsufficientMaterial => "draw_material",
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // UndoInfo — everything we need to restore the position after undo
 // ---------------------------------------------------------------------------

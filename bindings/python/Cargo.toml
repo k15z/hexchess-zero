@@ -1,0 +1,13 @@
+[package]
+name = "hexchess-python"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "hexchess"
+crate-type = ["cdylib"]
+
+[dependencies]
+hexchess-engine = { path = "../../engine" }
+pyo3 = { version = "0.24", features = ["extension-module"] }
+numpy = "0.24"

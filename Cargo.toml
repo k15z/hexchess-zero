@@ -3,7 +3,7 @@ resolver = "2"
 members = [
     "engine",
     "bindings/wasm",
-    # "bindings/python",
+    "bindings/python",
 ]
 
 [workspace.package]

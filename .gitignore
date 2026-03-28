@@ -21,6 +21,13 @@ __pycache__/
 .venv/
 *.egg-info/
 dist/
+target/wheels/
+
+# Training data and checkpoints
+data/
+models/checkpoints/
+models/*.onnx
+models/*.pt
 
 # Models (large checkpoints — small ONNX files are OK)
 models/*.pt

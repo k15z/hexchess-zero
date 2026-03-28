@@ -1,0 +1,181 @@
+from __future__ import annotations
+"""Self-play game generation using MCTS via the hexchess engine."""
+
+import time
+import uuid
+from multiprocessing import Pool
+from pathlib import Path
+
+import numpy as np
+
+from .config import Config
+
+try:
+    import hexchess
+except ImportError:
+    hexchess = None
+
+
+
+def play_one_game(config: Config) -> list[dict]:
+    """
+    Play a single self-play game and return a list of training samples.
+
+    Each sample is a dict with:
+        board: np.ndarray of shape (16, 11, 11)
+        policy: np.ndarray of shape (num_move_indices,)
+        outcome: float  (filled in after game ends)
+    """
+    if hexchess is None:
+        raise ImportError(
+            "hexchess bindings not available. Run `maturin develop` in bindings/python/"
+        )
+
+    game = hexchess.Game()
+    search = hexchess.MctsSearch(simulations=config.num_simulations)
+    num_indices = hexchess.num_move_indices()
+
+    samples = []  # list of (board_tensor, policy_vector, side_to_move)
+    move_number = 0
+
+    while not game.is_game_over():
+        # Encode current board
+        board_tensor = hexchess.encode_board(game)  # (16, 11, 11) numpy array
+
+        # Determine temperature
+        if move_number < config.temperature_threshold:
+            temperature = config.temperature_high
+        else:
+            temperature = config.temperature_low
+
+        # Run MCTS with Dirichlet noise at the root for exploration
+        result = search.run(
+            game,
+            temperature=temperature,
+            dirichlet_epsilon=config.dirichlet_epsilon,
+            dirichlet_alpha=config.dirichlet_alpha,
+        )
+        policy = result["policy"]  # already temperature-scaled by engine
+
+        # Record sample (outcome filled in later)
+        side = game.side_to_move()
+        samples.append(
+            {
+                "board": board_tensor,
+                "policy": policy,
+                "side": side,
+            }
+        )
+
+        # The engine already selected the best move via temperature sampling
+        best = result["best_move"]
+        game.apply_move(
+            best["from_q"], best["from_r"],
+            best["to_q"], best["to_r"],
+            best.get("promotion"),
+        )
+        move_number += 1
+
+    # Determine game outcome
+    status = game.status()
+    if status == "checkmate_white":
+        outcome_white = 1.0
+    elif status == "checkmate_black":
+        outcome_white = -1.0
+    else:
+        outcome_white = 0.0
+
+    # Fill in outcome from each side's perspective
+    for sample in samples:
+        if sample["side"] == "white":
+            sample["outcome"] = outcome_white
+        else:
+            sample["outcome"] = -outcome_white
+        del sample["side"]  # no longer needed
+
+    return samples
+
+
+def _play_game_worker(args: tuple) -> list[dict]:
+    """Worker function for multiprocessing."""
+    config, game_idx = args
+    print(f"  Starting game {game_idx + 1}...")
+    t0 = time.time()
+    samples = play_one_game(config)
+    elapsed = time.time() - t0
+    print(
+        f"  Game {game_idx + 1} done: {len(samples)} positions, "
+        f"{elapsed:.1f}s"
+    )
+    return samples
+
+
+def run_self_play(config: Config | None = None) -> Path:
+    """
+    Run a batch of self-play games and save training data.
+
+    Returns the path to the saved .npz file.
+    """
+    cfg = config or Config()
+    cfg.ensure_dirs()
+
+    if hexchess is None:
+        raise ImportError(
+            "hexchess bindings not available. Run `maturin develop` in bindings/python/"
+        )
+
+    num_indices = hexchess.num_move_indices()
+    print(
+        f"Starting self-play: {cfg.num_self_play_games} games, "
+        f"{cfg.num_simulations} simulations/move"
+    )
+
+    all_samples: list[dict] = []
+
+    if cfg.num_self_play_workers > 1:
+        args = [(cfg, i) for i in range(cfg.num_self_play_games)]
+        with Pool(processes=cfg.num_self_play_workers) as pool:
+            results = pool.map(_play_game_worker, args)
+        for game_samples in results:
+            all_samples.extend(game_samples)
+    else:
+        for i in range(cfg.num_self_play_games):
+            samples = _play_game_worker((cfg, i))
+            all_samples.extend(samples)
+
+    if not all_samples:
+        print("Warning: no samples generated.")
+        return cfg.data_dir
+
+    # Stack into arrays
+    boards = np.stack([s["board"] for s in all_samples])
+    policies = np.stack([s["policy"] for s in all_samples])
+    outcomes = np.array([s["outcome"] for s in all_samples], dtype=np.float32)
+
+    # Save to .npz
+    filename = f"selfplay_{uuid.uuid4().hex[:8]}.npz"
+    save_path = cfg.data_dir / filename
+    np.savez_compressed(save_path, boards=boards, policies=policies, outcomes=outcomes)
+
+    print(f"Saved {len(all_samples)} positions to {save_path}")
+    return save_path
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Run self-play game generation")
+    parser.add_argument("--games", type=int, default=None, help="Number of games")
+    parser.add_argument("--simulations", type=int, default=None, help="MCTS simulations per move")
+    parser.add_argument("--workers", type=int, default=None, help="Number of parallel workers")
+    args = parser.parse_args()
+
+    cfg = Config()
+    if args.games is not None:
+        cfg.num_self_play_games = args.games
+    if args.simulations is not None:
+        cfg.num_simulations = args.simulations
+    if args.workers is not None:
+        cfg.num_self_play_workers = args.workers
+
+    run_self_play(cfg)

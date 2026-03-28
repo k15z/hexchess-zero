@@ -222,12 +222,19 @@ impl Color {
     }
 }
 
+impl Color {
+    /// Lowercase name for FFI/serialization.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Color::White => "white",
+            Color::Black => "black",
+        }
+    }
+}
+
 impl fmt::Display for Color {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Color::White => write!(f, "White"),
-            Color::Black => write!(f, "Black"),
-        }
+        f.write_str(self.as_str())
     }
 }
 
@@ -265,6 +272,31 @@ impl PieceKind {
             PieceKind::Rook => 'R',
             PieceKind::Queen => 'Q',
             PieceKind::King => 'K',
+        }
+    }
+
+    /// Lowercase name for FFI/serialization.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            PieceKind::Pawn => "pawn",
+            PieceKind::Knight => "knight",
+            PieceKind::Bishop => "bishop",
+            PieceKind::Rook => "rook",
+            PieceKind::Queen => "queen",
+            PieceKind::King => "king",
+        }
+    }
+
+    /// Parse from lowercase name. Returns None for unrecognized strings.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "pawn" => Some(PieceKind::Pawn),
+            "knight" => Some(PieceKind::Knight),
+            "bishop" => Some(PieceKind::Bishop),
+            "rook" => Some(PieceKind::Rook),
+            "queen" => Some(PieceKind::Queen),
+            "king" => Some(PieceKind::King),
+            _ => None,
         }
     }
 }

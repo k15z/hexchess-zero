@@ -1,8 +1,8 @@
 use wasm_bindgen::prelude::*;
 use serde::Serialize;
 
-use hexchess_engine::board::{self, Color, PieceKind};
-use hexchess_engine::game::{GameState, GameStatus};
+use hexchess_engine::board::{self, PieceKind};
+use hexchess_engine::game::GameState;
 use hexchess_engine::mcts::{MctsSearch, RandomEvaluator};
 use hexchess_engine::movegen;
 
@@ -31,36 +31,8 @@ struct JsPiece {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn piece_kind_str(kind: PieceKind) -> &'static str {
-    match kind {
-        PieceKind::Pawn => "pawn",
-        PieceKind::Knight => "knight",
-        PieceKind::Bishop => "bishop",
-        PieceKind::Rook => "rook",
-        PieceKind::Queen => "queen",
-        PieceKind::King => "king",
-    }
-}
-
-fn parse_piece_kind(s: &str) -> Option<PieceKind> {
-    match s {
-        "queen" => Some(PieceKind::Queen),
-        "rook" => Some(PieceKind::Rook),
-        "bishop" => Some(PieceKind::Bishop),
-        "knight" => Some(PieceKind::Knight),
-        _ => None,
-    }
-}
-
-fn color_str(color: Color) -> &'static str {
-    match color {
-        Color::White => "white",
-        Color::Black => "black",
-    }
-}
-
 fn promotion_str(kind: Option<PieceKind>) -> Option<&'static str> {
-    kind.map(piece_kind_str)
+    kind.map(PieceKind::as_str)
 }
 
 fn to_js<T: Serialize>(val: &T) -> JsValue {
@@ -110,7 +82,7 @@ impl Game {
         promotion: Option<String>,
     ) -> Result<(), JsError> {
         let promo_kind = promotion.as_deref()
-            .map(|s| parse_piece_kind(s)
+            .map(|s| PieceKind::parse(s)
                 .ok_or_else(|| JsError::new(&format!("invalid promotion piece: {s}"))))
             .transpose()?;
 
@@ -132,15 +104,7 @@ impl Game {
     /// "stalemate", "draw_repetition", "draw_fifty", "draw_material".
     #[wasm_bindgen(js_name = "status")]
     pub fn status(&self) -> String {
-        match self.state.status() {
-            GameStatus::Ongoing => "ongoing",
-            GameStatus::Checkmate(Color::White) => "checkmate_white",
-            GameStatus::Checkmate(Color::Black) => "checkmate_black",
-            GameStatus::Stalemate => "stalemate",
-            GameStatus::DrawByRepetition => "draw_repetition",
-            GameStatus::DrawByFiftyMoves => "draw_fifty",
-            GameStatus::DrawByInsufficientMaterial => "draw_material",
-        }.into()
+        self.state.status().as_str().into()
     }
 
     #[wasm_bindgen(js_name = "isGameOver")]
@@ -151,7 +115,7 @@ impl Game {
     /// "white" or "black".
     #[wasm_bindgen(js_name = "sideToMove")]
     pub fn side_to_move(&self) -> String {
-        color_str(self.state.side_to_move()).into()
+        self.state.side_to_move().as_str().into()
     }
 
     /// All pieces on the board as [{q, r, piece, color}].
@@ -164,8 +128,8 @@ impl Game {
                     JsPiece {
                         q: coord.q,
                         r: coord.r,
-                        piece: piece_kind_str(piece.kind),
-                        color: color_str(piece.color),
+                        piece: piece.kind.as_str(),
+                        color: piece.color.as_str(),
                     }
                 })
             })
