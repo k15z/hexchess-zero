@@ -93,10 +93,10 @@ def play_one_game(config: Config) -> list[dict]:
             sample["outcome"] = -outcome_white
         del sample["side"]  # no longer needed
 
-    return samples
+    return status, samples
 
 
-def _play_game_worker(args: tuple) -> list[dict]:
+def _play_game_worker(args: tuple) -> tuple[str, list[dict]]:
     """Worker function for multiprocessing."""
     config, game_idx = args
     return play_one_game(config)
@@ -123,30 +123,31 @@ def run_self_play(config: Config | None = None) -> Path:
     )
 
     all_samples: list[dict] = []
+    outcomes: dict[str, int] = {}
     t0 = time.time()
+
+    def _ingest(result: tuple[str, list[dict]], game_num: int) -> None:
+        status, game_samples = result
+        all_samples.extend(game_samples)
+        outcomes[status] = outcomes.get(status, 0) + 1
+        elapsed = time.time() - t0
+        outcome_str = " ".join(f"{k}={v}" for k, v in sorted(outcomes.items()))
+        print(
+            f"  {game_num}/{cfg.num_self_play_games} games, "
+            f"{len(all_samples)} pos, {elapsed:.0f}s | {outcome_str}",
+            end="\r", flush=True,
+        )
 
     if cfg.num_self_play_workers > 1:
         args = [(cfg, i) for i in range(cfg.num_self_play_games)]
         with Pool(processes=cfg.num_self_play_workers) as pool:
-            for i, game_samples in enumerate(pool.imap_unordered(_play_game_worker, args)):
-                all_samples.extend(game_samples)
-                elapsed = time.time() - t0
-                print(
-                    f"  {i+1}/{cfg.num_self_play_games} games, "
-                    f"{len(all_samples)} positions, {elapsed:.0f}s",
-                    end="\r", flush=True,
-                )
-            print(flush=True)  # newline after progress
+            for i, result in enumerate(pool.imap_unordered(_play_game_worker, args)):
+                _ingest(result, i + 1)
+            print(flush=True)
     else:
         for i in range(cfg.num_self_play_games):
-            samples = _play_game_worker((cfg, i))
-            all_samples.extend(samples)
-            elapsed = time.time() - t0
-            print(
-                f"  {i+1}/{cfg.num_self_play_games} games, "
-                f"{len(all_samples)} positions, {elapsed:.0f}s",
-                end="\r", flush=True,
-            )
+            result = _play_game_worker((cfg, i))
+            _ingest(result, i + 1)
         print(flush=True)
 
     if not all_samples:
