@@ -120,6 +120,10 @@ def run_self_play(config: Config | None = None) -> Path:
             "hexchess bindings not available. Run `maturin develop` in bindings/python/"
         )
 
+    # When using NN model, run sequentially (each worker loads model separately)
+    using_model = cfg.best_model_path.exists()
+    workers = 1 if using_model else cfg.num_self_play_workers
+
     num_indices = hexchess.num_move_indices()
     print(
         f"Starting self-play: {cfg.num_self_play_games} games, "
@@ -142,9 +146,9 @@ def run_self_play(config: Config | None = None) -> Path:
             end="\r", flush=True,
         )
 
-    if cfg.num_self_play_workers > 1:
+    if workers > 1:
         args = [(cfg, i) for i in range(cfg.num_self_play_games)]
-        with Pool(processes=cfg.num_self_play_workers) as pool:
+        with Pool(processes=workers) as pool:
             for i, result in enumerate(pool.imap_unordered(_play_game_worker, args)):
                 _ingest(result, i + 1)
             print(flush=True)

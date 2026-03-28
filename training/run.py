@@ -78,7 +78,15 @@ def run_full_loop(config: Config, num_iterations: int = 10) -> None:
         step_self_play(config)
         step_train(config)
         step_export(config)
-        promoted = step_arena(config)
+
+        # Auto-promote on first iteration when no best model exists
+        if not config.best_model_path.exists():
+            from .arena import promote_model
+            print("No best model yet — auto-promoting.", flush=True)
+            promote_model(config)
+            promoted = True
+        else:
+            promoted = step_arena(config)
 
         elapsed = time.time() - t0
         total = time.time() - loop_t0

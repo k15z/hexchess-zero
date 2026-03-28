@@ -39,9 +39,9 @@ class Config:
     board_width: int = 11
 
     # --- Arena ---
-    arena_games: int = 40
+    arena_games: int = 20
     win_threshold: float = 0.55
-    arena_simulations: int = 400  # fewer sims in arena for speed
+    arena_simulations: int = 50
 
     # --- Paths (relative to project root) ---
     model_dir: Path = field(default_factory=lambda: _project_root() / "models")
