@@ -2,7 +2,7 @@
 resolver = "2"
 members = [
     "engine",
-    # "bindings/wasm",
+    "bindings/wasm",
     # "bindings/python",
 ]
 
