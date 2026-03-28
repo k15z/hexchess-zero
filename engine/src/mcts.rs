@@ -3,6 +3,8 @@
 //! Uses arena-style allocation with nodes stored in a `Vec<MctsNode>` and
 //! referenced by index, avoiding pointer overhead and improving cache locality.
 
+use std::collections::HashMap;
+
 use crate::game::GameState;
 use crate::movegen::Move;
 use crate::serialization;
@@ -144,6 +146,9 @@ pub struct MctsSearch {
     c_puct: f32,
     /// Optional Dirichlet noise config for root priors.
     dirichlet: Option<DirichletConfig>,
+    /// Transposition table: zobrist_hash -> (policy, value).
+    /// Avoids re-running NN inference for positions seen before.
+    tt: HashMap<u64, (Vec<f32>, f32)>,
 }
 
 impl MctsSearch {
@@ -153,6 +158,7 @@ impl MctsSearch {
             evaluator,
             c_puct: 1.5,
             dirichlet: None,
+            tt: HashMap::new(),
         }
     }
 
@@ -166,9 +172,15 @@ impl MctsSearch {
         self.dirichlet = config;
     }
 
-    /// Clear the tree for a new search.
+    /// Clear the tree for a new search. Keeps the transposition table.
     pub fn reset(&mut self) {
         self.nodes.clear();
+    }
+
+    /// Clear everything including the transposition table.
+    pub fn reset_all(&mut self) {
+        self.nodes.clear();
+        self.tt.clear();
     }
 
     /// Run MCTS for `num_simulations` iterations (greedy, temperature = 0).
@@ -224,14 +236,17 @@ impl MctsSearch {
 
         // Phase 2: EXPAND + EVALUATE.
         let value = if state.is_game_over() {
-            // Terminal node — use actual game outcome.
-            // outcome_value returns Some(v) where v is from *current side to move*
-            // perspective: +1 if they won, -1 if they lost, 0 for draw.
-            // But if the game is over (e.g. checkmate), the side to move has lost.
             state.outcome_value().unwrap_or(0.0) as f64
         } else {
-            // Non-terminal: expand and evaluate.
-            let (policy, value) = self.evaluator.evaluate(state);
+            // Check transposition table before calling the (expensive) evaluator
+            let hash = state.board.zobrist_hash;
+            let (policy, value) = if let Some(cached) = self.tt.get(&hash) {
+                cached.clone()
+            } else {
+                let result = self.evaluator.evaluate(state);
+                self.tt.insert(hash, result.clone());
+                result
+            };
             self.expand(node_idx, state, policy);
             value as f64
         };
