@@ -13,35 +13,35 @@ def _project_root() -> Path:
 @dataclass
 class Config:
     # --- MCTS ---
-    num_simulations: int = 800
+    num_simulations: int = 250
 
     # --- Self-play ---
-    num_self_play_games: int = 100
+    num_self_play_games: int = 500
     temperature_threshold: int = 30  # after this many moves, temperature → near-zero
     temperature_high: float = 1.0
     temperature_low: float = 0.01
     dirichlet_alpha: float = 0.3
     dirichlet_epsilon: float = 0.25
-    num_self_play_workers: int = 4
+    num_self_play_workers: int = 10
 
     # --- Training ---
-    training_epochs: int = 10
+    training_epochs: int = 5
     batch_size: int = 256
     learning_rate: float = 0.001
     l2_regularization: float = 1e-4
     replay_buffer_size: int = 50_000
 
     # --- Network architecture ---
-    num_residual_blocks: int = 6
-    num_filters: int = 128
+    num_residual_blocks: int = 4
+    num_filters: int = 64
     board_channels: int = 16
     board_height: int = 11
     board_width: int = 11
 
     # --- Arena ---
-    arena_games: int = 20
-    win_threshold: float = 0.55
-    arena_simulations: int = 50
+    arena_games: int = 25
+    win_threshold: float = 0.60
+    arena_simulations: int = 250
 
     # --- Paths (relative to project root) ---
     model_dir: Path = field(default_factory=lambda: _project_root() / "models")
