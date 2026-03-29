@@ -72,3 +72,33 @@ Experiments 8-14 were cancelled early (only 7/14 completed). Results below are f
 
 ### Recommendation
 **Hex-masked + SE (6 blocks, 128 filters)** is the production pick. Total loss 4.342 at 1.58 ms/pos — 2.3% better than plain hex-masked, 3.5% better than baseline unmasked CNN. The SE overhead (50% slower inference) is worth the value head improvement. Consider more training epochs or data to mitigate the slight overfitting.
+
+## Round 3: Attention policy head (354K positions from gen2, 5 epochs, MPS)
+
+Head-to-head comparison of conv policy head vs Lc0-style attention policy head. Both use the same hex-masked SE trunk (6x128). The attention policy head uses self-attention over 91 hex cells, then gathers from/to cell features per move and computes logits via dot product (no giant FC layer).
+
+### Summary
+| Model | Total Loss | Policy | Value | ms/pos | Params |
+|-------|-----------|--------|-------|--------|--------|
+| hex+SE attn d64 2L | **3.6231** | **3.4700** | 0.1531 | 2.69 | 2.0M |
+| hex+SE attn d128 1L | 3.6243 | 3.4720 | **0.1523** | 2.46 | 2.1M |
+| hex+SE attn d64 1L | 3.6354 | 3.4832 | 0.1522 | 2.42 | 2.0M |
+| hex+SE conv-policy | 3.7130 | 3.5461 | 0.1669 | 1.57 | 2.9M |
+
+### Convergence (val_total by epoch)
+| Model | E1 | E2 | E3 | E4 | E5 |
+|-------|------|------|------|------|------|
+| hex+SE attn d64 2L | 4.167 | 3.848 | 3.782 | 3.639 | 3.623 |
+| hex+SE attn d128 1L | 4.118 | 3.853 | 3.740 | 3.668 | 3.624 |
+| hex+SE attn d64 1L | 4.074 | 3.832 | 3.770 | 3.672 | 3.635 |
+| hex+SE conv-policy | 4.358 | 3.992 | 3.807 | 3.743 | 3.713 |
+
+### Key findings
+- **Attention policy head wins decisively**: 3.623 vs 3.713, a 2.4% improvement in total loss, driven entirely by better policy (3.470 vs 3.546). Value loss is also slightly better.
+- **Fewer parameters**: attention models are ~2.0M params vs 2.9M for conv — 32% fewer parameters for better results. The giant FC layer (2ch × 121 → 4206 = ~1M params) is replaced by attention (~40K) + gather (free).
+- **All attention variants are close**: d64 1L, d64 2L, and d128 1L are within 0.012 of each other. The 2-layer d64 variant edges ahead slightly.
+- **Inference is ~60% slower**: 2.4-2.7 ms vs 1.57 ms. The self-attention over 91 cells adds cost, but this is likely acceptable given the quality improvement.
+- **Still converging at E5**: all models still improving, suggesting more epochs or data would help further.
+
+### Recommendation
+**Hex-masked SE trunk + attention policy head (d64, 2 layers)** is the new best architecture. Fewer params, better loss, still converging. The inference cost (2.7ms) is manageable. Next steps: integrate into production model.py and retrain.
