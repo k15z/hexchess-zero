@@ -1,0 +1,117 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-sans: "Segoe UI", system-ui, -apple-system, sans-serif;
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-warning: var(--warning);
+  --color-success: var(--success);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+}
+
+:root {
+  --background: #1a1a2e;
+  --foreground: #e0e0e0;
+  --card: #16213e;
+  --card-foreground: #e0e0e0;
+  --popover: #16213e;
+  --popover-foreground: #e0e0e0;
+  --primary: #5bc0eb;
+  --primary-foreground: #1a1a2e;
+  --secondary: #2a2a4a;
+  --secondary-foreground: #e0e0e0;
+  --muted: #2a2a4a;
+  --muted-foreground: #a0a0a0;
+  --accent: #1a2a50;
+  --accent-foreground: #e0e0e0;
+  --destructive: #e74c3c;
+  --border: #0f3460;
+  --input: #0f3460;
+  --ring: #5bc0eb;
+  --warning: #f39c12;
+  --success: #2ecc71;
+  --radius: 0.625rem;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    min-height: 100vh;
+  }
+}
+
+/* Board SVG styles */
+.hex-cell {
+  stroke: #2a2a4a;
+  stroke-width: 1;
+  cursor: pointer;
+  transition: fill 0.15s ease;
+}
+.hex-cell:hover {
+  filter: brightness(1.12);
+}
+.hex-last-move-overlay {
+  pointer-events: none;
+}
+.move-dot {
+  fill: rgba(0, 0, 0, 0.25);
+  pointer-events: none;
+}
+.move-capture-ring {
+  fill: none;
+  stroke: rgba(0, 0, 0, 0.25);
+  stroke-width: 3.5;
+  pointer-events: none;
+}
+.piece-symbol {
+  pointer-events: none;
+  user-select: none;
+  font-size: 28px;
+  dominant-baseline: central;
+  text-anchor: middle;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.4));
+}
+.piece-white {
+  fill: #ffffff;
+  stroke: #333333;
+  stroke-width: 0.5;
+}
+.piece-black {
+  fill: #1a1a1a;
+  stroke: #666666;
+  stroke-width: 0.5;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.thinking-pulse {
+  animation: pulse 1.2s ease-in-out infinite;
+}

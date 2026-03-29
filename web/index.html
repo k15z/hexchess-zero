@@ -1,38 +1,12 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Hexagonal Chess</title>
-    <link rel="stylesheet" href="style.css">
-</head>
-<body>
-    <div id="app">
-        <div id="status-bar">
-            <span id="status-text">Loading...</span>
-        </div>
-        <div id="board-container">
-            <svg id="board-svg" xmlns="http://www.w3.org/2000/svg"></svg>
-        </div>
-        <div id="controls">
-            <button id="btn-new-game">New Game</button>
-            <button id="btn-undo">Undo</button>
-            <button id="btn-flip">Flip Side</button>
-            <button id="btn-self-play">Self-Play</button>
-            <label id="speed-label">
-                Speed <input id="speed-slider" type="range" min="0" max="1000" value="300">
-            </label>
-        </div>
-    </div>
-
-    <!-- Promotion picker overlay -->
-    <div id="promotion-overlay" class="hidden">
-        <div id="promotion-picker">
-            <div class="promotion-title">Promote pawn to:</div>
-            <div id="promotion-choices"></div>
-        </div>
-    </div>
-
-    <script type="module" src="main.js"></script>
-</body>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
 </html>
