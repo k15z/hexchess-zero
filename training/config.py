@@ -66,6 +66,7 @@ class Config:
     arena_games: int = 25
     win_threshold: float = 0.60
     arena_simulations: int = 500
+    num_arena_workers: int = 7
 
     # --- Generation ---
     generation: int = 1

@@ -2,9 +2,8 @@ from __future__ import annotations
 """Pit two models against each other to decide whether to promote a new model."""
 
 import time
+from multiprocessing import Pool
 from pathlib import Path
-
-import numpy as np
 
 from .config import Config
 
@@ -40,7 +39,7 @@ def play_arena_game(
     search_old = hexchess.MctsSearch(simulations=simulations, model_path=old_model_path)
 
     move_count = 0
-    max_moves = 300  # safety limit
+    max_moves = 500  # safety limit
 
     while not game.is_game_over() and move_count < max_moves:
         is_white = game.side_to_move() == "white"
@@ -50,7 +49,7 @@ def play_arena_game(
         else:
             search = search_old
 
-        result = search.run(game)
+        result = search.run(game, temperature=0.1)
         best_move = result["best_move"]
 
         game.apply_move(
@@ -78,6 +77,12 @@ def play_arena_game(
         return "new" if not winner_is_white else "old"
 
 
+def _arena_game_worker(args: tuple) -> str:
+    """Worker function for multiprocessing."""
+    simulations, new_goes_first, new_model_path, old_model_path = args
+    return play_arena_game(simulations, new_goes_first, new_model_path, old_model_path)
+
+
 def run_arena(config: Config | None = None) -> dict:
     """
     Run an arena match between the new and current-best models.
@@ -90,7 +95,11 @@ def run_arena(config: Config | None = None) -> dict:
     old_model = cfg.prev_best_model_path
     new_path = str(new_model) if new_model.exists() else None
     old_path = str(old_model) if old_model.exists() else None
-    print(f"Arena: {cfg.arena_games} games | new={'NN' if new_path else 'random'} vs old={'NN' if old_path else 'random'}", flush=True)
+    new_label = new_path if new_path else "random"
+    old_label = old_path if old_path else "random"
+    print(f"Arena: {cfg.arena_games} games, {cfg.arena_simulations} sims/move, {cfg.num_arena_workers} workers", flush=True)
+    print(f"  new: {new_label}", flush=True)
+    print(f"  old: {old_label}", flush=True)
 
     new_wins = 0
     old_wins = 0
@@ -99,17 +108,15 @@ def run_arena(config: Config | None = None) -> dict:
     t0 = time.time()
     last_log_time = t0
     log_interval = 10  # seconds between progress lines
+    workers = cfg.num_arena_workers
 
-    for i in range(cfg.arena_games):
-        new_goes_first = (i % 2 == 0)
+    args = [
+        (cfg.arena_simulations, i % 2 == 0, new_path, old_path)
+        for i in range(cfg.arena_games)
+    ]
 
-        result = play_arena_game(
-            simulations=cfg.arena_simulations,
-            new_goes_first=new_goes_first,
-            new_model_path=new_path,
-            old_model_path=old_path,
-        )
-
+    def _ingest(result: str, game_num: int) -> None:
+        nonlocal new_wins, old_wins, draws, last_log_time
         if result == "new":
             new_wins += 1
         elif result == "old":
@@ -121,15 +128,24 @@ def run_arena(config: Config | None = None) -> dict:
         elapsed = now - t0
         total_decided = new_wins + old_wins
         rate = new_wins / total_decided if total_decided > 0 else 0.5
-        is_last = (i + 1) == cfg.arena_games
-        if i == 0 or is_last or (now - last_log_time) >= log_interval:
+        is_last = game_num == cfg.arena_games
+        if game_num == 1 or is_last or (now - last_log_time) >= log_interval:
             last_log_time = now
             print(
-                f"  {i+1}/{cfg.arena_games} games "
+                f"  {game_num}/{cfg.arena_games} games "
                 f"(new={new_wins} old={old_wins} draw={draws} "
                 f"rate={rate:.0%}) {elapsed:.0f}s",
                 flush=True,
             )
+
+    if workers > 1:
+        with Pool(processes=workers) as pool:
+            for i, result in enumerate(pool.imap_unordered(_arena_game_worker, args)):
+                _ingest(result, i + 1)
+    else:
+        for i, a in enumerate(args):
+            result = _arena_game_worker(a)
+            _ingest(result, i + 1)
     total_decided = new_wins + old_wins
     win_rate = new_wins / total_decided if total_decided > 0 else 0.5
     promoted = win_rate >= cfg.win_threshold
@@ -168,6 +184,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run arena match between models")
     parser.add_argument("--games", type=int, default=None, help="Number of arena games")
     parser.add_argument("--simulations", type=int, default=None, help="MCTS simulations per move")
+    parser.add_argument("--workers", type=int, default=None, help="Number of parallel workers")
     args = parser.parse_args()
 
     cfg = Config()
@@ -175,6 +192,8 @@ if __name__ == "__main__":
         cfg.arena_games = args.games
     if args.simulations is not None:
         cfg.arena_simulations = args.simulations
+    if args.workers is not None:
+        cfg.num_arena_workers = args.workers
 
     results = run_arena(cfg)
     if results["promoted"]:
