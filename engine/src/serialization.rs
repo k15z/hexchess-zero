@@ -676,10 +676,17 @@ mod tests {
         let state = GameState::from_board(board);
         let tensor = encode_board(&state);
 
-        // Channel 18 should be all 1.0 (white is in check).
+        // Channel 18 should be a constant 1.0 plane (white is in check).
         let ch = 18;
-        let val = tensor[ch * BOARD_DIM * BOARD_DIM]; // first cell
-        assert_eq!(val, 1.0, "in-check plane should be 1.0 when in check");
+        for row in 0..BOARD_DIM {
+            for col in 0..BOARD_DIM {
+                assert_eq!(
+                    tensor[ch * BOARD_DIM * BOARD_DIM + row * BOARD_DIM + col],
+                    1.0,
+                    "in-check plane should be 1.0 when in check"
+                );
+            }
+        }
     }
 
     #[test]

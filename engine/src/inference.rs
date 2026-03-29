@@ -7,7 +7,7 @@
 /// Returns `W_prob - L_prob`, which is exactly 1.0 for a certain win,
 /// -1.0 for a certain loss, and 0.0 for a certain draw or uniform.
 pub fn wdl_to_value(wdl_logits: &[f32]) -> f32 {
-    assert!(wdl_logits.len() >= 3);
+    assert_eq!(wdl_logits.len(), 3);
     let w = wdl_logits[0];
     let d = wdl_logits[1];
     let l = wdl_logits[2];
