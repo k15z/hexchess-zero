@@ -10,16 +10,6 @@ use hexchess_engine::game::GameState;
 use hexchess_engine::inference::OnnxEvaluator;
 use hexchess_engine::mcts::{DirichletConfig, Evaluator, MctsSearch as EngineSearch, HeuristicEvaluator};
 
-use std::sync::Arc;
-
-/// Wrapper to use Arc<dyn Evaluator> as Box<dyn Evaluator>.
-struct ArcEvaluator(Arc<dyn Evaluator>);
-
-impl Evaluator for ArcEvaluator {
-    fn evaluate(&self, state: &GameState) -> (Vec<f32>, f32) {
-        self.0.evaluate(state)
-    }
-}
 use hexchess_engine::movegen;
 use hexchess_engine::serialization;
 
@@ -165,9 +155,8 @@ impl PyGame {
 
 #[pyclass(name = "MctsSearch")]
 struct PyMctsSearch {
+    search: EngineSearch,
     simulations: u32,
-    c_puct: f32,
-    evaluator: Arc<dyn Evaluator>,
 }
 
 #[pymethods]
@@ -176,43 +165,44 @@ impl PyMctsSearch {
     ///
     /// If `model_path` is provided, loads the ONNX neural network once and
     /// uses it as the evaluator for all subsequent `run()` calls.
-    /// Otherwise, uses a random evaluator (uniform policy, zero value).
+    /// Otherwise, uses a heuristic evaluator (uniform policy, material value).
     #[new]
     #[pyo3(signature = (simulations=800, c_puct=1.5, model_path=None))]
     fn new(simulations: u32, c_puct: f32, model_path: Option<String>) -> PyResult<Self> {
-        let evaluator: Arc<dyn Evaluator> = match model_path {
+        let evaluator: Box<dyn Evaluator> = match model_path {
             Some(path) => {
                 let eval = OnnxEvaluator::from_path(&path)
                     .map_err(|e| PyValueError::new_err(format!("failed to load ONNX model '{path}': {e}")))?;
-                Arc::new(eval)
+                Box::new(eval)
             }
-            None => Arc::new(HeuristicEvaluator),
+            None => Box::new(HeuristicEvaluator),
         };
-        Ok(PyMctsSearch { simulations, c_puct, evaluator })
+        let mut search = EngineSearch::new(evaluator);
+        search.set_c_puct(c_puct);
+        Ok(PyMctsSearch { search, simulations })
     }
 
     /// Run MCTS search. Returns dict {best_move, policy, value, nodes}.
     #[pyo3(signature = (game, temperature=None, dirichlet_epsilon=None, dirichlet_alpha=None))]
     fn run<'py>(
-        &self,
+        &mut self,
         py: Python<'py>,
         game: &PyGame,
         temperature: Option<f32>,
         dirichlet_epsilon: Option<f32>,
         dirichlet_alpha: Option<f64>,
     ) -> PyResult<Bound<'py, PyDict>> {
-        let mut search = EngineSearch::new(Box::new(ArcEvaluator(self.evaluator.clone())));
-        search.set_c_puct(self.c_puct);
-
         if let Some(epsilon) = dirichlet_epsilon {
-            search.set_dirichlet(Some(DirichletConfig {
+            self.search.set_dirichlet(Some(DirichletConfig {
                 epsilon,
                 alpha: dirichlet_alpha.unwrap_or(0.3),
             }));
+        } else {
+            self.search.set_dirichlet(None);
         }
 
         let temp = temperature.unwrap_or(0.0);
-        let result = search.search_with_temperature(&game.state, self.simulations, temp);
+        let result = self.search.search_with_temperature(&game.state, self.simulations, temp);
 
         // Build the result dict.
         let dict = PyDict::new(py);
