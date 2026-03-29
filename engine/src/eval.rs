@@ -1,4 +1,5 @@
-use crate::board::{index_to_coord, Board, Color, HexCoord, PieceKind};
+use crate::board::{Board, Color, PieceKind};
+use crate::game::{GameState, GameStatus};
 
 /// Return the material value of a piece kind in centipawns.
 pub fn piece_value(kind: PieceKind) -> i32 {
@@ -17,39 +18,42 @@ pub fn material(board: &Board, color: Color) -> i32 {
     board.all_pieces(color).map(|(_, p)| piece_value(p.kind)).sum()
 }
 
-/// Hex distance from the center (0,0). Returns 0 at center, 5 at edge.
-fn hex_distance_from_center(coord: HexCoord) -> i32 {
-    let q = coord.q as i32;
-    let r = coord.r as i32;
-    q.abs().max(r.abs()).max((q + r).abs())
-}
-
-/// Evaluate the board position from the perspective of the side to move.
-/// Returns centipawns: positive = side to move is better, negative = opponent is better.
-pub fn evaluate(board: &Board) -> i32 {
-    let us = board.side_to_move;
-    let mut mat = 0i32;
-    let mut center = 0i32;
-
-    // Single pass over all cells
-    for (idx, cell) in board.cells.iter().enumerate() {
-        if let Some(piece) = cell {
-            let coord = index_to_coord(idx);
-            let sign = if piece.color == us { 1 } else { -1 };
-            mat += sign * piece_value(piece.kind);
-            center += sign * (5 - hex_distance_from_center(coord));
+/// Evaluate a game state from the perspective of the side to move.
+/// Terminal states return large values (±10000 for checkmate, 0 for draws).
+/// Non-terminal states return material difference in centipawns.
+pub fn evaluate(state: &GameState) -> i32 {
+    match state.status() {
+        GameStatus::Checkmate(winner) => {
+            if winner == state.side_to_move() {
+                10_000
+            } else {
+                -10_000
+            }
+        }
+        GameStatus::Stalemate
+        | GameStatus::DrawByRepetition
+        | GameStatus::DrawByFiftyMoves
+        | GameStatus::DrawByInsufficientMaterial => 0,
+        GameStatus::Ongoing => {
+            let us = state.side_to_move();
+            let mut mat = 0i32;
+            for cell in state.board.cells.iter().flatten() {
+                let sign = if cell.color == us { 1 } else { -1 };
+                mat += sign * piece_value(cell.kind);
+            }
+            mat
         }
     }
+}
 
-    // King safety
-    let us_king_dist = hex_distance_from_center(board.king_pos(us));
-    let them_king_dist = hex_distance_from_center(board.king_pos(us.opponent()));
-    let king_penalty = |dist: i32| -> i32 {
-        if dist >= 5 { -30 } else if dist >= 4 { -15 } else { 0 }
-    };
-    let safety = king_penalty(us_king_dist) - king_penalty(them_king_dist);
-
-    mat + center + safety
+/// Evaluate just the board material (no terminal check). Used when you
+/// already know the game is ongoing.
+pub fn evaluate_board(board: &Board) -> i32 {
+    let us = board.side_to_move;
+    board.cells.iter().flatten().map(|p| {
+        let sign = if p.color == us { 1 } else { -1 };
+        sign * piece_value(p.kind)
+    }).sum()
 }
 
 #[cfg(test)]
@@ -59,15 +63,15 @@ mod tests {
 
     #[test]
     fn starting_position_is_zero() {
-        let board = Board::new();
-        assert_eq!(evaluate(&board), 0);
+        let state = GameState::new();
+        assert_eq!(evaluate(&state), 0);
     }
 
     #[test]
     fn removing_white_pawn_hurts_white() {
-        let mut board = Board::new();
-        board.set(HexCoord::new(0, -1), None);
-        let score = evaluate(&board);
+        let mut state = GameState::new();
+        state.board.set(HexCoord::new(0, -1), None);
+        let score = evaluate(&state);
         assert!(score < 0, "Expected negative eval after removing white pawn, got {}", score);
     }
 
@@ -88,14 +92,5 @@ mod tests {
         assert_eq!(piece_value(PieceKind::Rook), 500);
         assert_eq!(piece_value(PieceKind::Queen), 900);
         assert_eq!(piece_value(PieceKind::King), 0);
-    }
-
-    #[test]
-    fn center_distance() {
-        assert_eq!(hex_distance_from_center(HexCoord::new(0, 0)), 0);
-        assert_eq!(hex_distance_from_center(HexCoord::new(1, 0)), 1);
-        assert_eq!(hex_distance_from_center(HexCoord::new(0, 5)), 5);
-        assert_eq!(hex_distance_from_center(HexCoord::new(-5, 0)), 5);
-        assert_eq!(hex_distance_from_center(HexCoord::new(3, -3)), 3);
     }
 }

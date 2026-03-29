@@ -29,7 +29,7 @@ pub trait Evaluator: Send + Sync {
 // HeuristicEvaluator
 // ---------------------------------------------------------------------------
 
-/// Uniform policy over legal moves with a material/positional heuristic value.
+/// Heuristic policy (biased toward better moves) and positional value.
 pub struct HeuristicEvaluator;
 
 impl Evaluator for HeuristicEvaluator {
@@ -39,17 +39,42 @@ impl Evaluator for HeuristicEvaluator {
         let mut policy = vec![0.0f32; num_indices];
 
         if !moves.is_empty() {
-            let prob = 1.0 / moves.len() as f32;
+            // One-ply lookahead: score each move by the resulting position eval.
+            // We evaluate from the opponent's perspective after our move, so negate.
+            let mut scratch = state.clone();
+            let mut scores: Vec<(usize, f32)> = Vec::with_capacity(moves.len());
+
             for mv in &moves {
                 if let Some(idx) = serialization::move_to_index(mv) {
-                    policy[idx] = prob;
+                    scratch.apply_move(*mv);
+                    // eval::evaluate returns score for side-to-move (now the
+                    // opponent after our move) — negate to get our perspective.
+                    let score = -(eval::evaluate(&scratch) as f32);
+                    scores.push((idx, score));
+                    scratch.undo_move();
+                }
+            }
+
+            // Softmax with temperature to convert scores to probabilities.
+            // temperature controls exploration: lower = more greedy.
+            let temperature = 200.0f32; // in centipawns
+            let max_score = scores.iter().map(|(_, s)| *s).fold(f32::NEG_INFINITY, f32::max);
+            let mut sum = 0.0f32;
+            for (idx, score) in &scores {
+                let exp = ((score - max_score) / temperature).exp();
+                policy[*idx] = exp;
+                sum += exp;
+            }
+            if sum > 0.0 {
+                for p in policy.iter_mut() {
+                    *p /= sum;
                 }
             }
         }
 
-        // Use the heuristic eval (centipawns) and map to [-1, 1] with a sigmoid.
-        // 400cp advantage ≈ 0.76, 900cp (queen) ≈ 0.95.
-        let cp = eval::evaluate(&state.board) as f32;
+        // Use the heuristic eval (centipawns) and map to [-1, 1] with tanh.
+        // Terminal states (±10000) saturate to ±1.0, material diffs scale smoothly.
+        let cp = eval::evaluate(state) as f32;
         let value = (cp / 400.0).tanh();
 
         (policy, value)
@@ -560,13 +585,13 @@ mod tests {
     }
 
     #[test]
-    fn random_evaluator_returns_uniform_policy() {
+    fn heuristic_evaluator_returns_valid_policy() {
         let evaluator = HeuristicEvaluator;
         let state = GameState::new();
         let (policy, value) = evaluator.evaluate(&state);
 
-        // Value should be zero.
-        assert!((value - 0.0).abs() < 1e-6, "value should be 0.0");
+        // Starting position is symmetric — value should be near zero.
+        assert!(value.abs() < 1e-4, "value should be ~0.0 for starting pos, got {}", value);
 
         // Policy should sum to ~1 over legal moves.
         let sum: f32 = policy.iter().sum();
@@ -578,18 +603,9 @@ mod tests {
                 sum
             );
 
-            // Each legal move should have equal probability.
-            let expected = 1.0 / legal_count as f32;
+            // All legal moves should have nonzero probability.
             let nonzero: Vec<f32> = policy.iter().copied().filter(|&p| p > 0.0).collect();
             assert_eq!(nonzero.len(), legal_count);
-            for p in &nonzero {
-                assert!(
-                    (p - expected).abs() < 1e-5,
-                    "expected uniform {}, got {}",
-                    expected,
-                    p,
-                );
-            }
         }
     }
 

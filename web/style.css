@@ -129,6 +129,20 @@ body {
     gap: 12px;
     flex-wrap: wrap;
     justify-content: center;
+    align-items: center;
+}
+
+#speed-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.85rem;
+    color: #a0a0a0;
+}
+
+#speed-slider {
+    width: 80px;
+    accent-color: #5bc0eb;
 }
 
 #controls button {

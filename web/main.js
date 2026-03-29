@@ -64,6 +64,9 @@ let playerColor = "white";
 let aiThinking = false;
 let lastMove = null;
 let cachedPieceAt = {};  // populated by render(), used by click handler
+let selfPlayMode = false;
+let selfPlayTimer = null;
+let moveCount = 0;
 
 // ---- Helpers --------------------------------------------------------------
 
@@ -183,8 +186,10 @@ function updateStatus() {
     }
 
     const status = game.status();
+    const prefix = selfPlayMode ? `[Self-Play · Move ${moveCount}] ` : "";
+
     if (STATUS_LABELS[status]) {
-        el.textContent = STATUS_LABELS[status];
+        el.textContent = prefix + STATUS_LABELS[status];
         el.classList.add("status-gameover");
         return;
     }
@@ -192,17 +197,17 @@ function updateStatus() {
     const side = game.sideToMove();
     const label = side === "white" ? "White" : "Black";
     if (game.isInCheck()) {
-        el.textContent = `${label} to move \u2014 CHECK!`;
+        el.textContent = `${prefix}${label} to move \u2014 CHECK!`;
         el.classList.add("status-check");
     } else {
-        el.textContent = `${label} to move`;
+        el.textContent = `${prefix}${label} to move`;
     }
 }
 
 // ---- Interaction ----------------------------------------------------------
 
 function onCellClick(q, r) {
-    if (aiThinking || !game || game.isGameOver()) return;
+    if (aiThinking || selfPlayMode || !game || game.isGameOver()) return;
     if (game.sideToMove() !== playerColor) return;
 
     const clickedPiece = cachedPieceAt[`${q},${r}`];
@@ -269,6 +274,53 @@ function scheduleAiMove() {
     }, 80);
 }
 
+// ---- Self-play mode -------------------------------------------------------
+
+function startSelfPlay() {
+    if (selfPlayMode) { stopSelfPlay(); return; }
+
+    game = new wasm.Game();
+    clearSelection(true);
+    selfPlayMode = true;
+    moveCount = 0;
+    document.getElementById("btn-self-play").textContent = "Stop";
+    render();
+    scheduleSelfPlayMove();
+}
+
+function stopSelfPlay() {
+    selfPlayMode = false;
+    if (selfPlayTimer) { clearTimeout(selfPlayTimer); selfPlayTimer = null; }
+    document.getElementById("btn-self-play").textContent = "Self-Play";
+    render();
+}
+
+function scheduleSelfPlayMove() {
+    if (!selfPlayMode || !game || game.isGameOver()) {
+        if (selfPlayMode) {
+            // Game ended — show result briefly, then stop
+            render();
+        }
+        return;
+    }
+
+    const delay = parseInt(document.getElementById("speed-slider").value, 10);
+    selfPlayTimer = setTimeout(() => {
+        try {
+            const m = ai.bestMove(game);
+            game.applyMove(m.from_q, m.from_r, m.to_q, m.to_r, m.promotion);
+            recordLastMove(m.from_q, m.from_r, m.to_q, m.to_r);
+            moveCount++;
+        } catch (e) {
+            console.error("Self-play move error:", e);
+            stopSelfPlay();
+            return;
+        }
+        render();
+        scheduleSelfPlayMove();
+    }, delay);
+}
+
 // ---- Promotion picker -----------------------------------------------------
 
 function showPromotionPicker(fromQ, fromR, toQ, toR, moves) {
@@ -316,7 +368,7 @@ function setupControls() {
     });
 
     document.getElementById("btn-flip").addEventListener("click", () => {
-        if (aiThinking) return;
+        if (aiThinking || selfPlayMode) return;
         playerColor = playerColor === "white" ? "black" : "white";
         clearSelection();
         if (game && !game.isGameOver() && game.sideToMove() !== playerColor) {
@@ -324,6 +376,11 @@ function setupControls() {
         } else {
             render();
         }
+    });
+
+    document.getElementById("btn-self-play").addEventListener("click", () => {
+        if (aiThinking) return;
+        startSelfPlay();
     });
 
     // Event delegation: single click handler on the SVG
