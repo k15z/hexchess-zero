@@ -162,11 +162,19 @@ def run_worker(cfg: AsyncConfig) -> None:
         outcome_counts: dict[str, int] = {}
         batch_games = 0
 
-        for _ in range(batch_size):
+        for gi in range(batch_size):
+            game_t0 = time.time()
             status, game_samples = _play_one_game(search, cfg)
+            game_elapsed = time.time() - game_t0
             pending_samples.extend(game_samples)
             outcome_counts[status] = outcome_counts.get(status, 0) + 1
             batch_games += 1
+            logger.info(
+                "  game {}/{}: {} moves, {:.1f}s ({:.2f}s/move) | {}",
+                gi + 1, batch_size, len(game_samples),
+                game_elapsed, game_elapsed / max(len(game_samples), 1),
+                status,
+            )
 
         if pending_samples:
             path = _flush_samples(pending_samples, cfg.training_data_dir, current_version)
