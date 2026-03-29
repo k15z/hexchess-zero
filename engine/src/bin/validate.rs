@@ -7,10 +7,11 @@
 //!   2. Apply/undo consistency — verifies zobrist hash round-trips
 //!   3. Heuristic vs Random — plays games to confirm the heuristic evaluator beats random
 
-use hexchess_engine::board::{Color, HexCoord};
+use hexchess_engine::board::{Board, Color, HexCoord, Piece, PieceKind};
 use hexchess_engine::game::{GameState, GameStatus};
 use hexchess_engine::mcts::{Evaluator, HeuristicEvaluator, MctsSearch};
 use hexchess_engine::movegen;
+use hexchess_engine::serialization;
 
 use rand::Rng;
 
@@ -459,6 +460,315 @@ fn run_heuristic_vs_random_moves() {
 }
 
 // ===========================================================================
+// 8. MOVE TABLE COMPLETENESS — every legal move must have an index
+// ===========================================================================
+
+fn run_move_table_completeness() {
+    println!("=== MOVE TABLE COMPLETENESS CHECK ===\n");
+
+    let mut rng = rand::rng();
+    let mut total_moves_checked = 0u64;
+    let mut unindexed = 0u64;
+
+    // Play many random games and verify every legal move has a table entry
+    for _ in 0..200 {
+        let mut state = GameState::new();
+        for _ in 0..200 {
+            if state.is_game_over() { break; }
+            let moves = state.legal_moves();
+            for mv in &moves {
+                if serialization::move_to_index(mv).is_none() {
+                    eprintln!("  UNINDEXED MOVE: {:?}", mv);
+                    unindexed += 1;
+                }
+                total_moves_checked += 1;
+            }
+            let idx = rng.random_range(0..moves.len());
+            state.apply_move(moves[idx]);
+        }
+    }
+
+    println!("  Checked {} legal moves across 200 random games", total_moves_checked);
+    assert_eq!(unindexed, 0,
+        "Found {} unindexed legal moves — move table is incomplete!", unindexed);
+
+    // Also verify round-trip: index_to_move -> move_to_index for every index
+    let n = serialization::num_move_indices();
+    for i in 0..n {
+        let (from, to, promo) = serialization::index_to_move(i);
+        let mv = movegen::Move {
+            from, to,
+            promotion: promo,
+            captured: None,
+            is_en_passant: false,
+        };
+        let j = serialization::move_to_index(&mv);
+        assert_eq!(j, Some(i), "Round-trip failed for index {}: got {:?}", i, j);
+    }
+    println!("  All {} move indices round-trip correctly", n);
+
+    println!("\n  MOVE TABLE COMPLETENESS PASSED\n");
+}
+
+// ===========================================================================
+// 9. MCTS WINS FROM WINNING POSITIONS
+// ===========================================================================
+
+fn run_mcts_winning_positions() {
+    println!("=== MCTS WINNING POSITION TESTS ===\n");
+
+    let sims = 500;
+
+    // Test 1: Massive material advantage (queen + rook vs lone king)
+    {
+        let mut board = Board::empty();
+        board.set(HexCoord::new(0, 0), Some(Piece::new(PieceKind::King, Color::White)));
+        board.white_king = HexCoord::new(0, 0);
+        board.set(HexCoord::new(0, 2), Some(Piece::new(PieceKind::Queen, Color::White)));
+        board.set(HexCoord::new(2, -2), Some(Piece::new(PieceKind::Rook, Color::White)));
+        board.set(HexCoord::new(5, -5), Some(Piece::new(PieceKind::King, Color::Black)));
+        board.black_king = HexCoord::new(5, -5);
+
+        let state = GameState::from_board(board);
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let result = search.search(&state, sims);
+        println!("  Q+R vs K value: {:.3} (should be strongly positive)", result.value);
+        assert!(result.value > 0.3,
+            "Q+R vs lone king should be very winning, got {:.3}", result.value);
+    }
+
+    // Test 2: Losing position — Black to move with lone king vs Q+R
+    {
+        let mut board = Board::empty();
+        board.side_to_move = Color::Black;
+        board.set(HexCoord::new(5, -5), Some(Piece::new(PieceKind::King, Color::Black)));
+        board.black_king = HexCoord::new(5, -5);
+        board.set(HexCoord::new(0, 0), Some(Piece::new(PieceKind::King, Color::White)));
+        board.white_king = HexCoord::new(0, 0);
+        board.set(HexCoord::new(0, 2), Some(Piece::new(PieceKind::Queen, Color::White)));
+        board.set(HexCoord::new(2, -2), Some(Piece::new(PieceKind::Rook, Color::White)));
+
+        let state = GameState::from_board(board);
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let result = search.search(&state, sims);
+        println!("  Lone K vs Q+R (Black to move) value: {:.3} (should be negative)", result.value);
+        assert!(result.value < -0.3,
+            "Lone king vs Q+R should be losing, got {:.3}", result.value);
+    }
+
+    // Test 3: Equal position should have value near zero
+    {
+        let state = GameState::new();
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let result = search.search(&state, sims);
+        println!("  Starting position value: {:.3} (should be near 0)", result.value);
+        assert!(result.value.abs() < 0.3,
+            "Starting position should be roughly equal, got {:.3}", result.value);
+    }
+
+    println!("\n  MCTS WINNING POSITIONS PASSED\n");
+}
+
+// ===========================================================================
+// 10. MCTS FINDS FORCED TACTICS
+// ===========================================================================
+
+fn run_mcts_forced_tactics() {
+    println!("=== MCTS FORCED TACTICS TESTS ===\n");
+
+    let sims = 800;
+
+    // Test 1: Queen under attack by rook — must move the queen
+    {
+        let mut board = Board::empty();
+        board.set(HexCoord::new(-5, 5), Some(Piece::new(PieceKind::King, Color::White)));
+        board.white_king = HexCoord::new(-5, 5);
+        board.set(HexCoord::new(5, -5), Some(Piece::new(PieceKind::King, Color::Black)));
+        board.black_king = HexCoord::new(5, -5);
+        // White queen on (0,0), black rook on (0,3) attacking along the file
+        board.set(HexCoord::new(0, 0), Some(Piece::new(PieceKind::Queen, Color::White)));
+        board.set(HexCoord::new(0, 3), Some(Piece::new(PieceKind::Rook, Color::Black)));
+
+        let state = GameState::from_board(board);
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let result = search.search(&state, sims);
+
+        let moves_queen = result.best_move.from == HexCoord::new(0, 0);
+        let captures_rook = result.best_move.to == HexCoord::new(0, 3);
+        println!("  Queen under attack: {} -> {} (moves queen: {}, captures rook: {})",
+            result.best_move.from, result.best_move.to, moves_queen, captures_rook);
+        assert!(moves_queen,
+            "MCTS should move the attacked queen, instead moved from {}", result.best_move.from);
+    }
+
+    // Test 2: Capture a free piece — rook takes undefended bishop
+    {
+        let mut board = Board::empty();
+        board.set(HexCoord::new(-5, 0), Some(Piece::new(PieceKind::King, Color::White)));
+        board.white_king = HexCoord::new(-5, 0);
+        board.set(HexCoord::new(5, 0), Some(Piece::new(PieceKind::King, Color::Black)));
+        board.black_king = HexCoord::new(5, 0);
+        board.set(HexCoord::new(0, 0), Some(Piece::new(PieceKind::Rook, Color::White)));
+        board.set(HexCoord::new(0, 3), Some(Piece::new(PieceKind::Bishop, Color::Black)));
+
+        let state = GameState::from_board(board);
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let result = search.search(&state, sims);
+
+        let captures = result.best_move.from == HexCoord::new(0, 0)
+            && result.best_move.to == HexCoord::new(0, 3);
+        println!("  Free bishop capture: {} -> {} (captured: {})",
+            result.best_move.from, result.best_move.to, captures);
+        assert!(captures, "MCTS should capture the free bishop");
+    }
+
+    println!("\n  MCTS FORCED TACTICS PASSED\n");
+}
+
+// ===========================================================================
+// 11. MORE SIMULATIONS => BETTER PLAY
+// ===========================================================================
+
+fn run_simulation_scaling() {
+    println!("=== SIMULATION SCALING TEST ===\n");
+
+    use hexchess_engine::eval;
+
+    let low_sims = 30;
+    let high_sims = 200;
+    let games_per_side = 10;
+
+    let mut high_material_lead = 0i64;
+    let mut games_where_high_leads = 0;
+    let total_games = games_per_side * 2;
+
+    // High sims plays White
+    print!("  High(W) vs Low(B): ");
+    for _ in 0..games_per_side {
+        let mut state = GameState::new();
+        let mut search_high = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut search_low = MctsSearch::new(Box::new(HeuristicEvaluator));
+
+        for _ in 0..100 {
+            if state.is_game_over() { break; }
+            match state.side_to_move() {
+                Color::White => {
+                    let r = search_high.search(&state, high_sims);
+                    state.apply_move(r.best_move);
+                }
+                Color::Black => {
+                    let r = search_low.search(&state, low_sims);
+                    state.apply_move(r.best_move);
+                }
+            }
+        }
+        let lead = (eval::material(&state.board, Color::White)
+            - eval::material(&state.board, Color::Black)) as i64;
+        high_material_lead += lead;
+        if lead > 0 { games_where_high_leads += 1; }
+        print!(".");
+    }
+    println!();
+
+    // High sims plays Black
+    print!("  Low(W) vs High(B): ");
+    for _ in 0..games_per_side {
+        let mut state = GameState::new();
+        let mut search_high = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut search_low = MctsSearch::new(Box::new(HeuristicEvaluator));
+
+        for _ in 0..100 {
+            if state.is_game_over() { break; }
+            match state.side_to_move() {
+                Color::White => {
+                    let r = search_low.search(&state, low_sims);
+                    state.apply_move(r.best_move);
+                }
+                Color::Black => {
+                    let r = search_high.search(&state, high_sims);
+                    state.apply_move(r.best_move);
+                }
+            }
+        }
+        // Lead from Black's (high-sim) perspective
+        let lead = (eval::material(&state.board, Color::Black)
+            - eval::material(&state.board, Color::White)) as i64;
+        high_material_lead += lead;
+        if lead > 0 { games_where_high_leads += 1; }
+        print!(".");
+    }
+    println!();
+
+    let avg_lead = high_material_lead as f64 / total_games as f64;
+    println!("\n  {}sims vs {}sims over {} games:", high_sims, low_sims, total_games);
+    println!("  Avg material lead (high-sim player): {:.0} cp", avg_lead);
+    println!("  Games where high-sim leads: {}/{}", games_where_high_leads, total_games);
+
+    assert!(avg_lead > 0.0,
+        "Higher simulations should accumulate material advantage, got {:.0} cp", avg_lead);
+
+    println!("\n  SIMULATION SCALING PASSED\n");
+}
+
+// ===========================================================================
+// 12. MCTS VALUE MONOTONICITY — more material => higher value
+// ===========================================================================
+
+fn run_value_monotonicity() {
+    println!("=== VALUE MONOTONICITY TEST ===\n");
+
+    let sims = 300;
+
+    // Position A: White has K+Q+R vs lone K
+    let mut board_a = Board::empty();
+    board_a.set(HexCoord::new(-5, 5), Some(Piece::new(PieceKind::King, Color::White)));
+    board_a.white_king = HexCoord::new(-5, 5);
+    board_a.set(HexCoord::new(0, 0), Some(Piece::new(PieceKind::Queen, Color::White)));
+    board_a.set(HexCoord::new(2, -2), Some(Piece::new(PieceKind::Rook, Color::White)));
+    board_a.set(HexCoord::new(5, -5), Some(Piece::new(PieceKind::King, Color::Black)));
+    board_a.black_king = HexCoord::new(5, -5);
+
+    // Position B: White has K+Q vs lone K (less material)
+    let mut board_b = Board::empty();
+    board_b.set(HexCoord::new(-5, 5), Some(Piece::new(PieceKind::King, Color::White)));
+    board_b.white_king = HexCoord::new(-5, 5);
+    board_b.set(HexCoord::new(0, 0), Some(Piece::new(PieceKind::Queen, Color::White)));
+    board_b.set(HexCoord::new(5, -5), Some(Piece::new(PieceKind::King, Color::Black)));
+    board_b.black_king = HexCoord::new(5, -5);
+
+    // Position C: K+N vs K (smaller advantage than K+Q)
+    let mut board_c = Board::empty();
+    board_c.set(HexCoord::new(-5, 5), Some(Piece::new(PieceKind::King, Color::White)));
+    board_c.white_king = HexCoord::new(-5, 5);
+    board_c.set(HexCoord::new(0, 0), Some(Piece::new(PieceKind::Knight, Color::White)));
+    board_c.set(HexCoord::new(5, -5), Some(Piece::new(PieceKind::King, Color::Black)));
+    board_c.black_king = HexCoord::new(5, -5);
+
+    let state_a = GameState::from_board(board_a);
+    let state_b = GameState::from_board(board_b);
+    let state_c = GameState::from_board(board_c);
+
+    let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+    let va = search.search(&state_a, sims).value;
+    let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+    let vb = search.search(&state_b, sims).value;
+    let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+    let vc = search.search(&state_c, sims).value;
+
+    println!("  K+Q+R vs K: {:.3}", va);
+    println!("  K+Q   vs K: {:.3}", vb);
+    println!("  K+N   vs K: {:.3}", vc);
+
+    assert!(va > vb, "More material should give higher value: {:.3} vs {:.3}", va, vb);
+    assert!(vb > vc, "Queen advantage should beat knight advantage: {:.3} vs {:.3}", vb, vc);
+    assert!(va > 0.0, "K+Q+R vs K should be positive");
+    assert!(vb > 0.0, "K+Q vs K should be positive");
+    assert!(vc > 0.0, "K+N vs K should be positive");
+
+    println!("\n  VALUE MONOTONICITY PASSED\n");
+}
+
+// ===========================================================================
 // Main
 // ===========================================================================
 
@@ -474,6 +784,11 @@ fn main() {
     run_value_function_tests();
     run_mcts_tactical_tests();
     run_heuristic_vs_random_moves();
+    run_move_table_completeness();
+    run_mcts_winning_positions();
+    run_mcts_forced_tactics();
+    run_simulation_scaling();
+    run_value_monotonicity();
 
     println!("╔══════════════════════════════════════════════╗");
     println!("║     ALL VALIDATION TESTS PASSED              ║");

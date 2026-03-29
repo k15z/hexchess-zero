@@ -242,6 +242,14 @@ fn build_move_table() -> Vec<MoveEntry> {
     let mut entries: Vec<MoveEntry> = Vec::new();
 
     for &(from_idx, to_idx) in &pairs {
+        // Every pair gets a non-promotion entry (for non-pawn pieces that
+        // can also reach promotion cells without promoting).
+        entries.push(MoveEntry {
+            from_idx,
+            to_idx,
+            promotion: None,
+        });
+        // Pawn promotion pairs additionally get 4 promotion entries.
         if pawn_promo_pairs.contains(&(from_idx, to_idx)) {
             for &pk in &PROMOTION_PIECES {
                 entries.push(MoveEntry {
@@ -250,12 +258,6 @@ fn build_move_table() -> Vec<MoveEntry> {
                     promotion: Some(pk),
                 });
             }
-        } else {
-            entries.push(MoveEntry {
-                from_idx,
-                to_idx,
-                promotion: None,
-            });
         }
     }
 
