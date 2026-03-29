@@ -8,75 +8,104 @@ from pathlib import Path
 # Ensure progress output is visible immediately
 sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, 'reconfigure') else None
 
+import random
+
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, IterableDataset
 
 from .config import Config
 from .model import HexChessNet, build_model
 
 
-class ReplayBuffer(Dataset):
+class ReplayBuffer(IterableDataset):
     """
-    Loads training data from .npz files on disk.
+    Streams training data from .npz chunk files on disk (KataGo-style).
 
-    Each .npz contains:
-        boards:   (N, 16, 11, 11) float32
-        policies: (N, num_move_indices) float32
-        outcomes: (N,) float32
+    Only the shuffle buffer and one chunk are in memory at a time, so usage
+    is bounded regardless of how many files exist on disk.
     """
+
+    SHUFFLE_BUFFER_SIZE = 10_000
 
     def __init__(self, data_dir: Path, max_positions: int = 50_000):
+        self.data_dir = data_dir
         self.max_positions = max_positions
-        self.boards_arr = np.empty(0)
-        self.policies_arr = np.empty(0)
-        self.outcomes_arr = np.empty(0)
-        self._load_data(data_dir)
+        self.files, self.total_positions = self._select_files()
 
-    def _load_data(self, data_dir: Path) -> None:
-        """Load all .npz files from the data directory."""
-        npz_files = sorted(data_dir.glob("*.npz"))
+    def _select_files(self) -> tuple[list[Path], int]:
+        """Pick the most recent files up to max_positions."""
+        npz_files = sorted(self.data_dir.glob("*.npz"))
         if not npz_files:
-            print(f"Warning: no .npz files found in {data_dir}")
-            return
+            return [], 0
 
-        all_boards = []
-        all_policies = []
-        all_outcomes = []
+        selected = []
+        total = 0
+        for f in reversed(npz_files):
+            # Peek at size without loading arrays
+            with np.load(f) as data:
+                n = len(data["outcomes"])
+            selected.append(f)
+            total += n
+            if total >= self.max_positions:
+                break
 
-        for f in npz_files:
+        selected.reverse()
+        total = min(total, self.max_positions)
+        print(f"Replay buffer: {total} positions from {len(selected)} files "
+              f"(skipped {len(npz_files) - len(selected)} older files)")
+        return selected, total
+
+    def __iter__(self):
+        # Shuffle file order each epoch
+        files = self.files.copy()
+        random.shuffle(files)
+
+        buf_b, buf_p, buf_o = [], [], []
+        positions_remaining = self.max_positions
+
+        for f in files:
             data = np.load(f)
-            all_boards.append(data["boards"])
-            all_policies.append(data["policies"])
-            all_outcomes.append(data["outcomes"])
+            boards, policies, outcomes = data["boards"], data["policies"], data["outcomes"]
 
-        boards = np.concatenate(all_boards, axis=0)
-        policies = np.concatenate(all_policies, axis=0)
-        outcomes = np.concatenate(all_outcomes, axis=0)
+            # Trim last chunk if we'd exceed max_positions
+            if len(boards) > positions_remaining:
+                boards = boards[-positions_remaining:]
+                policies = policies[-positions_remaining:]
+                outcomes = outcomes[-positions_remaining:]
+            positions_remaining -= len(boards)
 
-        # Keep only the most recent positions if buffer is too large
-        if len(boards) > self.max_positions:
-            boards = boards[-self.max_positions:]
-            policies = policies[-self.max_positions:]
-            outcomes = outcomes[-self.max_positions:]
+            # Add chunk to shuffle buffer
+            buf_b.extend(boards)
+            buf_p.extend(policies)
+            buf_o.extend(outcomes)
 
-        self.boards_arr = boards
-        self.policies_arr = policies
-        self.outcomes_arr = outcomes
+            # When buffer is full, shuffle and drain half
+            while len(buf_b) >= self.SHUFFLE_BUFFER_SIZE:
+                perm = list(range(len(buf_b)))
+                random.shuffle(perm)
+                drain = len(buf_b) // 2
+                for j in perm[:drain]:
+                    yield (torch.from_numpy(buf_b[j]),
+                           torch.from_numpy(buf_p[j]),
+                           torch.tensor(buf_o[j], dtype=torch.float32))
+                keep = perm[drain:]
+                buf_b = [buf_b[j] for j in keep]
+                buf_p = [buf_p[j] for j in keep]
+                buf_o = [buf_o[j] for j in keep]
 
-        print(f"Loaded {len(self.boards_arr)} positions from {len(npz_files)} files")
+            if positions_remaining <= 0:
+                break
 
-    def __len__(self) -> int:
-        return len(self.boards_arr)
-
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        # Data is already float32 from self-play, no copy needed
-        board = torch.from_numpy(self.boards_arr[idx])
-        policy = torch.from_numpy(self.policies_arr[idx])
-        outcome = torch.tensor(self.outcomes_arr[idx], dtype=torch.float32)
-        return board, policy, outcome
+        # Flush remaining buffer
+        perm = list(range(len(buf_b)))
+        random.shuffle(perm)
+        for j in perm:
+            yield (torch.from_numpy(buf_b[j]),
+                   torch.from_numpy(buf_p[j]),
+                   torch.tensor(buf_o[j], dtype=torch.float32))
 
 
 def train(config: Config | None = None) -> Path:
@@ -98,16 +127,14 @@ def train(config: Config | None = None) -> Path:
 
     # Load data
     dataset = ReplayBuffer(cfg.data_dir, max_positions=cfg.replay_buffer_size)
-    if len(dataset) == 0:
+    if dataset.total_positions == 0:
         print("No training data available. Run self-play first.")
         return cfg.best_checkpoint_path
 
     dataloader = DataLoader(
         dataset,
         batch_size=cfg.batch_size,
-        shuffle=True,
         num_workers=0,
-        drop_last=False,
     )
 
     # Build or load model
@@ -125,7 +152,7 @@ def train(config: Config | None = None) -> Path:
 
     # Training loop
     model.train()
-    total_batches = (len(dataset) + cfg.batch_size - 1) // cfg.batch_size
+    total_batches = (dataset.total_positions + cfg.batch_size - 1) // cfg.batch_size
     for epoch in range(cfg.training_epochs):
         epoch_policy_loss = 0.0
         epoch_value_loss = 0.0
