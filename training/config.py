@@ -58,7 +58,7 @@ class Config:
     # --- Network architecture ---
     num_residual_blocks: int = 6
     num_filters: int = 128
-    board_channels: int = 16
+    board_channels: int = 19
     board_height: int = 11
     board_width: int = 11
 

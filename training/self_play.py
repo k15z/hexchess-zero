@@ -1,7 +1,6 @@
 from __future__ import annotations
 """Self-play game generation using MCTS via the hexchess engine."""
 
-import math
 import time
 from datetime import datetime, timezone
 from multiprocessing import Pool
@@ -81,27 +80,22 @@ def play_one_game(config: Config) -> tuple[str, list[dict]]:
         )
         move_number += 1
 
-    # Determine game outcome
+    # Determine game outcome as WDL targets [win, draw, loss]
     status = game.status()
     if status == "checkmate_white":
-        outcome_white = 1.0
+        wdl_white = [1.0, 0.0, 0.0]  # white won
     elif status == "checkmate_black":
-        outcome_white = -1.0
+        wdl_white = [0.0, 0.0, 1.0]  # white lost
     else:
-        # For draws, use material heuristic so the value head gets signal.
-        # Without this, all-draw self-play produces zero-valued training data.
-        piece_values = {"pawn": 1, "knight": 3, "bishop": 3, "rook": 5, "queen": 9}
-        white_mat = sum(piece_values.get(p["piece"], 0) for p in game.board_state() if p["color"] == "white")
-        black_mat = sum(piece_values.get(p["piece"], 0) for p in game.board_state() if p["color"] == "black")
-        diff = (white_mat - black_mat) / 4.0  # normalize: queen up ≈ 0.95
-        outcome_white = max(-1.0, min(1.0, math.tanh(diff)))
+        wdl_white = [0.0, 1.0, 0.0]  # draw
 
-    # Fill in outcome from each side's perspective
+    # Fill in WDL outcome from each side's perspective
     for sample in samples:
         if sample["side"] == "white":
-            sample["outcome"] = outcome_white
+            sample["outcome"] = np.array(wdl_white, dtype=np.float32)
         else:
-            sample["outcome"] = -outcome_white
+            # Flip W and L for black's perspective
+            sample["outcome"] = np.array([wdl_white[2], wdl_white[1], wdl_white[0]], dtype=np.float32)
         del sample["side"]  # no longer needed
 
     return status, samples
@@ -117,7 +111,7 @@ def _flush_samples(samples: list[dict], data_dir: Path) -> Path:
     """Write accumulated samples to a timestamped .npz file and return the path."""
     boards = np.stack([s["board"] for s in samples])
     policies = np.stack([s["policy"] for s in samples])
-    outcomes = np.array([s["outcome"] for s in samples], dtype=np.float32)
+    outcomes = np.stack([s["outcome"] for s in samples])
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
     # Short random suffix to avoid collisions between distributed workers

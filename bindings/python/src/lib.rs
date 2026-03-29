@@ -237,10 +237,10 @@ impl PyMctsSearch {
 // Standalone encoding functions
 // ---------------------------------------------------------------------------
 
-/// Encode a game's board state as a numpy array of shape (16, 11, 11).
+/// Encode a game's board state as a numpy array of shape (19, 11, 11).
 #[pyfunction]
 fn encode_board<'py>(py: Python<'py>, game: &PyGame) -> Bound<'py, PyArray3<f32>> {
-    let flat = serialization::encode_board(&game.state.board);
+    let flat = serialization::encode_board(&game.state);
     let array = Array3::from_shape_vec(
         (
             serialization::NUM_CHANNELS,
@@ -253,7 +253,7 @@ fn encode_board<'py>(py: Python<'py>, game: &PyGame) -> Bound<'py, PyArray3<f32>
     array.into_pyarray(py)
 }
 
-/// Encode a batch of games as a numpy array of shape (N, 16, 11, 11).
+/// Encode a batch of games as a numpy array of shape (N, 19, 11, 11).
 #[pyfunction]
 fn encode_batch<'py>(
     py: Python<'py>,
@@ -267,7 +267,7 @@ fn encode_batch<'py>(
     let mut data = Vec::with_capacity(n * c * h * w);
     for game_obj in &games {
         let game: PyRef<'_, PyGame> = game_obj.extract()?;
-        let flat = serialization::encode_board(&game.state.board);
+        let flat = serialization::encode_board(&game.state);
         data.extend_from_slice(&flat);
     }
 

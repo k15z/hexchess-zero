@@ -98,7 +98,7 @@ class ReplayBuffer(IterableDataset):
                 for j in perm[:drain]:
                     yield (torch.from_numpy(buf_b[j]),
                            torch.from_numpy(buf_p[j]),
-                           torch.tensor(buf_o[j], dtype=torch.float32))
+                           torch.from_numpy(buf_o[j]))
                 keep = perm[drain:]
                 buf_b = [buf_b[j] for j in keep]
                 buf_p = [buf_p[j] for j in keep]
@@ -113,7 +113,7 @@ class ReplayBuffer(IterableDataset):
         for j in perm:
             yield (torch.from_numpy(buf_b[j]),
                    torch.from_numpy(buf_p[j]),
-                   torch.tensor(buf_o[j], dtype=torch.float32))
+                   torch.from_numpy(buf_o[j]))
 
 
 def train(config: Config | None = None) -> tuple[Path, dict]:
@@ -175,16 +175,15 @@ def train(config: Config | None = None) -> tuple[Path, dict]:
             outcomes = outcomes.to(device)
 
             # Forward pass
-            pred_policy, pred_value = model(boards)
-            pred_value = pred_value.squeeze(-1)
+            pred_policy, pred_wdl = model(boards)
 
             # Policy loss: cross-entropy with MCTS policy as soft target
-            # Use KL divergence (equivalent to cross-entropy when target is fixed)
             log_probs = torch.log_softmax(pred_policy, dim=1)
             policy_loss = -torch.sum(policies * log_probs, dim=1).mean()
 
-            # Value loss: MSE
-            value_loss = nn.functional.mse_loss(pred_value, outcomes)
+            # Value loss: cross-entropy on WDL targets
+            log_probs_v = torch.log_softmax(pred_wdl, dim=1)
+            value_loss = -torch.sum(outcomes * log_probs_v, dim=1).mean()
 
             # Total loss (L2 regularization handled by weight_decay in optimizer)
             total_loss = policy_loss + value_loss

@@ -40,8 +40,8 @@ python -m training loop --generation 5    # resume from specific generation
 - **movegen.rs** — Pseudo-legal then legal move generation. Precomputed ray tables (sliding pieces) and knight tables lazily initialized via `OnceLock`. `MoveList` is stack-allocated (256-entry array, no heap in hot path).
 - **game.rs** — `GameState` with apply/undo (in-place mutation + `UndoInfo` stack). Status detection: checkmate, stalemate, threefold repetition, 50-move rule, insufficient material.
 - **mcts.rs** — AlphaZero PUCT search. Arena-allocated nodes (`Vec<MctsNode>` indexed by `usize`). Transposition table caches NN evaluations. Dirichlet noise at root. Temperature-based move selection.
-- **serialization.rs** — Board-to-tensor encoding: `(16, 11, 11)` CHW layout, hex grid embedded in 11x11 rect (invalid cells zero-padded). Deterministic move-to-index bijection (~4000 entries) for policy vector; pawn promotions get 4 separate indices.
-- **inference.rs** — `Evaluator` trait returns `(policy_logits, value)`. Implementations: `OnnxEvaluator` (ORT, feature-gated behind `onnx`), `TractEvaluator` (pure Rust, used in WASM), `HeuristicEvaluator` (material-based baseline).
+- **serialization.rs** — Board-to-tensor encoding: `(19, 11, 11)` CHW layout, hex grid embedded in 11x11 rect (invalid cells zero-padded). Channels 0-11: piece planes, 12: side to move, 13: fullmove, 14: halfmove clock, 15: en passant, 16: repetition count, 17: validity mask, 18: in-check. Deterministic move-to-index bijection (~4000 entries) for policy vector; pawn promotions get 4 separate indices. `encode_board` takes `&GameState` (not `&Board`) to access repetition history.
+- **inference.rs** — `Evaluator` trait returns `(policy_logits, value)`. NN outputs WDL logits (Win/Draw/Loss); evaluators convert to scalar `W - L` for MCTS. Implementations: `OnnxEvaluator` (ORT, feature-gated behind `onnx`), `TractEvaluator` (pure Rust, used in WASM), `HeuristicEvaluator` (material-based baseline).
 - **eval.rs** — Material heuristic: centipawn sum through `tanh(cp/400)`.
 
 ### Bindings
@@ -53,9 +53,9 @@ python -m training loop --generation 5    # resume from specific generation
 
 Full AlphaZero loop orchestrated by `run.py`: self-play → train → export → arena → promote. Each iteration is a **generation** with its own directory under `.data/genN/` containing `model/` and `data/`. Each generation bootstraps from the previous generation's best model. Auto-detects the latest generation on startup.
 
-- **model.py** — `HexChessNet`: conv input → 4 residual blocks (64 filters) → policy head + value head. Input `(16, 11, 11)`, policy output size = `num_move_indices()`, value output = scalar in [-1, 1].
-- **self_play.py** — Multiprocess game generation via Python bindings. Temperature scheduling (high until move 30, low after). Flushes `.npz` files to disk in batches.
-- **trainer.py** — `ReplayBuffer` streams `.npz` from disk (memory-bounded). Loss = cross-entropy(policy) + MSE(value) + L2 reg.
+- **model.py** — `HexChessNet`: conv input → 6 residual blocks (128 filters) → policy head + WDL value head. Input `(19, 11, 11)`, policy output size = `num_move_indices()`, WDL output = 3 logits (Win/Draw/Loss).
+- **self_play.py** — Multiprocess game generation via Python bindings. Temperature scheduling (high until move 60, low after). Flushes `.npz` files to disk in batches. Outcomes stored as WDL one-hot vectors.
+- **trainer.py** — `ReplayBuffer` streams `.npz` from disk (memory-bounded). Loss = cross-entropy(policy) + cross-entropy(WDL) + L2 reg.
 - **export.py** — PyTorch → ONNX. Softmax applied to policy logits at inference time in evaluator, not in the model.
 - **arena.py** — New model vs previous generation's best; promotes if win rate > 55%.
 - **config.py** — All hyperparameters, generation number, and derived paths.
