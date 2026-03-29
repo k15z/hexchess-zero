@@ -273,7 +273,9 @@ impl MctsSearch {
 
         for &child_idx in &parent.children {
             let child = &self.nodes[child_idx];
-            let q = child.q_value();
+            // Negate: child stores value from its own side-to-move perspective,
+            // but the parent wants to maximize from the parent's perspective.
+            let q = -child.q_value();
             let u = self.c_puct as f64
                 * child.prior as f64
                 * parent_visits_sqrt
