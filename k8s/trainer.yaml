@@ -32,8 +32,8 @@ spec:
       containers:
         # Trainer + arena (merged loop)
         - name: trainer
-          image: hexchess-training:latest
-          imagePullPolicy: Never
+          image: ghcr.io/k15z/hexchess-zero/training:latest
+          imagePullPolicy: Always
           args: ["trainer", "--arena-workers", "3"]
           volumeMounts:
             - name: data
@@ -44,8 +44,8 @@ spec:
               cpu: "3"
         # Self-play worker (fewer processes to share CPU with trainer)
         - name: worker
-          image: hexchess-training:latest
-          imagePullPolicy: Never
+          image: ghcr.io/k15z/hexchess-zero/training:latest
+          imagePullPolicy: Always
           args: ["worker", "--workers", "2"]
           volumeMounts:
             - name: data

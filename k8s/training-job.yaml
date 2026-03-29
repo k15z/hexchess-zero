@@ -30,8 +30,8 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: training
-          image: hexchess-training:latest
-          imagePullPolicy: Never
+          image: ghcr.io/k15z/hexchess-zero/training:latest
+          imagePullPolicy: Always
           args: ["loop"]  # uses config.py defaults; override with e.g. --generations 20
           volumeMounts:
             - name: data

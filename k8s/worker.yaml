@@ -36,8 +36,8 @@ spec:
               topologyKey: kubernetes.io/hostname
       containers:
         - name: worker
-          image: hexchess-training:latest
-          imagePullPolicy: Never
+          image: ghcr.io/k15z/hexchess-zero/training:latest
+          imagePullPolicy: Always
           args: ["worker", "--workers", "4"]
           volumeMounts:
             - name: data
