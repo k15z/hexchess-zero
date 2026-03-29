@@ -7,7 +7,7 @@ metadata:
     app: hexchess
     role: worker
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: hexchess
@@ -19,14 +19,6 @@ spec:
         role: worker
     spec:
       affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-              - matchExpressions:
-                  - key: kubernetes.io/hostname
-                    operator: In
-                    values:
-                      - kevz-infra-pool-workers-worker1
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
             - labelSelector:
@@ -34,6 +26,7 @@ spec:
                   app: hexchess
                   role: trainer
               topologyKey: kubernetes.io/hostname
+      terminationGracePeriodSeconds: 5
       containers:
         - name: worker
           image: ghcr.io/k15z/hexchess-zero/training:latest
@@ -44,8 +37,10 @@ spec:
               mountPath: /app/.data
           resources:
             requests:
-              memory: 2Gi
+              memory: 8Gi
               cpu: "5"
+            limits:
+              memory: 13Gi
       volumes:
         - name: data
           persistentVolumeClaim:

@@ -20,17 +20,8 @@ spec:
         app: hexchess
         role: trainer
     spec:
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-              - matchExpressions:
-                  - key: kubernetes.io/hostname
-                    operator: In
-                    values:
-                      - kevz-infra-pool-workers-worker2
+      terminationGracePeriodSeconds: 5
       containers:
-        # Trainer + arena (merged loop)
         - name: trainer
           image: ghcr.io/k15z/hexchess-zero/training:latest
           imagePullPolicy: Always
@@ -40,20 +31,10 @@ spec:
               mountPath: /app/.data
           resources:
             requests:
-              memory: 2Gi
-              cpu: "3"
-        # Self-play worker (fewer processes to share CPU with trainer)
-        - name: worker
-          image: ghcr.io/k15z/hexchess-zero/training:latest
-          imagePullPolicy: Always
-          args: ["worker", "--workers", "2"]
-          volumeMounts:
-            - name: data
-              mountPath: /app/.data
-          resources:
-            requests:
-              memory: 2Gi
-              cpu: "2"
+              memory: 8Gi
+              cpu: "5"
+            limits:
+              memory: 13Gi
       volumes:
         - name: data
           persistentVolumeClaim:
