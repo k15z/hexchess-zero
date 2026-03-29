@@ -37,11 +37,11 @@ class ResidualBlock(nn.Module):
 
 class HexChessNet(nn.Module):
     """
-    Policy + value network for hexagonal chess.
+    Policy + WDL value network for hexagonal chess.
 
-    Input:  (batch, 16, 11, 11)
+    Input:  (batch, 19, 11, 11)
     Output: (policy_logits: (batch, num_move_indices),
-             value: (batch, 1))
+             wdl_logits: (batch, 3))
     """
 
     def __init__(self, config: Config | None = None):
@@ -71,7 +71,7 @@ class HexChessNet(nn.Module):
         self.value_conv = nn.Conv2d(cfg.num_filters, 1, 1, bias=False)
         self.value_bn = nn.BatchNorm2d(1)
         self.value_fc1 = nn.Linear(1 * self.board_h * self.board_w, 256)
-        self.value_fc2 = nn.Linear(256, 1)
+        self.value_fc2 = nn.Linear(256, 3)
 
     def forward(
         self, x: torch.Tensor
@@ -87,11 +87,11 @@ class HexChessNet(nn.Module):
         p = p.view(p.size(0), -1)
         p = self.policy_fc(p)
 
-        # Value head
+        # Value head (WDL logits)
         v = F.relu(self.value_bn(self.value_conv(x)))
         v = v.view(v.size(0), -1)
         v = F.relu(self.value_fc1(v))
-        v = torch.tanh(self.value_fc2(v))
+        v = self.value_fc2(v)
 
         return p, v
 
@@ -113,5 +113,6 @@ if __name__ == "__main__":
     dummy = torch.randn(1, cfg.board_channels, cfg.board_height, cfg.board_width)
     policy, value = model(dummy)
     print(f"Policy shape: {policy.shape}")  # (1, NUM_MOVE_INDICES)
-    print(f"Value shape:  {value.shape}")   # (1, 1)
-    print(f"Value range:  [{value.min().item():.4f}, {value.max().item():.4f}]")
+    print(f"WDL shape:    {value.shape}")   # (1, 3)
+    wdl_probs = torch.softmax(value, dim=1)
+    print(f"WDL probs:    {wdl_probs[0].tolist()}")

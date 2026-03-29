@@ -74,11 +74,13 @@ def verify_onnx(onnx_path: Path) -> None:
         import numpy as np
 
         session = ort.InferenceSession(str(onnx_path))
-        dummy = np.random.randn(1, 16, 11, 11).astype(np.float32)
+        from .config import Config as _Cfg
+        _c = _Cfg()
+        dummy = np.random.randn(1, _c.board_channels, _c.board_height, _c.board_width).astype(np.float32)
         outputs = session.run(None, {"board": dummy})
         policy, value = outputs
-        print(f"  Inference test: policy shape={policy.shape}, value shape={value.shape}")
-        print(f"  Value: {value[0][0]:.4f}")
+        print(f"  Inference test: policy shape={policy.shape}, WDL shape={value.shape}")
+        print(f"  WDL logits: {value[0]}")
     except ImportError:
         print("  (onnxruntime not installed, skipping inference test)")
 

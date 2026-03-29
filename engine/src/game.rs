@@ -105,6 +105,18 @@ impl GameState {
         movegen::generate_legal_moves(&self.board).to_vec()
     }
 
+    /// How many times the current position has appeared before in this game.
+    /// Returns 0 for the first occurrence, 1 for one repetition, 2 for two
+    /// (which would trigger a threefold-repetition draw).
+    pub fn repetition_count(&self) -> u32 {
+        let current = self.board.zobrist_hash;
+        self.position_history
+            .iter()
+            .filter(|&&h| h == current)
+            .count() as u32
+            - 1
+    }
+
     /// Is the game over (any terminal status)?
     pub fn is_game_over(&self) -> bool {
         self.status() != GameStatus::Ongoing
@@ -654,6 +666,37 @@ mod tests {
         game.apply_move(make_quiet_move((-2, 3), (-2, 5)));
         // Third occurrence of starting position
         assert!(game.is_draw_by_repetition());
+    }
+
+    // ----- test: repetition_count -----
+
+    #[test]
+    fn test_repetition_count() {
+        // Reuse the same rook-shuttle setup as test_draw_by_repetition.
+        let mut board = kings_only_board();
+        board.set(
+            HexCoord::new(2, -5),
+            Some(Piece::new(PieceKind::Rook, Color::White)),
+        );
+        board.set(
+            HexCoord::new(-2, 5),
+            Some(Piece::new(PieceKind::Rook, Color::Black)),
+        );
+        let mut game = GameState::from_board(board);
+
+        assert_eq!(game.repetition_count(), 0, "first occurrence");
+
+        game.apply_move(make_quiet_move((2, -5), (2, -3)));
+        game.apply_move(make_quiet_move((-2, 5), (-2, 3)));
+        game.apply_move(make_quiet_move((2, -3), (2, -5)));
+        game.apply_move(make_quiet_move((-2, 3), (-2, 5)));
+        assert_eq!(game.repetition_count(), 1, "second occurrence");
+
+        game.apply_move(make_quiet_move((2, -5), (2, -3)));
+        game.apply_move(make_quiet_move((-2, 5), (-2, 3)));
+        game.apply_move(make_quiet_move((2, -3), (2, -5)));
+        game.apply_move(make_quiet_move((-2, 3), (-2, 5)));
+        assert_eq!(game.repetition_count(), 2, "third occurrence");
     }
 
     // ----- test: draw by fifty moves -----

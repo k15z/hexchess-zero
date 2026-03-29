@@ -2,6 +2,23 @@
 //!
 //! Requires the `onnx` feature flag: `cargo build --features onnx`
 
+/// Convert WDL logits [W, D, L] to a scalar value in [-1, 1] via softmax.
+///
+/// Returns `W_prob - L_prob`, which is exactly 1.0 for a certain win,
+/// -1.0 for a certain loss, and 0.0 for a certain draw or uniform.
+pub fn wdl_to_value(wdl_logits: &[f32]) -> f32 {
+    assert_eq!(wdl_logits.len(), 3);
+    let w = wdl_logits[0];
+    let d = wdl_logits[1];
+    let l = wdl_logits[2];
+    let max = w.max(d).max(l);
+    let ew = (w - max).exp();
+    let ed = (d - max).exp();
+    let el = (l - max).exp();
+    let sum = ew + ed + el;
+    (ew - el) / sum
+}
+
 #[cfg(feature = "onnx")]
 mod onnx_impl {
     use std::path::Path;
@@ -46,7 +63,7 @@ mod onnx_impl {
             // Build a single flat buffer for the whole batch: [N, C, H, W].
             let mut data = Vec::with_capacity(n * per_board);
             for state in states {
-                let flat = serialization::encode_board(&state.board);
+                let flat = serialization::encode_board(state);
                 data.extend_from_slice(&flat);
             }
 
@@ -64,7 +81,7 @@ mod onnx_impl {
                 .try_extract_array::<f32>()
                 .expect("failed to extract policy");
 
-            // Extract values: shape [N, 1] or [N]
+            // Extract WDL logits: shape [N, 3]
             let value_value = outputs.remove("value").expect("no 'value' output");
             let value_array = value_value
                 .try_extract_array::<f32>()
@@ -78,7 +95,7 @@ mod onnx_impl {
             for i in 0..n {
                 let logits = &policy_flat[i * policy_size..(i + 1) * policy_size];
 
-                // Softmax over this sample's logits.
+                // Softmax over policy logits.
                 let max_logit = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
                 let mut policy: Vec<f32> = logits.iter().map(|&x| (x - max_logit).exp()).collect();
                 let sum: f32 = policy.iter().sum();
@@ -88,7 +105,9 @@ mod onnx_impl {
                     }
                 }
 
-                let value = value_flat[i];
+                // WDL logits → softmax → scalar value = W - L
+                let wdl = &value_flat[i * 3..(i + 1) * 3];
+                let value = super::wdl_to_value(wdl);
                 results.push((policy, value));
             }
 
@@ -169,7 +188,7 @@ mod tract_impl {
             let c = serialization::NUM_CHANNELS;
             let d = serialization::BOARD_DIM;
 
-            let flat = serialization::encode_board(&state.board);
+            let flat = serialization::encode_board(state);
             let input: Tensor = tract_ndarray::Array4::from_shape_vec((1, c, d, d), flat.to_vec())
                 .expect("shape mismatch")
                 .into();
@@ -190,7 +209,7 @@ mod tract_impl {
 
             let logits: &[f32] = policy_tensor.as_slice().unwrap();
 
-            // Softmax over logits.
+            // Softmax over policy logits.
             let max_logit = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
             let mut policy: Vec<f32> = logits.iter().map(|&x| (x - max_logit).exp()).collect();
             let sum: f32 = policy.iter().sum();
@@ -200,7 +219,9 @@ mod tract_impl {
                 }
             }
 
-            let value = value_tensor.as_slice().unwrap()[0];
+            // WDL logits → softmax → scalar value = W - L
+            let wdl = value_tensor.as_slice().unwrap();
+            let value = crate::inference::wdl_to_value(wdl);
             (policy, value)
         }
     }
@@ -220,6 +241,44 @@ mod tests {
     use crate::game::GameState;
     use crate::mcts::Evaluator;
     use crate::serialization;
+
+    #[test]
+    fn test_wdl_to_value_clear_win() {
+        // Large W logit → value ≈ 1.0
+        let v = super::wdl_to_value(&[10.0, -10.0, -10.0]);
+        assert!((v - 1.0).abs() < 1e-4, "expected ~1.0, got {v}");
+    }
+
+    #[test]
+    fn test_wdl_to_value_clear_loss() {
+        // Large L logit → value ≈ -1.0
+        let v = super::wdl_to_value(&[-10.0, -10.0, 10.0]);
+        assert!((v - (-1.0)).abs() < 1e-4, "expected ~-1.0, got {v}");
+    }
+
+    #[test]
+    fn test_wdl_to_value_clear_draw() {
+        // Large D logit → value ≈ 0.0
+        let v = super::wdl_to_value(&[-10.0, 10.0, -10.0]);
+        assert!(v.abs() < 1e-4, "expected ~0.0, got {v}");
+    }
+
+    #[test]
+    fn test_wdl_to_value_uniform() {
+        // Equal logits → value = 0.0
+        let v = super::wdl_to_value(&[0.0, 0.0, 0.0]);
+        assert!(v.abs() < 1e-6, "expected 0.0, got {v}");
+    }
+
+    #[test]
+    fn test_wdl_to_value_positive_when_w_dominates() {
+        // W > L → positive value (value inversion canary)
+        let v = super::wdl_to_value(&[5.0, 0.0, 0.0]);
+        assert!(
+            v > 0.0,
+            "W-dominant logits should give positive value, got {v}"
+        );
+    }
 
     /// Requires .data/gen1/model/best.onnx — run with `cargo test --features tract -- --ignored`
     #[test]

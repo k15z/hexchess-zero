@@ -5,20 +5,20 @@ use std::collections::BTreeSet;
 use std::sync::LazyLock;
 
 use crate::board::{
-    Board, CARDINAL_DIRS, Color, DIAGONAL_DIRS, HexCoord, KNIGHT_OFFSETS, PROMOTION_PIECES,
-    PieceKind,
+    CARDINAL_DIRS, Color, DIAGONAL_DIRS, HexCoord, KNIGHT_OFFSETS, PROMOTION_PIECES, PieceKind,
 };
-use crate::movegen::Move;
+use crate::game::GameState;
+use crate::movegen::{self, Move};
 
 // ---------------------------------------------------------------------------
 // Board-to-tensor encoding
 // ---------------------------------------------------------------------------
 
-pub const NUM_CHANNELS: usize = 16;
+pub const NUM_CHANNELS: usize = 19;
 pub const BOARD_DIM: usize = 11;
 pub const TENSOR_SIZE: usize = NUM_CHANNELS * BOARD_DIM * BOARD_DIM;
 
-/// Encode a board state as a flat f32 tensor in CHW layout.
+/// Encode a game state as a flat f32 tensor in CHW layout.
 ///
 /// The 91-cell hex grid is embedded into an 11x11 rectangular array using
 /// `col = q + 5`, `row = r + 5`. Invalid cells are zero-padded.
@@ -32,7 +32,11 @@ pub const TENSOR_SIZE: usize = NUM_CHANNELS * BOARD_DIM * BOARD_DIM;
 /// 13: Move count (fullmove_number / 100.0; constant plane)
 /// 14: Halfmove clock (halfmove_clock / 100.0; constant plane)
 /// 15: En passant target (1.0 on the target cell, 0.0 elsewhere)
-pub fn encode_board(board: &Board) -> [f32; TENSOR_SIZE] {
+/// 16: Repetition count (0.0 / 1.0 / 2.0; constant plane)
+/// 17: Validity mask (1.0 on 91 valid hex cells, 0.0 on padding)
+/// 18: In check (1.0 if side to move is in check; constant plane)
+pub fn encode_board(state: &GameState) -> [f32; TENSOR_SIZE] {
+    let board = &state.board;
     let mut tensor = [0.0f32; TENSOR_SIZE];
 
     // Helper: index into the flat CHW tensor.
@@ -40,7 +44,7 @@ pub fn encode_board(board: &Board) -> [f32; TENSOR_SIZE] {
         channel * BOARD_DIM * BOARD_DIM + row * BOARD_DIM + col
     };
 
-    // Piece planes (channels 0-11).
+    // Piece planes (channels 0-11) and validity mask (channel 17).
     for q in -5i8..=5 {
         for r in -5i8..=5 {
             let coord = HexCoord::new(q, r);
@@ -49,6 +53,9 @@ pub fn encode_board(board: &Board) -> [f32; TENSOR_SIZE] {
             }
             let col = (q + 5) as usize;
             let row = (r + 5) as usize;
+
+            // Validity mask
+            tensor[idx(17, col, row)] = 1.0;
 
             if let Some(piece) = board.get(coord) {
                 let channel = piece_channel(piece.color, piece.kind);
@@ -91,6 +98,25 @@ pub fn encode_board(board: &Board) -> [f32; TENSOR_SIZE] {
         let col = (ep.q + 5) as usize;
         let row = (ep.r + 5) as usize;
         tensor[idx(15, col, row)] = 1.0;
+    }
+
+    // Repetition count (channel 16): constant plane.
+    let rep_val = state.repetition_count().min(2) as f32;
+    if rep_val > 0.0 {
+        for row in 0..BOARD_DIM {
+            for col in 0..BOARD_DIM {
+                tensor[idx(16, col, row)] = rep_val;
+            }
+        }
+    }
+
+    // In check (channel 18): constant plane.
+    if movegen::is_in_check(board, board.side_to_move) {
+        for row in 0..BOARD_DIM {
+            for col in 0..BOARD_DIM {
+                tensor[idx(18, col, row)] = 1.0;
+            }
+        }
     }
 
     tensor
@@ -340,21 +366,22 @@ pub fn index_to_move(index: usize) -> (HexCoord, HexCoord, Option<PieceKind>) {
 pub struct TrainingRecord {
     pub board_tensor: [f32; TENSOR_SIZE],
     pub policy_target: Vec<f32>,
-    pub value_target: f32,
+    /// WDL target: [win, draw, loss] probabilities.
+    pub wdl_target: [f32; 3],
 }
 
 impl TrainingRecord {
     /// Size of one record in bytes.
     ///
-    /// Layout: `[f32 x TENSOR_SIZE] [f32 x num_move_indices()] [f32 x 1]`
+    /// Layout: `[f32 x TENSOR_SIZE] [f32 x num_move_indices()] [f32 x 3]`
     pub fn record_size() -> usize {
-        (TENSOR_SIZE + num_move_indices() + 1) * std::mem::size_of::<f32>()
+        (TENSOR_SIZE + num_move_indices() + 3) * std::mem::size_of::<f32>()
     }
 
     /// Serialize to flat binary (f32 little-endian).
     pub fn to_bytes(&self) -> Vec<u8> {
         let n_move = num_move_indices();
-        let total_floats = TENSOR_SIZE + n_move + 1;
+        let total_floats = TENSOR_SIZE + n_move + 3;
         let mut buf = Vec::with_capacity(total_floats * 4);
 
         for &v in &self.board_tensor {
@@ -368,7 +395,9 @@ impl TrainingRecord {
         for &v in &self.policy_target {
             buf.extend_from_slice(&v.to_le_bytes());
         }
-        buf.extend_from_slice(&self.value_target.to_le_bytes());
+        for &v in &self.wdl_target {
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
 
         buf
     }
@@ -406,12 +435,16 @@ impl TrainingRecord {
             *slot = read_f32(&mut offset);
         }
 
-        let value_target = read_f32(&mut offset);
+        let wdl_target = [
+            read_f32(&mut offset),
+            read_f32(&mut offset),
+            read_f32(&mut offset),
+        ];
 
         TrainingRecord {
             board_tensor,
             policy_target,
-            value_target,
+            wdl_target,
         }
     }
 }
@@ -424,21 +457,20 @@ impl TrainingRecord {
 mod tests {
     use super::*;
     use crate::board::{Board, Color, HexCoord, Piece, PieceKind};
+    use crate::game::GameState;
     use crate::movegen::Move;
 
     #[test]
     fn test_tensor_shape() {
-        assert_eq!(TENSOR_SIZE, 16 * 11 * 11);
-        assert_eq!(TENSOR_SIZE, 1936);
+        assert_eq!(TENSOR_SIZE, 19 * 11 * 11);
+        assert_eq!(TENSOR_SIZE, 2299);
     }
 
     #[test]
     fn test_encode_board_starting_position_piece_planes() {
-        let board = Board::starting_position();
-        let tensor = encode_board(&board);
+        let state = GameState::new();
+        let tensor = encode_board(&state);
 
-        // The tensor should have exactly the right number of pieces set.
-        // Count nonzero entries in piece planes (channels 0-11).
         let mut piece_count = 0;
         for ch in 0..12 {
             for row in 0..BOARD_DIM {
@@ -456,8 +488,8 @@ mod tests {
 
     #[test]
     fn test_encode_board_side_to_move_plane() {
-        let board = Board::starting_position();
-        let tensor = encode_board(&board);
+        let state = GameState::new();
+        let tensor = encode_board(&state);
 
         // Channel 12 should be all 1.0 (white to move).
         let ch = 12;
@@ -469,9 +501,10 @@ mod tests {
         }
 
         // Flip side to move.
-        let mut board2 = board;
+        let mut board2 = Board::starting_position();
         board2.side_to_move = Color::Black;
-        let tensor2 = encode_board(&board2);
+        let state2 = GameState::from_board(board2);
+        let tensor2 = encode_board(&state2);
         for row in 0..BOARD_DIM {
             for col in 0..BOARD_DIM {
                 let val = tensor2[ch * BOARD_DIM * BOARD_DIM + row * BOARD_DIM + col];
@@ -485,7 +518,8 @@ mod tests {
         let mut board = Board::starting_position();
         let ep = HexCoord::new(0, 0);
         board.en_passant = Some(ep);
-        let tensor = encode_board(&board);
+        let state = GameState::from_board(board);
+        let tensor = encode_board(&state);
 
         let ch = 15;
         let col = (ep.q + 5) as usize;
@@ -496,7 +530,6 @@ mod tests {
             "en passant cell should be 1.0"
         );
 
-        // All other cells in this channel should be 0.
         let mut count = 0;
         for r in 0..BOARD_DIM {
             for c in 0..BOARD_DIM {
@@ -513,7 +546,8 @@ mod tests {
         let mut board = Board::starting_position();
         board.fullmove_number = 50;
         board.halfmove_clock = 10;
-        let tensor = encode_board(&board);
+        let state = GameState::from_board(board);
+        let tensor = encode_board(&state);
 
         // Channel 13: fullmove / 100 = 0.5
         let val = tensor[13 * BOARD_DIM * BOARD_DIM]; // first cell
@@ -525,11 +559,140 @@ mod tests {
     }
 
     #[test]
+    fn test_validity_mask_plane() {
+        let state = GameState::new();
+        let tensor = encode_board(&state);
+
+        let ch = 17;
+        let mut valid_count = 0;
+        for row in 0..BOARD_DIM {
+            for col in 0..BOARD_DIM {
+                let val = tensor[ch * BOARD_DIM * BOARD_DIM + row * BOARD_DIM + col];
+                if val > 0.5 {
+                    valid_count += 1;
+                }
+            }
+        }
+        assert_eq!(valid_count, 91, "validity mask should have exactly 91 ones");
+    }
+
+    #[test]
+    fn test_repetition_count_plane() {
+        let state = GameState::new();
+        let tensor = encode_board(&state);
+
+        // Starting position: no repetitions, channel 16 should be all 0.
+        let ch = 16;
+        for row in 0..BOARD_DIM {
+            for col in 0..BOARD_DIM {
+                assert_eq!(
+                    tensor[ch * BOARD_DIM * BOARD_DIM + row * BOARD_DIM + col],
+                    0.0,
+                    "repetition plane should be 0.0 for new game"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_repetition_count_plane_after_repeat() {
+        // Set up a position where we can shuttle rooks to create a repetition.
+        let mut board = Board::empty();
+        board.set(
+            HexCoord::new(0, -4),
+            Some(Piece::new(PieceKind::King, Color::White)),
+        );
+        board.set(
+            HexCoord::new(0, 4),
+            Some(Piece::new(PieceKind::King, Color::Black)),
+        );
+        board.set(
+            HexCoord::new(2, -5),
+            Some(Piece::new(PieceKind::Rook, Color::White)),
+        );
+        board.set(
+            HexCoord::new(-2, 5),
+            Some(Piece::new(PieceKind::Rook, Color::Black)),
+        );
+        board.white_king = HexCoord::new(0, -4);
+        board.black_king = HexCoord::new(0, 4);
+
+        let mut state = GameState::from_board(board);
+
+        // Shuttle rooks to repeat the starting position.
+        state.apply_move(Move::new(HexCoord::new(2, -5), HexCoord::new(2, -3), None));
+        state.apply_move(Move::new(HexCoord::new(-2, 5), HexCoord::new(-2, 3), None));
+        state.apply_move(Move::new(HexCoord::new(2, -3), HexCoord::new(2, -5), None));
+        state.apply_move(Move::new(HexCoord::new(-2, 3), HexCoord::new(-2, 5), None));
+        // Now at repetition count 1.
+        assert_eq!(state.repetition_count(), 1);
+
+        let tensor = encode_board(&state);
+        let ch = 16;
+        // Check a valid cell has rep count 1.0
+        let val = tensor[ch * BOARD_DIM * BOARD_DIM + 5 * BOARD_DIM + 5]; // center cell
+        assert_eq!(val, 1.0, "repetition plane should be 1.0 after one repeat");
+    }
+
+    #[test]
+    fn test_in_check_plane_starting_position() {
+        let state = GameState::new();
+        let tensor = encode_board(&state);
+
+        // Starting position: not in check, channel 18 should be all 0.
+        let ch = 18;
+        for row in 0..BOARD_DIM {
+            for col in 0..BOARD_DIM {
+                assert_eq!(
+                    tensor[ch * BOARD_DIM * BOARD_DIM + row * BOARD_DIM + col],
+                    0.0,
+                    "in-check plane should be 0.0 for starting position"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_in_check_plane_when_checked() {
+        // Set up a position where white king is in check.
+        // White king at (0, -4), black rook on same file at (0, 0).
+        let mut board = Board::empty();
+        board.set(
+            HexCoord::new(0, -4),
+            Some(Piece::new(PieceKind::King, Color::White)),
+        );
+        board.set(
+            HexCoord::new(0, 4),
+            Some(Piece::new(PieceKind::King, Color::Black)),
+        );
+        board.set(
+            HexCoord::new(0, 0),
+            Some(Piece::new(PieceKind::Rook, Color::Black)),
+        );
+        board.white_king = HexCoord::new(0, -4);
+        board.black_king = HexCoord::new(0, 4);
+        board.side_to_move = Color::White;
+
+        let state = GameState::from_board(board);
+        let tensor = encode_board(&state);
+
+        // Channel 18 should be a constant 1.0 plane (white is in check).
+        let ch = 18;
+        for row in 0..BOARD_DIM {
+            for col in 0..BOARD_DIM {
+                assert_eq!(
+                    tensor[ch * BOARD_DIM * BOARD_DIM + row * BOARD_DIM + col],
+                    1.0,
+                    "in-check plane should be 1.0 when in check"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn test_num_move_indices_reasonable() {
         let n = num_move_indices();
         eprintln!("NUM_MOVE_INDICES = {}", n);
-        // The old Go codebase used 4038. Our scheme should produce a number
-        // in a similar ballpark: 3000-5000.
         assert!(
             n >= 3000 && n <= 5000,
             "NUM_MOVE_INDICES = {} is outside the expected range [3000, 5000]",
@@ -564,10 +727,6 @@ mod tests {
 
     #[test]
     fn test_promotion_moves_get_distinct_indices() {
-        // Find a pawn move to a promotion cell for white.
-        // White promotes at the top edge. E.g., (0, 5) is a promotion cell for white.
-        // A move from (0, 4) to (0, 5) with different promotions should get
-        // distinct indices.
         let from = HexCoord::new(0, 4);
         let to = HexCoord::new(0, 5);
         assert!(is_promotion_cell(to), "target should be a promotion cell");
@@ -594,7 +753,6 @@ mod tests {
     #[test]
     fn test_all_indices_are_unique() {
         let n = num_move_indices();
-        // Verify that index_to_move -> move_to_index round-trips for every index.
         for i in 0..n {
             let (from, to, promo) = index_to_move(i);
             let mv = Move::new(from, to, None).with_promotion_opt(promo);
@@ -605,12 +763,11 @@ mod tests {
 
     #[test]
     fn test_training_record_serialization_roundtrip() {
-        let board = Board::starting_position();
-        let tensor = encode_board(&board);
+        let state = GameState::new();
+        let tensor = encode_board(&state);
         let n = num_move_indices();
 
         let mut policy = vec![0.0f32; n];
-        // Set a few policy values.
         policy[0] = 0.5;
         policy[n - 1] = 0.3;
         if n > 100 {
@@ -620,7 +777,7 @@ mod tests {
         let record = TrainingRecord {
             board_tensor: tensor,
             policy_target: policy.clone(),
-            value_target: -0.75,
+            wdl_target: [0.8, 0.15, 0.05],
         };
 
         let bytes = record.to_bytes();
@@ -629,13 +786,15 @@ mod tests {
         let restored = TrainingRecord::from_bytes(&bytes);
         assert_eq!(restored.board_tensor, tensor);
         assert_eq!(restored.policy_target, policy);
-        assert!((restored.value_target - (-0.75)).abs() < 1e-7);
+        assert!((restored.wdl_target[0] - 0.8).abs() < 1e-7);
+        assert!((restored.wdl_target[1] - 0.15).abs() < 1e-7);
+        assert!((restored.wdl_target[2] - 0.05).abs() < 1e-7);
     }
 
     #[test]
     fn test_training_record_size() {
         let n = num_move_indices();
-        let expected = (TENSOR_SIZE + n + 1) * 4;
+        let expected = (TENSOR_SIZE + n + 3) * 4;
         assert_eq!(TrainingRecord::record_size(), expected);
     }
 
@@ -646,8 +805,11 @@ mod tests {
         let mut board = Board::empty();
         let coord = HexCoord::new(0, 0);
         board.set(coord, Some(Piece::new(PieceKind::Rook, Color::White)));
+        board.white_king = HexCoord::new(-5, 0); // dummy king off to the side
+        board.black_king = HexCoord::new(5, 0);
 
-        let tensor = encode_board(&board);
+        let state = GameState::from_board(board);
+        let tensor = encode_board(&state);
         let ch = 3; // White Rook
         let col = 5;
         let row = 5;
@@ -656,7 +818,6 @@ mod tests {
             1.0
         );
 
-        // No other cell in this channel should be set.
         let mut count = 0;
         for r in 0..BOARD_DIM {
             for c in 0..BOARD_DIM {
