@@ -303,7 +303,9 @@ impl GameState {
                 Color::White => HexCoord::new(mv.to.q, mv.to.r - 1),
                 Color::Black => HexCoord::new(mv.to.q, mv.to.r + 1),
             };
-            self.board.set(captured_pawn_coord, mv.captured);
+            // EP always captures an opponent pawn
+            let captured_pawn = Some(Piece::new(PieceKind::Pawn, side.opponent()));
+            self.board.set(captured_pawn_coord, captured_pawn);
         } else {
             // Normal capture or quiet move: put captured piece (or None) back on `to`
             self.board.set(mv.to, mv.captured);

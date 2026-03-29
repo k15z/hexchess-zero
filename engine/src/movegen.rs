@@ -368,7 +368,15 @@ fn gen_pawn(board: &Board, from: HexCoord, color: Color, moves: &mut MoveList) {
                 }
             }
         } else if board.en_passant == Some(to) {
-            moves.push(Move::en_passant(from, to));
+            // EP always captures an opponent pawn — store it for undo.
+            let captured_pawn = Some(Piece { kind: PieceKind::Pawn, color: color.opponent() });
+            moves.push(Move {
+                from,
+                to,
+                promotion: None,
+                captured: captured_pawn,
+                is_en_passant: true,
+            });
         }
     }
 }
