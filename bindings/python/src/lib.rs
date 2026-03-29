@@ -169,7 +169,7 @@ impl PyMctsSearch {
     /// uses it as the evaluator for all subsequent `run()` calls.
     /// Otherwise, uses a heuristic evaluator (uniform policy, material value).
     #[new]
-    #[pyo3(signature = (simulations=800, c_puct=1.5, model_path=None, batch_size=32, tt_capacity=100_000, intra_threads=0))]
+    #[pyo3(signature = (simulations=800, c_puct=1.5, model_path=None, batch_size=32, tt_capacity=500_000, intra_threads=0))]
     fn new(
         simulations: u32,
         c_puct: f32,

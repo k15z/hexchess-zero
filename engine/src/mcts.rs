@@ -184,8 +184,8 @@ pub struct MctsSearch {
     /// Avoids re-running NN inference for positions seen before.
     tt: HashMap<u64, (Vec<f32>, f32)>,
     /// Maximum number of entries in the transposition table. When exceeded,
-    /// the table is cleared to prevent unbounded memory growth. Default: 100k
-    /// entries (~1.6 GB with ~16KB policy vectors).
+    /// the table is cleared to prevent unbounded memory growth. Default: 500k
+    /// entries (~8.5 GB with ~17KB policy vectors).
     tt_capacity: usize,
     /// Cumulative TT statistics (hits, misses, clears).
     tt_hits: u64,
@@ -202,7 +202,7 @@ impl MctsSearch {
             batch_size: 32,
             dirichlet: None,
             tt: HashMap::new(),
-            tt_capacity: 100_000,
+            tt_capacity: 500_000,
             tt_hits: 0,
             tt_misses: 0,
             tt_clears: 0,
