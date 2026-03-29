@@ -199,7 +199,7 @@ def train(config: Config | None = None) -> tuple[Path, dict]:
             epoch_total_loss += total_loss.item()
             num_batches += 1
 
-            if num_batches % 20 == 0 or num_batches == total_batches:
+            if num_batches % 200 == 0 or num_batches == total_batches:
                 print(
                     f"  batch {num_batches}/{total_batches} "
                     f"loss={total_loss.item():.4f}",

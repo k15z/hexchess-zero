@@ -40,8 +40,8 @@ class Config:
     num_simulations: int = 500
 
     # --- Self-play ---
-    num_self_play_games: int = 400
-    temperature_threshold: int = 30  # after this many moves, temperature → near-zero
+    num_self_play_games: int = 1000
+    temperature_threshold: int = 60  # after this many moves, temperature → near-zero
     temperature_high: float = 1.0
     temperature_low: float = 0.01
     dirichlet_alpha: float = 0.3
@@ -56,8 +56,8 @@ class Config:
     replay_buffer_size: int = 500_000
 
     # --- Network architecture ---
-    num_residual_blocks: int = 4
-    num_filters: int = 64
+    num_residual_blocks: int = 6
+    num_filters: int = 128
     board_channels: int = 16
     board_height: int = 11
     board_width: int = 11

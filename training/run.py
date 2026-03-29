@@ -149,7 +149,7 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
     loop_parser = subparsers.add_parser("loop", parents=[common], help="Run the full training loop")
-    loop_parser.add_argument("--generations", type=int, default=10, help="Number of generations to run")
+    loop_parser.add_argument("--generations", type=int, default=100, help="Number of generations to run")
 
     subparsers.add_parser("self-play", parents=[common], help="Run self-play game generation")
     subparsers.add_parser("train", parents=[common], help="Train the network")
