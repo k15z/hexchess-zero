@@ -97,6 +97,9 @@ def run_arena(config: Config | None = None) -> dict:
     draws = 0
 
     t0 = time.time()
+    last_log_time = t0
+    log_interval = 10  # seconds between progress lines
+
     for i in range(cfg.arena_games):
         new_goes_first = (i % 2 == 0)
 
@@ -114,17 +117,19 @@ def run_arena(config: Config | None = None) -> dict:
         else:
             draws += 1
 
+        now = time.time()
+        elapsed = now - t0
         total_decided = new_wins + old_wins
         rate = new_wins / total_decided if total_decided > 0 else 0.5
-        elapsed = time.time() - t0
-        print(
-            f"  {i+1}/{cfg.arena_games} games "
-            f"(new={new_wins} old={old_wins} draw={draws} "
-            f"rate={rate:.0%}) {elapsed:.0f}s",
-            end="\r", flush=True,
-        )
-
-    print(flush=True)  # newline
+        is_last = (i + 1) == cfg.arena_games
+        if i == 0 or is_last or (now - last_log_time) >= log_interval:
+            last_log_time = now
+            print(
+                f"  {i+1}/{cfg.arena_games} games "
+                f"(new={new_wins} old={old_wins} draw={draws} "
+                f"rate={rate:.0%}) {elapsed:.0f}s",
+                flush=True,
+            )
     total_decided = new_wins + old_wins
     win_rate = new_wins / total_decided if total_decided > 0 else 0.5
     promoted = win_rate >= cfg.win_threshold

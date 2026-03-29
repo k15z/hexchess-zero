@@ -133,30 +133,39 @@ def run_self_play(config: Config | None = None) -> Path:
     all_samples: list[dict] = []
     outcomes: dict[str, int] = {}
     t0 = time.time()
+    last_log_time = t0
+    log_interval = 10  # seconds between progress lines
 
     def _ingest(result: tuple[str, list[dict]], game_num: int) -> None:
+        nonlocal last_log_time
         status, game_samples = result
         all_samples.extend(game_samples)
         outcomes[status] = outcomes.get(status, 0) + 1
-        elapsed = time.time() - t0
-        outcome_str = " ".join(f"{k}={v}" for k, v in sorted(outcomes.items()))
-        print(
-            f"  {game_num}/{cfg.num_self_play_games} games, "
-            f"{len(all_samples)} pos, {elapsed:.0f}s | {outcome_str}",
-            end="\r", flush=True,
-        )
+
+        now = time.time()
+        elapsed = now - t0
+        # Log on first game, last game, or every log_interval seconds
+        is_last = game_num == cfg.num_self_play_games
+        if game_num == 1 or is_last or (now - last_log_time) >= log_interval:
+            last_log_time = now
+            outcome_str = " ".join(f"{k}={v}" for k, v in sorted(outcomes.items()))
+            avg_moves = len(all_samples) / game_num
+            print(
+                f"  {game_num}/{cfg.num_self_play_games} games | "
+                f"{len(all_samples)} pos ({avg_moves:.0f} avg moves/game) | "
+                f"{elapsed:.0f}s ({elapsed/game_num:.1f}s/game) | {outcome_str}",
+                flush=True,
+            )
 
     if workers > 1:
         args = [(cfg, i) for i in range(cfg.num_self_play_games)]
         with Pool(processes=workers) as pool:
             for i, result in enumerate(pool.imap_unordered(_play_game_worker, args)):
                 _ingest(result, i + 1)
-            print(flush=True)
     else:
         for i in range(cfg.num_self_play_games):
             result = _play_game_worker((cfg, i))
             _ingest(result, i + 1)
-        print(flush=True)
 
     if not all_samples:
         print("Warning: no samples generated.")

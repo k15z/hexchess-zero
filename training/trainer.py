@@ -167,7 +167,7 @@ def train(config: Config | None = None) -> Path:
                 print(
                     f"  batch {num_batches}/{total_batches} "
                     f"loss={total_loss.item():.4f}",
-                    end="\r", flush=True,
+                    flush=True,
                 )
 
         elapsed = time.time() - t0

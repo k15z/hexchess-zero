@@ -3,7 +3,7 @@ use serde::Serialize;
 
 use hexchess_engine::board::{self, PieceKind};
 use hexchess_engine::game::GameState;
-use hexchess_engine::mcts::{MctsSearch, RandomEvaluator};
+use hexchess_engine::mcts::{MctsSearch, HeuristicEvaluator};
 use hexchess_engine::movegen;
 
 // ---------------------------------------------------------------------------
@@ -173,7 +173,7 @@ impl AiPlayer {
     /// Returns {from_q, from_r, to_q, to_r, promotion}.
     #[wasm_bindgen(js_name = "bestMove")]
     pub fn best_move(&self, game: &Game) -> JsValue {
-        let mut search = MctsSearch::new(Box::new(RandomEvaluator));
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
         let result = search.search(&game.state, self.simulations);
         let mv = result.best_move;
         to_js(&JsMove {

@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 
+use crate::eval;
 use crate::game::GameState;
 use crate::movegen::Move;
 use crate::serialization;
@@ -25,13 +26,13 @@ pub trait Evaluator: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// RandomEvaluator
+// HeuristicEvaluator
 // ---------------------------------------------------------------------------
 
-/// Uniform random policy over legal moves, zero value estimate.
-pub struct RandomEvaluator;
+/// Uniform policy over legal moves with a material/positional heuristic value.
+pub struct HeuristicEvaluator;
 
-impl Evaluator for RandomEvaluator {
+impl Evaluator for HeuristicEvaluator {
     fn evaluate(&self, state: &GameState) -> (Vec<f32>, f32) {
         let moves = state.legal_moves();
         let num_indices = serialization::num_move_indices();
@@ -46,7 +47,12 @@ impl Evaluator for RandomEvaluator {
             }
         }
 
-        (policy, 0.0)
+        // Use the heuristic eval (centipawns) and map to [-1, 1] with a sigmoid.
+        // 400cp advantage ≈ 0.76, 900cp (queen) ≈ 0.95.
+        let cp = eval::evaluate(&state.board) as f32;
+        let value = (cp / 400.0).tanh();
+
+        (policy, value)
     }
 }
 
@@ -550,12 +556,12 @@ mod tests {
 
     /// Helper: build an evaluator that returns uniform policy and zero value.
     fn random_evaluator() -> Box<dyn Evaluator> {
-        Box::new(RandomEvaluator)
+        Box::new(HeuristicEvaluator)
     }
 
     #[test]
     fn random_evaluator_returns_uniform_policy() {
-        let evaluator = RandomEvaluator;
+        let evaluator = HeuristicEvaluator;
         let state = GameState::new();
         let (policy, value) = evaluator.evaluate(&state);
 

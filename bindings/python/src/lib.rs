@@ -8,7 +8,7 @@ use numpy::{IntoPyArray, PyArray3, PyArray4};
 use hexchess_engine::board::{self, HexCoord, PieceKind};
 use hexchess_engine::game::GameState;
 use hexchess_engine::inference::OnnxEvaluator;
-use hexchess_engine::mcts::{DirichletConfig, Evaluator, MctsSearch as EngineSearch, RandomEvaluator};
+use hexchess_engine::mcts::{DirichletConfig, Evaluator, MctsSearch as EngineSearch, HeuristicEvaluator};
 
 use std::sync::Arc;
 
@@ -186,7 +186,7 @@ impl PyMctsSearch {
                     .map_err(|e| PyValueError::new_err(format!("failed to load ONNX model '{path}': {e}")))?;
                 Arc::new(eval)
             }
-            None => Arc::new(RandomEvaluator),
+            None => Arc::new(HeuristicEvaluator),
         };
         Ok(PyMctsSearch { simulations, c_puct, evaluator })
     }
