@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hexchess-trainer
+  namespace: hexchess
+  labels:
+    app: hexchess
+    role: trainer
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # only one trainer at a time
+  selector:
+    matchLabels:
+      app: hexchess
+      role: trainer
+  template:
+    metadata:
+      labels:
+        app: hexchess
+        role: trainer
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - kevz-infra-pool-workers-worker2
+      containers:
+        # Trainer + arena (merged loop)
+        - name: trainer
+          image: hexchess-training:latest
+          imagePullPolicy: Never
+          args: ["trainer", "--arena-workers", "3"]
+          volumeMounts:
+            - name: data
+              mountPath: /app/.data
+          resources:
+            requests:
+              memory: 2Gi
+              cpu: "3"
+        # Self-play worker (fewer processes to share CPU with trainer)
+        - name: worker
+          image: hexchess-training:latest
+          imagePullPolicy: Never
+          args: ["worker", "--workers", "2"]
+          volumeMounts:
+            - name: data
+              mountPath: /app/.data
+          resources:
+            requests:
+              memory: 2Gi
+              cpu: "2"
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: hexchess-data

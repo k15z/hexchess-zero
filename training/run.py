@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .config import Config, latest_generation
+from .config import AsyncConfig, Config, latest_generation
 
 
 def step_self_play(config: Config) -> tuple[Path, dict]:
@@ -133,11 +133,86 @@ def run_full_loop(config: Config, num_generations: int = 10) -> None:
         print(f"Wrote {metadata_path}", flush=True)
 
 
+def cmd_worker(args) -> None:
+    """Run the async self-play worker loop."""
+    from .worker import run_worker
+
+    cfg = AsyncConfig()
+    if args.simulations is not None:
+        cfg.num_simulations = args.simulations
+    if args.workers is not None:
+        cfg.num_self_play_workers = args.workers
+    if args.batch_size is not None:
+        cfg.worker_batch_size = args.batch_size
+
+    run_worker(cfg)
+
+
+def cmd_trainer(args) -> None:
+    """Run the async continuous trainer loop."""
+    from .trainer_loop import run_trainer
+
+    cfg = AsyncConfig()
+    if args.simulations is not None:
+        cfg.num_simulations = args.simulations
+    if args.steps is not None:
+        cfg.steps_per_cycle = args.steps
+    if args.batch_size is not None:
+        cfg.batch_size = args.batch_size
+    if args.arena_games is not None:
+        cfg.arena_games = args.arena_games
+    if args.arena_workers is not None:
+        cfg.num_arena_workers = args.arena_workers
+
+    run_trainer(cfg)
+
+
+def cmd_status(args) -> None:
+    """Show the status of the async training cluster."""
+    cfg = AsyncConfig()
+
+    # Model version
+    if cfg.best_meta_path.exists():
+        meta = json.loads(cfg.best_meta_path.read_text())
+        print(f"Model: v{meta.get('version', '?')} "
+              f"(promoted {meta.get('timestamp', '?')})")
+        if "win_rate" in meta:
+            print(f"  Win rate: {meta['win_rate']:.0%}")
+    else:
+        print("Model: none (no best model yet)")
+
+    # Training data
+    npz_files = list(cfg.training_data_dir.glob("*.npz")) if cfg.training_data_dir.exists() else []
+    if npz_files:
+        import numpy as np
+        total_pos = 0
+        for f in npz_files:
+            try:
+                with np.load(f) as data:
+                    total_pos += len(data["outcomes"])
+            except (OSError, ValueError, KeyError):
+                continue
+        print(f"Data: {len(npz_files)} files, {total_pos:,} positions")
+    else:
+        print("Data: none")
+
+    # Logs
+    if cfg.logs_dir.exists():
+        for log_file in sorted(cfg.logs_dir.glob("*.jsonl")):
+            # Read last line
+            lines = log_file.read_text().strip().split("\n")
+            if lines:
+                last = json.loads(lines[-1])
+                ts = last.get("timestamp", "?")
+                event = last.get("event", "?")
+                print(f"Log {log_file.name}: last event={event} at {ts}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="AlphaZero training pipeline for hexagonal chess"
     )
-    # Common arguments shared by all subcommands
+    # Common arguments shared by generational subcommands
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--games", type=int, default=None, help="Self-play games")
     common.add_argument("--simulations", type=int, default=None, help="MCTS simulations")
@@ -148,6 +223,7 @@ def main() -> None:
 
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
+    # --- Generational (synchronous) commands ---
     loop_parser = subparsers.add_parser("loop", parents=[common], help="Run the full training loop")
     loop_parser.add_argument("--generations", type=int, default=100, help="Number of generations to run")
 
@@ -156,9 +232,39 @@ def main() -> None:
     subparsers.add_parser("export", parents=[common], help="Export model to ONNX")
     subparsers.add_parser("arena", parents=[common], help="Run arena evaluation")
 
+    # --- Async distributed commands ---
+    worker_parser = subparsers.add_parser("worker", help="Run async self-play worker loop")
+    worker_parser.add_argument("--simulations", type=int, default=None, help="MCTS simulations per move")
+    worker_parser.add_argument("--workers", type=int, default=None, help="Number of parallel worker processes")
+    worker_parser.add_argument("--batch-size", type=int, default=None, help="Games per batch before flushing")
+
+    trainer_parser = subparsers.add_parser("trainer", help="Run async continuous trainer loop")
+    trainer_parser.add_argument("--simulations", type=int, default=None, help="MCTS simulations for arena")
+    trainer_parser.add_argument("--steps", type=int, default=None, help="Training steps per cycle")
+    trainer_parser.add_argument("--batch-size", type=int, default=None, help="Training batch size")
+    trainer_parser.add_argument("--arena-games", type=int, default=None, help="Arena games per evaluation")
+    trainer_parser.add_argument("--arena-workers", type=int, default=None, help="Arena parallel workers")
+
+    subparsers.add_parser("status", help="Show async training cluster status")
+
     args = parser.parse_args()
 
-    # Build config with overrides
+    if args.command is None:
+        parser.print_help()
+        return
+
+    # --- Async commands ---
+    if args.command == "worker":
+        cmd_worker(args)
+        return
+    elif args.command == "trainer":
+        cmd_trainer(args)
+        return
+    elif args.command == "status":
+        cmd_status(args)
+        return
+
+    # --- Generational commands ---
     cfg = Config()
     if args.games is not None:
         cfg.num_self_play_games = args.games
@@ -176,10 +282,6 @@ def main() -> None:
         cfg.generation = args.generation
     else:
         cfg.generation = latest_generation() + 1
-
-    if args.command is None:
-        parser.print_help()
-        return
 
     if args.command == "loop":
         run_full_loop(cfg, num_generations=args.generations)

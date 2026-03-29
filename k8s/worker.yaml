@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hexchess-worker
+  namespace: hexchess
+  labels:
+    app: hexchess
+    role: worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hexchess
+      role: worker
+  template:
+    metadata:
+      labels:
+        app: hexchess
+        role: worker
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - kevz-infra-pool-workers-worker1
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: hexchess
+                  role: trainer
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: worker
+          image: hexchess-training:latest
+          imagePullPolicy: Never
+          args: ["worker", "--workers", "4"]
+          volumeMounts:
+            - name: data
+              mountPath: /app/.data
+          resources:
+            requests:
+              memory: 2Gi
+              cpu: "5"
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: hexchess-data
