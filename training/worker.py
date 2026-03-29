@@ -26,13 +26,9 @@ try:
 except ImportError:
     hexchess = None
 
-_shutdown_requested = False
-
-
 def _handle_signal(signum, frame):
-    global _shutdown_requested
-    _shutdown_requested = True
-    print(f"Shutdown requested (signal {signum}), finishing current batch...", flush=True)
+    print(f"Shutdown requested (signal {signum}), exiting immediately.", flush=True)
+    os._exit(0)
 
 
 def _read_model_version(cfg: AsyncConfig) -> tuple[int, str | None]:
@@ -169,7 +165,7 @@ def run_worker(cfg: AsyncConfig) -> None:
           f"{cfg.num_simulations} sims/move", flush=True)
     print(f"Model version: v{current_version} ({model_path or 'random'})", flush=True)
 
-    while not _shutdown_requested:
+    while True:
         batch_t0 = time.time()
         pending_samples: list[dict] = []
         outcome_counts: dict[str, int] = {}
@@ -180,17 +176,12 @@ def run_worker(cfg: AsyncConfig) -> None:
         if workers > 1:
             with Pool(processes=workers) as pool:
                 for result in pool.imap_unordered(_play_one_game, args):
-                    if _shutdown_requested:
-                        pool.terminate()
-                        break
                     status, game_samples = result
                     pending_samples.extend(game_samples)
                     outcome_counts[status] = outcome_counts.get(status, 0) + 1
                     batch_games += 1
         else:
             for a in args:
-                if _shutdown_requested:
-                    break
                 status, game_samples = _play_one_game(a)
                 pending_samples.extend(game_samples)
                 outcome_counts[status] = outcome_counts.get(status, 0) + 1
@@ -227,5 +218,3 @@ def run_worker(cfg: AsyncConfig) -> None:
             current_version = new_version
             model_path = new_model_path
 
-    print(f"Worker shutdown. Total: {total_games} games, {total_positions} positions.", flush=True)
-    sys.exit(0)
