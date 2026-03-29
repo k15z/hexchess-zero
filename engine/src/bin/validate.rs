@@ -93,7 +93,11 @@ fn run_apply_undo_tests() {
     for i in 0..200 {
         let moves = state.legal_moves();
         if moves.is_empty() {
-            println!("  Game ended after {} moves ({})", i, state.status().as_str());
+            println!(
+                "  Game ended after {} moves ({})",
+                i,
+                state.status().as_str()
+            );
             break;
         }
         let idx = rng.random_range(0..moves.len());
@@ -108,12 +112,19 @@ fn run_apply_undo_tests() {
         state.undo_move();
     }
 
-    assert_eq!(state.board.zobrist_hash, initial_hash,
-        "Zobrist hash should be restored after undo");
-    assert_eq!(state.board.cells, initial_cells,
-        "Board cells should be restored after undo");
-    assert_eq!(state.board.side_to_move, Color::White,
-        "Side to move should be White after full undo");
+    assert_eq!(
+        state.board.zobrist_hash, initial_hash,
+        "Zobrist hash should be restored after undo"
+    );
+    assert_eq!(
+        state.board.cells, initial_cells,
+        "Board cells should be restored after undo"
+    );
+    assert_eq!(
+        state.board.side_to_move,
+        Color::White,
+        "Side to move should be White after full undo"
+    );
 
     println!("  Hash, cells, and side_to_move all restored correctly");
 
@@ -126,7 +137,9 @@ fn run_apply_undo_tests() {
         let mut count = 0;
         for _ in 0..100 {
             let moves = state.legal_moves();
-            if moves.is_empty() { break; }
+            if moves.is_empty() {
+                break;
+            }
             let idx = rng.random_range(0..moves.len());
             state.apply_move(moves[idx]);
             count += 1;
@@ -134,10 +147,16 @@ fn run_apply_undo_tests() {
         for _ in 0..count {
             state.undo_move();
         }
-        assert_eq!(state.board.zobrist_hash, hash_before,
-            "Trial {}: hash mismatch after undo", trial);
-        assert_eq!(state.board.cells, cells_before,
-            "Trial {}: cells mismatch after undo", trial);
+        assert_eq!(
+            state.board.zobrist_hash, hash_before,
+            "Trial {}: hash mismatch after undo",
+            trial
+        );
+        assert_eq!(
+            state.board.cells, cells_before,
+            "Trial {}: cells mismatch after undo",
+            trial
+        );
     }
     println!("  5 additional random trials passed");
 
@@ -159,7 +178,9 @@ fn run_legality_check() {
     for game_num in 0..100 {
         let mut state = GameState::new();
         for _ in 0..150 {
-            if state.is_game_over() { break; }
+            if state.is_game_over() {
+                break;
+            }
 
             let legal_moves = state.legal_moves();
             for mv in &legal_moves {
@@ -169,9 +190,11 @@ fn run_legality_check() {
                 let in_check = movegen::is_in_check(&state.board, stm_before);
                 state.undo_move();
 
-                assert!(!in_check,
+                assert!(
+                    !in_check,
                     "Game {}: legal move {:?} leaves own king in check!",
-                    game_num, mv);
+                    game_num, mv
+                );
                 moves_checked += 1;
             }
 
@@ -182,7 +205,10 @@ fn run_legality_check() {
         }
     }
 
-    println!("  Checked {} positions, {} moves — all legal", positions_checked, moves_checked);
+    println!(
+        "  Checked {} positions, {} moves — all legal",
+        positions_checked, moves_checked
+    );
     println!("\n  LEGALITY INVARIANT PASSED\n");
 }
 
@@ -200,9 +226,13 @@ fn run_en_passant_tests() {
     for _ in 0..500 {
         let mut state = GameState::new();
         for _ in 0..200 {
-            if state.is_game_over() { break; }
+            if state.is_game_over() {
+                break;
+            }
             let moves = state.legal_moves();
-            if moves.is_empty() { break; }
+            if moves.is_empty() {
+                break;
+            }
 
             // Count EP moves
             let ep_moves: Vec<_> = moves.iter().filter(|m| m.is_en_passant).collect();
@@ -219,8 +249,11 @@ fn run_en_passant_tests() {
                         Color::White => HexCoord::new(ep_mv.to.q, ep_mv.to.r - 1),
                         Color::Black => HexCoord::new(ep_mv.to.q, ep_mv.to.r + 1),
                     };
-                    assert!(state.board.get(captured_sq).is_none(),
-                        "EP capture should remove pawn at {:?}", captured_sq);
+                    assert!(
+                        state.board.get(captured_sq).is_none(),
+                        "EP capture should remove pawn at {:?}",
+                        captured_sq
+                    );
 
                     state.undo_move();
                 }
@@ -231,8 +264,14 @@ fn run_en_passant_tests() {
         }
     }
 
-    println!("  Saw {} en passant captures across 500 games", ep_captures_seen);
-    assert!(ep_captures_seen > 0, "Should see at least some EP captures in 500 games");
+    println!(
+        "  Saw {} en passant captures across 500 games",
+        ep_captures_seen
+    );
+    assert!(
+        ep_captures_seen > 0,
+        "Should see at least some EP captures in 500 games"
+    );
     println!("\n  EN PASSANT PASSED\n");
 }
 
@@ -256,42 +295,64 @@ fn run_value_function_tests() {
     let mut state2 = GameState::new();
     // Find and remove black queen
     for idx in 0..91 {
-        if let Some(p) = state2.board.cells[idx] {
-            if p.kind == PieceKind::Queen && p.color == Color::Black {
-                let coord = hexchess_engine::board::index_to_coord(idx);
-                state2.board.set(coord, None);
-                break;
-            }
+        if let Some(p) = state2.board.cells[idx]
+            && p.kind == PieceKind::Queen
+            && p.color == Color::Black
+        {
+            let coord = hexchess_engine::board::index_to_coord(idx);
+            state2.board.set(coord, None);
+            break;
         }
     }
     let score2 = eval::evaluate(&state2);
-    println!("  White missing nothing, Black missing queen: {} cp (should be +900)", score2);
+    println!(
+        "  White missing nothing, Black missing queen: {} cp (should be +900)",
+        score2
+    );
     assert_eq!(score2, 900);
 
     // Test 3: HeuristicEvaluator value for same position
     let eval = HeuristicEvaluator;
     let (_, value) = eval.evaluate(&state2);
-    println!("  Heuristic value for +900cp position: {:.3} (should be positive)", value);
-    assert!(value > 0.5, "value should be strongly positive for +900cp, got {}", value);
+    println!(
+        "  Heuristic value for +900cp position: {:.3} (should be positive)",
+        value
+    );
+    assert!(
+        value > 0.5,
+        "value should be strongly positive for +900cp, got {}",
+        value
+    );
 
     // Test 4: Symmetric — give Black an extra queen instead
     let mut state3 = GameState::new();
     for idx in 0..91 {
-        if let Some(p) = state3.board.cells[idx] {
-            if p.kind == PieceKind::Queen && p.color == Color::White {
-                let coord = hexchess_engine::board::index_to_coord(idx);
-                state3.board.set(coord, None);
-                break;
-            }
+        if let Some(p) = state3.board.cells[idx]
+            && p.kind == PieceKind::Queen
+            && p.color == Color::White
+        {
+            let coord = hexchess_engine::board::index_to_coord(idx);
+            state3.board.set(coord, None);
+            break;
         }
     }
     let score3 = eval::evaluate(&state3);
-    println!("  White missing queen, Black full: {} cp (should be -900)", score3);
+    println!(
+        "  White missing queen, Black full: {} cp (should be -900)",
+        score3
+    );
     assert_eq!(score3, -900);
 
     let (_, value3) = eval.evaluate(&state3);
-    println!("  Heuristic value for -900cp position: {:.3} (should be negative)", value3);
-    assert!(value3 < -0.5, "value should be strongly negative, got {}", value3);
+    println!(
+        "  Heuristic value for -900cp position: {:.3} (should be negative)",
+        value3
+    );
+    assert!(
+        value3 < -0.5,
+        "value should be strongly negative, got {}",
+        value3
+    );
 
     println!("\n  VALUE FUNCTION PASSED\n");
 }
@@ -308,29 +369,53 @@ fn run_mcts_tactical_tests() {
     // Test 1: Free queen capture with rook adjacent
     // Simple: White rook next to undefended black queen
     let mut board = Board::empty();
-    board.set(HexCoord::new(-5, 0), Some(Piece::new(PieceKind::King, Color::White)));
+    board.set(
+        HexCoord::new(-5, 0),
+        Some(Piece::new(PieceKind::King, Color::White)),
+    );
     board.white_king = HexCoord::new(-5, 0);
-    board.set(HexCoord::new(5, 0), Some(Piece::new(PieceKind::King, Color::Black)));
+    board.set(
+        HexCoord::new(5, 0),
+        Some(Piece::new(PieceKind::King, Color::Black)),
+    );
     board.black_king = HexCoord::new(5, 0);
     // White rook one step from black queen (cardinal direction)
-    board.set(HexCoord::new(0, 0), Some(Piece::new(PieceKind::Rook, Color::White)));
-    board.set(HexCoord::new(0, 1), Some(Piece::new(PieceKind::Queen, Color::Black)));
+    board.set(
+        HexCoord::new(0, 0),
+        Some(Piece::new(PieceKind::Rook, Color::White)),
+    );
+    board.set(
+        HexCoord::new(0, 1),
+        Some(Piece::new(PieceKind::Queen, Color::Black)),
+    );
 
     let state = GameState::from_board(board);
     let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
     let result = search.search(&state, 500);
 
-    let captures_queen = result.best_move.to == HexCoord::new(0, 1)
-        && result.best_move.from == HexCoord::new(0, 0);
-    println!("  Free queen capture: {} -> {} (should be (0,0)->(0,1)): {}",
-        result.best_move.from, result.best_move.to,
-        if captures_queen { "FOUND" } else { "MISSED" });
-    assert!(captures_queen, "MCTS should find adjacent free queen capture");
+    let captures_queen =
+        result.best_move.to == HexCoord::new(0, 1) && result.best_move.from == HexCoord::new(0, 0);
+    println!(
+        "  Free queen capture: {} -> {} (should be (0,0)->(0,1)): {}",
+        result.best_move.from,
+        result.best_move.to,
+        if captures_queen { "FOUND" } else { "MISSED" }
+    );
+    assert!(
+        captures_queen,
+        "MCTS should find adjacent free queen capture"
+    );
 
     // Test 2: Verify value is positive after capturing
     // (Just check the search value estimate is positive — White is up material)
-    println!("  Search value after capture position: {:.3} (should be positive)", result.value);
-    assert!(result.value > 0.0, "Value should be positive when we can capture a queen");
+    println!(
+        "  Search value after capture position: {:.3} (should be positive)",
+        result.value
+    );
+    assert!(
+        result.value > 0.0,
+        "Value should be positive when we can capture a queen"
+    );
 
     println!("\n  MCTS TACTICAL TESTS PASSED\n");
 }
@@ -352,14 +437,20 @@ fn run_heuristic_vs_random_moves() {
     let mut games_where_heuristic_leads = 0;
 
     // Heuristic (White) vs Random moves (Black) — no MCTS for Black
-    println!("  Playing {} games: MCTS+Heuristic(W) vs Random(B)...", num_games);
+    println!(
+        "  Playing {} games: MCTS+Heuristic(W) vs Random(B)...",
+        num_games
+    );
 
     for i in 0..num_games {
         let mut state = GameState::new();
         let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
 
-        for _ in 0..100 { // 100 full moves = 200 ply
-            if state.is_game_over() { break; }
+        for _ in 0..100 {
+            // 100 full moves = 200 ply
+            if state.is_game_over() {
+                break;
+            }
 
             match state.side_to_move() {
                 Color::White => {
@@ -368,7 +459,9 @@ fn run_heuristic_vs_random_moves() {
                 }
                 Color::Black => {
                     let moves = state.legal_moves();
-                    if moves.is_empty() { break; }
+                    if moves.is_empty() {
+                        break;
+                    }
                     let idx = rng.random_range(0..moves.len());
                     state.apply_move(moves[idx]);
                 }
@@ -380,7 +473,9 @@ fn run_heuristic_vs_random_moves() {
         let black_mat = eval::material(&state.board, Color::Black);
         let lead = (white_mat - black_mat) as i64;
         heuristic_material_lead += lead;
-        if lead > 0 { games_where_heuristic_leads += 1; }
+        if lead > 0 {
+            games_where_heuristic_leads += 1;
+        }
 
         let status_char = match state.status() {
             GameStatus::Checkmate(Color::White) => 'W',
@@ -389,36 +484,55 @@ fn run_heuristic_vs_random_moves() {
             _ => 'D',
         };
         print!("{}", status_char);
-        if (i + 1) % 10 == 0 { println!(); }
+        if (i + 1) % 10 == 0 {
+            println!();
+        }
     }
     println!();
 
     let avg_lead = heuristic_material_lead as f64 / num_games as f64;
     println!("\n  Avg material lead (heuristic): {:.0} cp", avg_lead);
-    println!("  Games where heuristic leads: {}/{}", games_where_heuristic_leads, num_games);
+    println!(
+        "  Games where heuristic leads: {}/{}",
+        games_where_heuristic_leads, num_games
+    );
 
-    assert!(avg_lead > 0.0,
-        "Heuristic MCTS should accumulate material vs random, avg lead: {:.0}", avg_lead);
-    assert!(games_where_heuristic_leads > num_games / 2,
-        "Heuristic should lead in most games: {}/{}", games_where_heuristic_leads, num_games);
+    assert!(
+        avg_lead > 0.0,
+        "Heuristic MCTS should accumulate material vs random, avg lead: {:.0}",
+        avg_lead
+    );
+    assert!(
+        games_where_heuristic_leads > num_games / 2,
+        "Heuristic should lead in most games: {}/{}",
+        games_where_heuristic_leads,
+        num_games
+    );
 
     // Now test with colors swapped
     let mut heuristic_material_lead_b = 0i64;
     let mut games_where_heuristic_leads_b = 0;
 
-    println!("\n  Playing {} games: Random(W) vs MCTS+Heuristic(B)...", num_games);
+    println!(
+        "\n  Playing {} games: Random(W) vs MCTS+Heuristic(B)...",
+        num_games
+    );
 
     for i in 0..num_games {
         let mut state = GameState::new();
         let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
 
         for _ in 0..100 {
-            if state.is_game_over() { break; }
+            if state.is_game_over() {
+                break;
+            }
 
             match state.side_to_move() {
                 Color::White => {
                     let moves = state.legal_moves();
-                    if moves.is_empty() { break; }
+                    if moves.is_empty() {
+                        break;
+                    }
                     let idx = rng.random_range(0..moves.len());
                     state.apply_move(moves[idx]);
                 }
@@ -433,7 +547,9 @@ fn run_heuristic_vs_random_moves() {
         let black_mat = eval::material(&state.board, Color::Black);
         let lead = (black_mat - white_mat) as i64; // heuristic is Black
         heuristic_material_lead_b += lead;
-        if lead > 0 { games_where_heuristic_leads_b += 1; }
+        if lead > 0 {
+            games_where_heuristic_leads_b += 1;
+        }
 
         let status_char = match state.status() {
             GameStatus::Checkmate(Color::Black) => 'W',
@@ -442,22 +558,38 @@ fn run_heuristic_vs_random_moves() {
             _ => 'D',
         };
         print!("{}", status_char);
-        if (i + 1) % 10 == 0 { println!(); }
+        if (i + 1) % 10 == 0 {
+            println!();
+        }
     }
     println!();
 
     let avg_lead_b = heuristic_material_lead_b as f64 / num_games as f64;
-    println!("\n  Avg material lead (heuristic as Black): {:.0} cp", avg_lead_b);
-    println!("  Games where heuristic leads: {}/{}", games_where_heuristic_leads_b, num_games);
+    println!(
+        "\n  Avg material lead (heuristic as Black): {:.0} cp",
+        avg_lead_b
+    );
+    println!(
+        "  Games where heuristic leads: {}/{}",
+        games_where_heuristic_leads_b, num_games
+    );
 
     let total_leads = games_where_heuristic_leads + games_where_heuristic_leads_b;
-    let total_avg = (heuristic_material_lead + heuristic_material_lead_b) as f64 / (num_games * 2) as f64;
+    let total_avg =
+        (heuristic_material_lead + heuristic_material_lead_b) as f64 / (num_games * 2) as f64;
     println!("\n  === OVERALL ===");
     println!("    Avg material lead: {:.0} cp", total_avg);
-    println!("    Material lead in {}/{} games", total_leads, num_games * 2);
+    println!(
+        "    Material lead in {}/{} games",
+        total_leads,
+        num_games * 2
+    );
 
-    assert!(total_avg > 100.0,
-        "Heuristic should have >100cp avg lead vs random, got {:.0}", total_avg);
+    assert!(
+        total_avg > 100.0,
+        "Heuristic should have >100cp avg lead vs random, got {:.0}",
+        total_avg
+    );
 
     println!("\n  HEURISTIC VS RANDOM PASSED\n");
 }
@@ -477,7 +609,9 @@ fn run_move_table_completeness() {
     for _ in 0..200 {
         let mut state = GameState::new();
         for _ in 0..200 {
-            if state.is_game_over() { break; }
+            if state.is_game_over() {
+                break;
+            }
             let moves = state.legal_moves();
             for mv in &moves {
                 if serialization::move_to_index(mv).is_none() {
@@ -491,16 +625,23 @@ fn run_move_table_completeness() {
         }
     }
 
-    println!("  Checked {} legal moves across 200 random games", total_moves_checked);
-    assert_eq!(unindexed, 0,
-        "Found {} unindexed legal moves — move table is incomplete!", unindexed);
+    println!(
+        "  Checked {} legal moves across 200 random games",
+        total_moves_checked
+    );
+    assert_eq!(
+        unindexed, 0,
+        "Found {} unindexed legal moves — move table is incomplete!",
+        unindexed
+    );
 
     // Also verify round-trip: index_to_move -> move_to_index for every index
     let n = serialization::num_move_indices();
     for i in 0..n {
         let (from, to, promo) = serialization::index_to_move(i);
         let mv = movegen::Move {
-            from, to,
+            from,
+            to,
             promotion: promo,
             captured: None,
             is_en_passant: false,
@@ -525,38 +666,74 @@ fn run_mcts_winning_positions() {
     // Test 1: Massive material advantage (queen + rook vs lone king)
     {
         let mut board = Board::empty();
-        board.set(HexCoord::new(0, 0), Some(Piece::new(PieceKind::King, Color::White)));
+        board.set(
+            HexCoord::new(0, 0),
+            Some(Piece::new(PieceKind::King, Color::White)),
+        );
         board.white_king = HexCoord::new(0, 0);
-        board.set(HexCoord::new(0, 2), Some(Piece::new(PieceKind::Queen, Color::White)));
-        board.set(HexCoord::new(2, -2), Some(Piece::new(PieceKind::Rook, Color::White)));
-        board.set(HexCoord::new(5, -5), Some(Piece::new(PieceKind::King, Color::Black)));
+        board.set(
+            HexCoord::new(0, 2),
+            Some(Piece::new(PieceKind::Queen, Color::White)),
+        );
+        board.set(
+            HexCoord::new(2, -2),
+            Some(Piece::new(PieceKind::Rook, Color::White)),
+        );
+        board.set(
+            HexCoord::new(5, -5),
+            Some(Piece::new(PieceKind::King, Color::Black)),
+        );
         board.black_king = HexCoord::new(5, -5);
 
         let state = GameState::from_board(board);
         let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
         let result = search.search(&state, sims);
-        println!("  Q+R vs K value: {:.3} (should be strongly positive)", result.value);
-        assert!(result.value > 0.3,
-            "Q+R vs lone king should be very winning, got {:.3}", result.value);
+        println!(
+            "  Q+R vs K value: {:.3} (should be strongly positive)",
+            result.value
+        );
+        assert!(
+            result.value > 0.3,
+            "Q+R vs lone king should be very winning, got {:.3}",
+            result.value
+        );
     }
 
     // Test 2: Losing position — Black to move with lone king vs Q+R
     {
         let mut board = Board::empty();
         board.side_to_move = Color::Black;
-        board.set(HexCoord::new(5, -5), Some(Piece::new(PieceKind::King, Color::Black)));
+        board.set(
+            HexCoord::new(5, -5),
+            Some(Piece::new(PieceKind::King, Color::Black)),
+        );
         board.black_king = HexCoord::new(5, -5);
-        board.set(HexCoord::new(0, 0), Some(Piece::new(PieceKind::King, Color::White)));
+        board.set(
+            HexCoord::new(0, 0),
+            Some(Piece::new(PieceKind::King, Color::White)),
+        );
         board.white_king = HexCoord::new(0, 0);
-        board.set(HexCoord::new(0, 2), Some(Piece::new(PieceKind::Queen, Color::White)));
-        board.set(HexCoord::new(2, -2), Some(Piece::new(PieceKind::Rook, Color::White)));
+        board.set(
+            HexCoord::new(0, 2),
+            Some(Piece::new(PieceKind::Queen, Color::White)),
+        );
+        board.set(
+            HexCoord::new(2, -2),
+            Some(Piece::new(PieceKind::Rook, Color::White)),
+        );
 
         let state = GameState::from_board(board);
         let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
         let result = search.search(&state, sims);
-        println!("  Lone K vs Q+R (Black to move) value: {:.3} (should be negative)", result.value);
-        assert!(result.value < -0.3,
-            "Lone king vs Q+R should be losing, got {:.3}", result.value);
+        println!(
+            "  Lone K vs Q+R (Black to move) value: {:.3} (should be negative)",
+            result.value
+        );
+        assert!(
+            result.value < -0.3,
+            "Lone king vs Q+R should be losing, got {:.3}",
+            result.value
+        );
     }
 
     // Test 3: Equal position should have value near zero
@@ -564,9 +741,15 @@ fn run_mcts_winning_positions() {
         let state = GameState::new();
         let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
         let result = search.search(&state, sims);
-        println!("  Starting position value: {:.3} (should be near 0)", result.value);
-        assert!(result.value.abs() < 0.3,
-            "Starting position should be roughly equal, got {:.3}", result.value);
+        println!(
+            "  Starting position value: {:.3} (should be near 0)",
+            result.value
+        );
+        assert!(
+            result.value.abs() < 0.3,
+            "Starting position should be roughly equal, got {:.3}",
+            result.value
+        );
     }
 
     println!("\n  MCTS WINNING POSITIONS PASSED\n");
@@ -584,13 +767,25 @@ fn run_mcts_forced_tactics() {
     // Test 1: Queen under attack by rook — must move the queen
     {
         let mut board = Board::empty();
-        board.set(HexCoord::new(-5, 5), Some(Piece::new(PieceKind::King, Color::White)));
+        board.set(
+            HexCoord::new(-5, 5),
+            Some(Piece::new(PieceKind::King, Color::White)),
+        );
         board.white_king = HexCoord::new(-5, 5);
-        board.set(HexCoord::new(5, -5), Some(Piece::new(PieceKind::King, Color::Black)));
+        board.set(
+            HexCoord::new(5, -5),
+            Some(Piece::new(PieceKind::King, Color::Black)),
+        );
         board.black_king = HexCoord::new(5, -5);
         // White queen on (0,0), black rook on (0,3) attacking along the file
-        board.set(HexCoord::new(0, 0), Some(Piece::new(PieceKind::Queen, Color::White)));
-        board.set(HexCoord::new(0, 3), Some(Piece::new(PieceKind::Rook, Color::Black)));
+        board.set(
+            HexCoord::new(0, 0),
+            Some(Piece::new(PieceKind::Queen, Color::White)),
+        );
+        board.set(
+            HexCoord::new(0, 3),
+            Some(Piece::new(PieceKind::Rook, Color::Black)),
+        );
 
         let state = GameState::from_board(board);
         let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
@@ -598,21 +793,38 @@ fn run_mcts_forced_tactics() {
 
         let moves_queen = result.best_move.from == HexCoord::new(0, 0);
         let captures_rook = result.best_move.to == HexCoord::new(0, 3);
-        println!("  Queen under attack: {} -> {} (moves queen: {}, captures rook: {})",
-            result.best_move.from, result.best_move.to, moves_queen, captures_rook);
-        assert!(moves_queen,
-            "MCTS should move the attacked queen, instead moved from {}", result.best_move.from);
+        println!(
+            "  Queen under attack: {} -> {} (moves queen: {}, captures rook: {})",
+            result.best_move.from, result.best_move.to, moves_queen, captures_rook
+        );
+        assert!(
+            moves_queen,
+            "MCTS should move the attacked queen, instead moved from {}",
+            result.best_move.from
+        );
     }
 
     // Test 2: Capture a free piece — rook takes undefended bishop
     {
         let mut board = Board::empty();
-        board.set(HexCoord::new(-5, 0), Some(Piece::new(PieceKind::King, Color::White)));
+        board.set(
+            HexCoord::new(-5, 0),
+            Some(Piece::new(PieceKind::King, Color::White)),
+        );
         board.white_king = HexCoord::new(-5, 0);
-        board.set(HexCoord::new(5, 0), Some(Piece::new(PieceKind::King, Color::Black)));
+        board.set(
+            HexCoord::new(5, 0),
+            Some(Piece::new(PieceKind::King, Color::Black)),
+        );
         board.black_king = HexCoord::new(5, 0);
-        board.set(HexCoord::new(0, 0), Some(Piece::new(PieceKind::Rook, Color::White)));
-        board.set(HexCoord::new(0, 3), Some(Piece::new(PieceKind::Bishop, Color::Black)));
+        board.set(
+            HexCoord::new(0, 0),
+            Some(Piece::new(PieceKind::Rook, Color::White)),
+        );
+        board.set(
+            HexCoord::new(0, 3),
+            Some(Piece::new(PieceKind::Bishop, Color::Black)),
+        );
 
         let state = GameState::from_board(board);
         let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
@@ -620,8 +832,10 @@ fn run_mcts_forced_tactics() {
 
         let captures = result.best_move.from == HexCoord::new(0, 0)
             && result.best_move.to == HexCoord::new(0, 3);
-        println!("  Free bishop capture: {} -> {} (captured: {})",
-            result.best_move.from, result.best_move.to, captures);
+        println!(
+            "  Free bishop capture: {} -> {} (captured: {})",
+            result.best_move.from, result.best_move.to, captures
+        );
         assert!(captures, "MCTS should capture the free bishop");
     }
 
@@ -653,7 +867,9 @@ fn run_simulation_scaling() {
         let mut search_low = MctsSearch::new(Box::new(HeuristicEvaluator));
 
         for _ in 0..100 {
-            if state.is_game_over() { break; }
+            if state.is_game_over() {
+                break;
+            }
             match state.side_to_move() {
                 Color::White => {
                     let r = search_high.search(&state, high_sims);
@@ -668,7 +884,9 @@ fn run_simulation_scaling() {
         let lead = (eval::material(&state.board, Color::White)
             - eval::material(&state.board, Color::Black)) as i64;
         high_material_lead += lead;
-        if lead > 0 { games_where_high_leads += 1; }
+        if lead > 0 {
+            games_where_high_leads += 1;
+        }
         print!(".");
     }
     println!();
@@ -681,7 +899,9 @@ fn run_simulation_scaling() {
         let mut search_low = MctsSearch::new(Box::new(HeuristicEvaluator));
 
         for _ in 0..100 {
-            if state.is_game_over() { break; }
+            if state.is_game_over() {
+                break;
+            }
             match state.side_to_move() {
                 Color::White => {
                     let r = search_low.search(&state, low_sims);
@@ -697,18 +917,29 @@ fn run_simulation_scaling() {
         let lead = (eval::material(&state.board, Color::Black)
             - eval::material(&state.board, Color::White)) as i64;
         high_material_lead += lead;
-        if lead > 0 { games_where_high_leads += 1; }
+        if lead > 0 {
+            games_where_high_leads += 1;
+        }
         print!(".");
     }
     println!();
 
     let avg_lead = high_material_lead as f64 / total_games as f64;
-    println!("\n  {}sims vs {}sims over {} games:", high_sims, low_sims, total_games);
+    println!(
+        "\n  {}sims vs {}sims over {} games:",
+        high_sims, low_sims, total_games
+    );
     println!("  Avg material lead (high-sim player): {:.0} cp", avg_lead);
-    println!("  Games where high-sim leads: {}/{}", games_where_high_leads, total_games);
+    println!(
+        "  Games where high-sim leads: {}/{}",
+        games_where_high_leads, total_games
+    );
 
-    assert!(avg_lead > 0.0,
-        "Higher simulations should accumulate material advantage, got {:.0} cp", avg_lead);
+    assert!(
+        avg_lead > 0.0,
+        "Higher simulations should accumulate material advantage, got {:.0} cp",
+        avg_lead
+    );
 
     println!("\n  SIMULATION SCALING PASSED\n");
 }
@@ -724,27 +955,57 @@ fn run_value_monotonicity() {
 
     // Position A: White has K+Q+R vs lone K
     let mut board_a = Board::empty();
-    board_a.set(HexCoord::new(-5, 5), Some(Piece::new(PieceKind::King, Color::White)));
+    board_a.set(
+        HexCoord::new(-5, 5),
+        Some(Piece::new(PieceKind::King, Color::White)),
+    );
     board_a.white_king = HexCoord::new(-5, 5);
-    board_a.set(HexCoord::new(0, 0), Some(Piece::new(PieceKind::Queen, Color::White)));
-    board_a.set(HexCoord::new(2, -2), Some(Piece::new(PieceKind::Rook, Color::White)));
-    board_a.set(HexCoord::new(5, -5), Some(Piece::new(PieceKind::King, Color::Black)));
+    board_a.set(
+        HexCoord::new(0, 0),
+        Some(Piece::new(PieceKind::Queen, Color::White)),
+    );
+    board_a.set(
+        HexCoord::new(2, -2),
+        Some(Piece::new(PieceKind::Rook, Color::White)),
+    );
+    board_a.set(
+        HexCoord::new(5, -5),
+        Some(Piece::new(PieceKind::King, Color::Black)),
+    );
     board_a.black_king = HexCoord::new(5, -5);
 
     // Position B: White has K+Q vs lone K (less material)
     let mut board_b = Board::empty();
-    board_b.set(HexCoord::new(-5, 5), Some(Piece::new(PieceKind::King, Color::White)));
+    board_b.set(
+        HexCoord::new(-5, 5),
+        Some(Piece::new(PieceKind::King, Color::White)),
+    );
     board_b.white_king = HexCoord::new(-5, 5);
-    board_b.set(HexCoord::new(0, 0), Some(Piece::new(PieceKind::Queen, Color::White)));
-    board_b.set(HexCoord::new(5, -5), Some(Piece::new(PieceKind::King, Color::Black)));
+    board_b.set(
+        HexCoord::new(0, 0),
+        Some(Piece::new(PieceKind::Queen, Color::White)),
+    );
+    board_b.set(
+        HexCoord::new(5, -5),
+        Some(Piece::new(PieceKind::King, Color::Black)),
+    );
     board_b.black_king = HexCoord::new(5, -5);
 
     // Position C: K+N vs K (smaller advantage than K+Q)
     let mut board_c = Board::empty();
-    board_c.set(HexCoord::new(-5, 5), Some(Piece::new(PieceKind::King, Color::White)));
+    board_c.set(
+        HexCoord::new(-5, 5),
+        Some(Piece::new(PieceKind::King, Color::White)),
+    );
     board_c.white_king = HexCoord::new(-5, 5);
-    board_c.set(HexCoord::new(0, 0), Some(Piece::new(PieceKind::Knight, Color::White)));
-    board_c.set(HexCoord::new(5, -5), Some(Piece::new(PieceKind::King, Color::Black)));
+    board_c.set(
+        HexCoord::new(0, 0),
+        Some(Piece::new(PieceKind::Knight, Color::White)),
+    );
+    board_c.set(
+        HexCoord::new(5, -5),
+        Some(Piece::new(PieceKind::King, Color::Black)),
+    );
     board_c.black_king = HexCoord::new(5, -5);
 
     let state_a = GameState::from_board(board_a);
@@ -762,8 +1023,18 @@ fn run_value_monotonicity() {
     println!("  K+Q   vs K: {:.3}", vb);
     println!("  K+N   vs K: {:.3}", vc);
 
-    assert!(va > vb, "More material should give higher value: {:.3} vs {:.3}", va, vb);
-    assert!(vb > vc, "Queen advantage should beat knight advantage: {:.3} vs {:.3}", vb, vc);
+    assert!(
+        va > vb,
+        "More material should give higher value: {:.3} vs {:.3}",
+        va,
+        vb
+    );
+    assert!(
+        vb > vc,
+        "Queen advantage should beat knight advantage: {:.3} vs {:.3}",
+        vb,
+        vc
+    );
     assert!(va > 0.0, "K+Q+R vs K should be positive");
     assert!(vb > 0.0, "K+Q vs K should be positive");
     assert!(vc > 0.0, "K+N vs K should be positive");
@@ -791,11 +1062,26 @@ fn run_mcts_state_immutability() {
     let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
     let _result = search.search(&state, 500);
 
-    assert_eq!(state.board.zobrist_hash, hash_before, "Zobrist hash changed after MCTS search");
-    assert_eq!(state.board.cells, cells_before, "Cells changed after MCTS search");
-    assert_eq!(state.board.side_to_move, stm_before, "Side to move changed after MCTS search");
-    assert_eq!(state.board.en_passant, ep_before, "En passant changed after MCTS search");
-    assert_eq!(state.board.halfmove_clock, hmc_before, "Halfmove clock changed after MCTS search");
+    assert_eq!(
+        state.board.zobrist_hash, hash_before,
+        "Zobrist hash changed after MCTS search"
+    );
+    assert_eq!(
+        state.board.cells, cells_before,
+        "Cells changed after MCTS search"
+    );
+    assert_eq!(
+        state.board.side_to_move, stm_before,
+        "Side to move changed after MCTS search"
+    );
+    assert_eq!(
+        state.board.en_passant, ep_before,
+        "En passant changed after MCTS search"
+    );
+    assert_eq!(
+        state.board.halfmove_clock, hmc_before,
+        "Halfmove clock changed after MCTS search"
+    );
 
     println!("  Starting position: state unchanged after 500-sim MCTS search");
 
@@ -804,12 +1090,16 @@ fn run_mcts_state_immutability() {
     for trial in 0..10 {
         let mut setup_state = GameState::new();
         for _ in 0..20 {
-            if setup_state.is_game_over() { break; }
+            if setup_state.is_game_over() {
+                break;
+            }
             let moves = setup_state.legal_moves();
             let idx = rng.random_range(0..moves.len());
             setup_state.apply_move(moves[idx]);
         }
-        if setup_state.is_game_over() { continue; }
+        if setup_state.is_game_over() {
+            continue;
+        }
 
         let hash_before = setup_state.board.zobrist_hash;
         let cells_before = setup_state.board.cells;
@@ -820,16 +1110,31 @@ fn run_mcts_state_immutability() {
         let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
         let _result = search.search(&setup_state, 200);
 
-        assert_eq!(setup_state.board.zobrist_hash, hash_before,
-            "Trial {}: zobrist hash corrupted by MCTS", trial);
-        assert_eq!(setup_state.board.cells, cells_before,
-            "Trial {}: cells corrupted by MCTS", trial);
-        assert_eq!(setup_state.board.side_to_move, stm_before,
-            "Trial {}: side_to_move corrupted by MCTS", trial);
-        assert_eq!(setup_state.board.en_passant, ep_before,
-            "Trial {}: en_passant corrupted by MCTS", trial);
-        assert_eq!(setup_state.board.halfmove_clock, hmc_before,
-            "Trial {}: halfmove_clock corrupted by MCTS", trial);
+        assert_eq!(
+            setup_state.board.zobrist_hash, hash_before,
+            "Trial {}: zobrist hash corrupted by MCTS",
+            trial
+        );
+        assert_eq!(
+            setup_state.board.cells, cells_before,
+            "Trial {}: cells corrupted by MCTS",
+            trial
+        );
+        assert_eq!(
+            setup_state.board.side_to_move, stm_before,
+            "Trial {}: side_to_move corrupted by MCTS",
+            trial
+        );
+        assert_eq!(
+            setup_state.board.en_passant, ep_before,
+            "Trial {}: en_passant corrupted by MCTS",
+            trial
+        );
+        assert_eq!(
+            setup_state.board.halfmove_clock, hmc_before,
+            "Trial {}: halfmove_clock corrupted by MCTS",
+            trial
+        );
     }
     println!("  10 mid-game positions: state unchanged after MCTS search");
 
@@ -851,16 +1156,21 @@ fn run_special_move_apply_undo() {
     for _ in 0..200 {
         let mut state = GameState::new();
         for _ in 0..200 {
-            if state.is_game_over() { break; }
+            if state.is_game_over() {
+                break;
+            }
             let moves = state.legal_moves();
-            if moves.is_empty() { break; }
+            if moves.is_empty() {
+                break;
+            }
 
             // Find special moves
             for mv in &moves {
-                let is_special = mv.is_en_passant
-                    || mv.promotion.is_some()
-                    || mv.captured.is_some();
-                if !is_special { continue; }
+                let is_special =
+                    mv.is_en_passant || mv.promotion.is_some() || mv.captured.is_some();
+                if !is_special {
+                    continue;
+                }
 
                 // Snapshot state before
                 let hash_before = state.board.zobrist_hash;
@@ -876,24 +1186,51 @@ fn run_special_move_apply_undo() {
                 state.undo_move();
 
                 // Verify everything restored
-                assert_eq!(state.board.zobrist_hash, hash_before,
-                    "Hash mismatch after apply/undo of {:?}", mv);
-                assert_eq!(state.board.cells, cells_before,
-                    "Cells mismatch after apply/undo of {:?}", mv);
-                assert_eq!(state.board.side_to_move, stm_before,
-                    "Side to move mismatch after apply/undo of {:?}", mv);
-                assert_eq!(state.board.en_passant, ep_before,
-                    "En passant mismatch after apply/undo of {:?}", mv);
-                assert_eq!(state.board.halfmove_clock, hmc_before,
-                    "Halfmove clock mismatch after apply/undo of {:?}", mv);
-                assert_eq!(state.board.white_king, wk_before,
-                    "White king pos mismatch after apply/undo of {:?}", mv);
-                assert_eq!(state.board.black_king, bk_before,
-                    "Black king pos mismatch after apply/undo of {:?}", mv);
+                assert_eq!(
+                    state.board.zobrist_hash, hash_before,
+                    "Hash mismatch after apply/undo of {:?}",
+                    mv
+                );
+                assert_eq!(
+                    state.board.cells, cells_before,
+                    "Cells mismatch after apply/undo of {:?}",
+                    mv
+                );
+                assert_eq!(
+                    state.board.side_to_move, stm_before,
+                    "Side to move mismatch after apply/undo of {:?}",
+                    mv
+                );
+                assert_eq!(
+                    state.board.en_passant, ep_before,
+                    "En passant mismatch after apply/undo of {:?}",
+                    mv
+                );
+                assert_eq!(
+                    state.board.halfmove_clock, hmc_before,
+                    "Halfmove clock mismatch after apply/undo of {:?}",
+                    mv
+                );
+                assert_eq!(
+                    state.board.white_king, wk_before,
+                    "White king pos mismatch after apply/undo of {:?}",
+                    mv
+                );
+                assert_eq!(
+                    state.board.black_king, bk_before,
+                    "Black king pos mismatch after apply/undo of {:?}",
+                    mv
+                );
 
-                if mv.is_en_passant { ep_tested += 1; }
-                if mv.promotion.is_some() { promo_tested += 1; }
-                if mv.captured.is_some() { capture_tested += 1; }
+                if mv.is_en_passant {
+                    ep_tested += 1;
+                }
+                if mv.promotion.is_some() {
+                    promo_tested += 1;
+                }
+                if mv.captured.is_some() {
+                    capture_tested += 1;
+                }
             }
 
             let idx = rng.random_range(0..moves.len());
@@ -905,7 +1242,10 @@ fn run_special_move_apply_undo() {
     println!("  Promotion apply/undo tested: {} times", promo_tested);
     println!("  Capture apply/undo tested: {} times", capture_tested);
     assert!(ep_tested > 0, "Should have tested at least one en passant");
-    assert!(promo_tested > 0, "Should have tested at least one promotion");
+    assert!(
+        promo_tested > 0,
+        "Should have tested at least one promotion"
+    );
     assert!(capture_tested > 100, "Should have tested many captures");
 
     println!("\n  SPECIAL MOVE APPLY/UNDO PASSED\n");
@@ -936,9 +1276,13 @@ fn run_full_game_rewind() {
 
         let mut moves_played = 0u32;
         for _ in 0..300 {
-            if state.is_game_over() { break; }
+            if state.is_game_over() {
+                break;
+            }
             let moves = state.legal_moves();
-            if moves.is_empty() { break; }
+            if moves.is_empty() {
+                break;
+            }
             let idx = rng.random_range(0..moves.len());
             state.apply_move(moves[idx]);
             moves_played += 1;
@@ -956,25 +1300,48 @@ fn run_full_game_rewind() {
             state.undo_move();
         }
 
-        assert_eq!(state.board.zobrist_hash, initial_hash,
-            "Game {}: hash mismatch after full rewind ({} moves)", game_num, moves_played);
-        assert_eq!(state.board.cells, initial_cells,
-            "Game {}: cells mismatch after full rewind", game_num);
-        assert_eq!(state.board.side_to_move, initial_stm,
-            "Game {}: side_to_move mismatch after full rewind", game_num);
-        assert_eq!(state.board.en_passant, initial_ep,
-            "Game {}: en_passant mismatch after full rewind", game_num);
-        assert_eq!(state.board.halfmove_clock, initial_hmc,
-            "Game {}: halfmove_clock mismatch after full rewind", game_num);
-        assert_eq!(state.board.white_king, initial_wk,
-            "Game {}: white_king mismatch after full rewind", game_num);
-        assert_eq!(state.board.black_king, initial_bk,
-            "Game {}: black_king mismatch after full rewind", game_num);
+        assert_eq!(
+            state.board.zobrist_hash, initial_hash,
+            "Game {}: hash mismatch after full rewind ({} moves)",
+            game_num, moves_played
+        );
+        assert_eq!(
+            state.board.cells, initial_cells,
+            "Game {}: cells mismatch after full rewind",
+            game_num
+        );
+        assert_eq!(
+            state.board.side_to_move, initial_stm,
+            "Game {}: side_to_move mismatch after full rewind",
+            game_num
+        );
+        assert_eq!(
+            state.board.en_passant, initial_ep,
+            "Game {}: en_passant mismatch after full rewind",
+            game_num
+        );
+        assert_eq!(
+            state.board.halfmove_clock, initial_hmc,
+            "Game {}: halfmove_clock mismatch after full rewind",
+            game_num
+        );
+        assert_eq!(
+            state.board.white_king, initial_wk,
+            "Game {}: white_king mismatch after full rewind",
+            game_num
+        );
+        assert_eq!(
+            state.board.black_king, initial_bk,
+            "Game {}: black_king mismatch after full rewind",
+            game_num
+        );
     }
 
     println!("  200 games fully rewound successfully");
-    println!("  Outcomes: {} checkmates, {} stalemates, {} draws, {} ongoing (max length)",
-        checkmates, stalemates, draws, ongoing_maxlen);
+    println!(
+        "  Outcomes: {} checkmates, {} stalemates, {} draws, {} ongoing (max length)",
+        checkmates, stalemates, draws, ongoing_maxlen
+    );
 
     println!("\n  FULL GAME REWIND PASSED\n");
 }
@@ -995,24 +1362,45 @@ fn run_sequential_mcts_stability() {
 
     for i in 0..10 {
         // Verify state is identical before each search
-        assert_eq!(state.board.zobrist_hash, hash_ref,
-            "Iteration {}: hash drifted before search", i);
-        assert_eq!(state.board.cells, cells_ref,
-            "Iteration {}: cells drifted before search", i);
-        assert_eq!(state.board.side_to_move, stm_ref,
-            "Iteration {}: side_to_move drifted", i);
-        assert_eq!(state.board.en_passant, ep_ref,
-            "Iteration {}: en_passant drifted", i);
-        assert_eq!(state.board.halfmove_clock, hmc_ref,
-            "Iteration {}: halfmove_clock drifted", i);
+        assert_eq!(
+            state.board.zobrist_hash, hash_ref,
+            "Iteration {}: hash drifted before search",
+            i
+        );
+        assert_eq!(
+            state.board.cells, cells_ref,
+            "Iteration {}: cells drifted before search",
+            i
+        );
+        assert_eq!(
+            state.board.side_to_move, stm_ref,
+            "Iteration {}: side_to_move drifted",
+            i
+        );
+        assert_eq!(
+            state.board.en_passant, ep_ref,
+            "Iteration {}: en_passant drifted",
+            i
+        );
+        assert_eq!(
+            state.board.halfmove_clock, hmc_ref,
+            "Iteration {}: halfmove_clock drifted",
+            i
+        );
 
         let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
         let _result = search.search(&state, 200);
     }
 
     // Verify one final time after all 10 searches
-    assert_eq!(state.board.zobrist_hash, hash_ref, "Hash drifted after 10 MCTS searches");
-    assert_eq!(state.board.cells, cells_ref, "Cells drifted after 10 MCTS searches");
+    assert_eq!(
+        state.board.zobrist_hash, hash_ref,
+        "Hash drifted after 10 MCTS searches"
+    );
+    assert_eq!(
+        state.board.cells, cells_ref,
+        "Cells drifted after 10 MCTS searches"
+    );
 
     println!("  10 sequential MCTS searches on starting position: state stable");
 
@@ -1020,7 +1408,9 @@ fn run_sequential_mcts_stability() {
     let mut rng = rand::rng();
     let mut mid_state = GameState::new();
     for _ in 0..30 {
-        if mid_state.is_game_over() { break; }
+        if mid_state.is_game_over() {
+            break;
+        }
         let moves = mid_state.legal_moves();
         let idx = rng.random_range(0..moves.len());
         mid_state.apply_move(moves[idx]);
@@ -1031,14 +1421,23 @@ fn run_sequential_mcts_stability() {
         let cells_ref = mid_state.board.cells;
 
         for i in 0..10 {
-            assert_eq!(mid_state.board.zobrist_hash, hash_ref,
-                "Mid-game iter {}: hash drifted", i);
+            assert_eq!(
+                mid_state.board.zobrist_hash, hash_ref,
+                "Mid-game iter {}: hash drifted",
+                i
+            );
             let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
             let _result = search.search(&mid_state, 200);
         }
 
-        assert_eq!(mid_state.board.zobrist_hash, hash_ref, "Mid-game hash drifted after 10 searches");
-        assert_eq!(mid_state.board.cells, cells_ref, "Mid-game cells drifted after 10 searches");
+        assert_eq!(
+            mid_state.board.zobrist_hash, hash_ref,
+            "Mid-game hash drifted after 10 searches"
+        );
+        assert_eq!(
+            mid_state.board.cells, cells_ref,
+            "Mid-game cells drifted after 10 searches"
+        );
         println!("  10 sequential MCTS searches on mid-game position: state stable");
     }
 
@@ -1059,12 +1458,16 @@ fn run_mcts_play_undo() {
         let mut state = GameState::new();
         let advance = rng.random_range(0..30u32);
         for _ in 0..advance {
-            if state.is_game_over() { break; }
+            if state.is_game_over() {
+                break;
+            }
             let moves = state.legal_moves();
             let idx = rng.random_range(0..moves.len());
             state.apply_move(moves[idx]);
         }
-        if state.is_game_over() { continue; }
+        if state.is_game_over() {
+            continue;
+        }
 
         // Snapshot
         let hash_orig = state.board.zobrist_hash;
@@ -1083,8 +1486,11 @@ fn run_mcts_play_undo() {
         if state.is_game_over() {
             // Just undo the one move
             state.undo_move();
-            assert_eq!(state.board.zobrist_hash, hash_orig,
-                "Trial {}: hash mismatch after 1 move undo", trial);
+            assert_eq!(
+                state.board.zobrist_hash, hash_orig,
+                "Trial {}: hash mismatch after 1 move undo",
+                trial
+            );
             continue;
         }
 
@@ -1096,20 +1502,41 @@ fn run_mcts_play_undo() {
         state.undo_move(); // undo move 2
         state.undo_move(); // undo move 1
 
-        assert_eq!(state.board.zobrist_hash, hash_orig,
-            "Trial {}: hash mismatch after MCTS play+undo", trial);
-        assert_eq!(state.board.cells, cells_orig,
-            "Trial {}: cells mismatch after MCTS play+undo", trial);
-        assert_eq!(state.board.side_to_move, stm_orig,
-            "Trial {}: side_to_move mismatch after MCTS play+undo", trial);
-        assert_eq!(state.board.en_passant, ep_orig,
-            "Trial {}: en_passant mismatch after MCTS play+undo", trial);
-        assert_eq!(state.board.halfmove_clock, hmc_orig,
-            "Trial {}: halfmove_clock mismatch after MCTS play+undo", trial);
-        assert_eq!(state.board.white_king, wk_orig,
-            "Trial {}: white_king mismatch after MCTS play+undo", trial);
-        assert_eq!(state.board.black_king, bk_orig,
-            "Trial {}: black_king mismatch after MCTS play+undo", trial);
+        assert_eq!(
+            state.board.zobrist_hash, hash_orig,
+            "Trial {}: hash mismatch after MCTS play+undo",
+            trial
+        );
+        assert_eq!(
+            state.board.cells, cells_orig,
+            "Trial {}: cells mismatch after MCTS play+undo",
+            trial
+        );
+        assert_eq!(
+            state.board.side_to_move, stm_orig,
+            "Trial {}: side_to_move mismatch after MCTS play+undo",
+            trial
+        );
+        assert_eq!(
+            state.board.en_passant, ep_orig,
+            "Trial {}: en_passant mismatch after MCTS play+undo",
+            trial
+        );
+        assert_eq!(
+            state.board.halfmove_clock, hmc_orig,
+            "Trial {}: halfmove_clock mismatch after MCTS play+undo",
+            trial
+        );
+        assert_eq!(
+            state.board.white_king, wk_orig,
+            "Trial {}: white_king mismatch after MCTS play+undo",
+            trial
+        );
+        assert_eq!(
+            state.board.black_king, bk_orig,
+            "Trial {}: black_king mismatch after MCTS play+undo",
+            trial
+        );
     }
 
     println!("  20 trials of MCTS search -> play -> undo: all states restored");
@@ -1137,15 +1564,27 @@ fn run_mcts_checkmate_in_one() {
     // Result: checkmate.
     {
         let mut board = Board::empty();
-        board.set(HexCoord::new(3, -3), Some(Piece::new(PieceKind::King, Color::White)));
+        board.set(
+            HexCoord::new(3, -3),
+            Some(Piece::new(PieceKind::King, Color::White)),
+        );
         board.white_king = HexCoord::new(3, -3);
-        board.set(HexCoord::new(5, 0), Some(Piece::new(PieceKind::Queen, Color::White)));
-        board.set(HexCoord::new(5, -5), Some(Piece::new(PieceKind::King, Color::Black)));
+        board.set(
+            HexCoord::new(5, 0),
+            Some(Piece::new(PieceKind::Queen, Color::White)),
+        );
+        board.set(
+            HexCoord::new(5, -5),
+            Some(Piece::new(PieceKind::King, Color::Black)),
+        );
         board.black_king = HexCoord::new(5, -5);
 
         let state = GameState::from_board(board);
-        assert_eq!(state.status(), GameStatus::Ongoing,
-            "Position should be ongoing before the mating move");
+        assert_eq!(
+            state.status(),
+            GameStatus::Ongoing,
+            "Position should be ongoing before the mating move"
+        );
 
         // Verify at least one mating move exists
         let legal = state.legal_moves();
@@ -1154,19 +1593,28 @@ fn run_mcts_checkmate_in_one() {
             s.apply_move(*m);
             matches!(s.status(), GameStatus::Checkmate(Color::White))
         });
-        assert!(has_mate, "There should be at least one mating move in this position");
+        assert!(
+            has_mate,
+            "There should be at least one mating move in this position"
+        );
 
         let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
         let result = search.search(&state, 5000);
 
         println!("  Test 1 - Queen mates on corner:");
-        println!("    MCTS best move: {} -> {}", result.best_move.from, result.best_move.to);
+        println!(
+            "    MCTS best move: {} -> {}",
+            result.best_move.from, result.best_move.to
+        );
 
         let mut verify_state = state.clone();
         verify_state.apply_move(result.best_move);
         let status = verify_state.status();
-        assert!(matches!(status, GameStatus::Checkmate(Color::White)),
-            "MCTS should find checkmate in 1, got {:?}", status);
+        assert!(
+            matches!(status, GameStatus::Checkmate(Color::White)),
+            "MCTS should find checkmate in 1, got {:?}",
+            status
+        );
         println!("    PASSED — MCTS found checkmate in 1");
     }
 
@@ -1186,15 +1634,27 @@ fn run_mcts_checkmate_in_one() {
     // All covered: checkmate!
     {
         let mut board = Board::empty();
-        board.set(HexCoord::new(-3, 3), Some(Piece::new(PieceKind::King, Color::White)));
+        board.set(
+            HexCoord::new(-3, 3),
+            Some(Piece::new(PieceKind::King, Color::White)),
+        );
         board.white_king = HexCoord::new(-3, 3);
-        board.set(HexCoord::new(0, 5), Some(Piece::new(PieceKind::Rook, Color::White)));
-        board.set(HexCoord::new(-5, 5), Some(Piece::new(PieceKind::King, Color::Black)));
+        board.set(
+            HexCoord::new(0, 5),
+            Some(Piece::new(PieceKind::Rook, Color::White)),
+        );
+        board.set(
+            HexCoord::new(-5, 5),
+            Some(Piece::new(PieceKind::King, Color::Black)),
+        );
         board.black_king = HexCoord::new(-5, 5);
 
         let state = GameState::from_board(board);
-        assert_eq!(state.status(), GameStatus::Ongoing,
-            "Test 2 position should be ongoing");
+        assert_eq!(
+            state.status(),
+            GameStatus::Ongoing,
+            "Test 2 position should be ongoing"
+        );
 
         // Verify at least one mating move exists
         let legal = state.legal_moves();
@@ -1209,13 +1669,19 @@ fn run_mcts_checkmate_in_one() {
         let result = search.search(&state, 5000);
 
         println!("  Test 2 - Rook delivers back-rank mate:");
-        println!("    MCTS best move: {} -> {}", result.best_move.from, result.best_move.to);
+        println!(
+            "    MCTS best move: {} -> {}",
+            result.best_move.from, result.best_move.to
+        );
 
         let mut verify_state = state.clone();
         verify_state.apply_move(result.best_move);
         let status = verify_state.status();
-        assert!(matches!(status, GameStatus::Checkmate(Color::White)),
-            "MCTS should find rook checkmate in 1, got {:?}", status);
+        assert!(
+            matches!(status, GameStatus::Checkmate(Color::White)),
+            "MCTS should find rook checkmate in 1, got {:?}",
+            status
+        );
         println!("    PASSED — MCTS found rook checkmate in 1");
     }
 
@@ -1240,10 +1706,19 @@ fn run_kq_vs_k_endgame() {
     // Trial 1: King in center, queen nearby, black king near edge
     {
         let mut board = Board::empty();
-        board.set(HexCoord::new(0, 0), Some(Piece::new(PieceKind::King, Color::White)));
+        board.set(
+            HexCoord::new(0, 0),
+            Some(Piece::new(PieceKind::King, Color::White)),
+        );
         board.white_king = HexCoord::new(0, 0);
-        board.set(HexCoord::new(1, 0), Some(Piece::new(PieceKind::Queen, Color::White)));
-        board.set(HexCoord::new(4, -4), Some(Piece::new(PieceKind::King, Color::Black)));
+        board.set(
+            HexCoord::new(1, 0),
+            Some(Piece::new(PieceKind::Queen, Color::White)),
+        );
+        board.set(
+            HexCoord::new(4, -4),
+            Some(Piece::new(PieceKind::King, Color::Black)),
+        );
         board.black_king = HexCoord::new(4, -4);
 
         let mut game = GameState::from_board(board);
@@ -1251,12 +1726,20 @@ fn run_kq_vs_k_endgame() {
 
         print!("  Trial 1 (K+Q vs K, king near edge): ");
         for ply in 0..max_plies {
-            if game.is_game_over() { break; }
-            let sims = if game.side_to_move() == Color::White { white_sims } else { black_sims };
+            if game.is_game_over() {
+                break;
+            }
+            let sims = if game.side_to_move() == Color::White {
+                white_sims
+            } else {
+                black_sims
+            };
             let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
             let result = search.search(&game, sims);
             game.apply_move(result.best_move);
-            if ply % 10 == 0 { print!("."); }
+            if ply % 10 == 0 {
+                print!(".");
+            }
         }
         println!();
 
@@ -1268,7 +1751,10 @@ fn run_kq_vs_k_endgame() {
                 println!("  PASSED — White delivered checkmate");
             }
             GameStatus::DrawByFiftyMoves | GameStatus::DrawByRepetition | GameStatus::Stalemate => {
-                println!("  WARNING — Game ended in draw ({:?}), MCTS didn't find forced mate", status);
+                println!(
+                    "  WARNING — Game ended in draw ({:?}), MCTS didn't find forced mate",
+                    status
+                );
                 println!("  This is a known limitation of heuristic MCTS — not failing the test");
             }
             GameStatus::DrawByInsufficientMaterial => {
@@ -1286,21 +1772,38 @@ fn run_kq_vs_k_endgame() {
     // Trial 2: Black king cornered at (5,-5)
     {
         let mut board = Board::empty();
-        board.set(HexCoord::new(2, -2), Some(Piece::new(PieceKind::King, Color::White)));
+        board.set(
+            HexCoord::new(2, -2),
+            Some(Piece::new(PieceKind::King, Color::White)),
+        );
         board.white_king = HexCoord::new(2, -2);
-        board.set(HexCoord::new(0, -1), Some(Piece::new(PieceKind::Queen, Color::White)));
-        board.set(HexCoord::new(5, -5), Some(Piece::new(PieceKind::King, Color::Black)));
+        board.set(
+            HexCoord::new(0, -1),
+            Some(Piece::new(PieceKind::Queen, Color::White)),
+        );
+        board.set(
+            HexCoord::new(5, -5),
+            Some(Piece::new(PieceKind::King, Color::Black)),
+        );
         board.black_king = HexCoord::new(5, -5);
 
         let mut game = GameState::from_board(board);
         print!("  Trial 2 (K+Q vs K, king in corner): ");
         for ply in 0..max_plies {
-            if game.is_game_over() { break; }
-            let sims = if game.side_to_move() == Color::White { white_sims } else { black_sims };
+            if game.is_game_over() {
+                break;
+            }
+            let sims = if game.side_to_move() == Color::White {
+                white_sims
+            } else {
+                black_sims
+            };
             let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
             let result = search.search(&game, sims);
             game.apply_move(result.best_move);
-            if ply % 10 == 0 { print!("."); }
+            if ply % 10 == 0 {
+                print!(".");
+            }
         }
         println!();
 
@@ -1350,17 +1853,29 @@ fn run_stalemate_detection() {
     {
         let mut board = Board::empty();
         board.side_to_move = Color::Black;
-        board.set(HexCoord::new(3, -2), Some(Piece::new(PieceKind::King, Color::White)));
+        board.set(
+            HexCoord::new(3, -2),
+            Some(Piece::new(PieceKind::King, Color::White)),
+        );
         board.white_king = HexCoord::new(3, -2);
-        board.set(HexCoord::new(2, -4), Some(Piece::new(PieceKind::Queen, Color::White)));
-        board.set(HexCoord::new(5, -5), Some(Piece::new(PieceKind::King, Color::Black)));
+        board.set(
+            HexCoord::new(2, -4),
+            Some(Piece::new(PieceKind::Queen, Color::White)),
+        );
+        board.set(
+            HexCoord::new(5, -5),
+            Some(Piece::new(PieceKind::King, Color::Black)),
+        );
         board.black_king = HexCoord::new(5, -5);
 
         let state = GameState::from_board(board);
 
         // Debug: show legal moves
         let legal = state.legal_moves();
-        println!("  Stalemate test: Black king at (5,-5), {} legal moves", legal.len());
+        println!(
+            "  Stalemate test: Black king at (5,-5), {} legal moves",
+            legal.len()
+        );
         for m in &legal {
             println!("    Legal move: {} -> {}", m.from, m.to);
         }
@@ -1371,9 +1886,14 @@ fn run_stalemate_detection() {
         let status = state.status();
         println!("  Status: {:?}", status);
 
-        assert_eq!(status, GameStatus::Stalemate,
+        assert_eq!(
+            status,
+            GameStatus::Stalemate,
             "Position should be stalemate, got {:?} (legal moves: {}, in check: {})",
-            status, legal.len(), in_check);
+            status,
+            legal.len(),
+            in_check
+        );
         println!("  PASSED — Stalemate correctly detected");
     }
 
@@ -1398,10 +1918,19 @@ fn run_stalemate_detection() {
     {
         let mut board = Board::empty();
         board.side_to_move = Color::Black;
-        board.set(HexCoord::new(3, -2), Some(Piece::new(PieceKind::King, Color::White)));
+        board.set(
+            HexCoord::new(3, -2),
+            Some(Piece::new(PieceKind::King, Color::White)),
+        );
         board.white_king = HexCoord::new(3, -2);
-        board.set(HexCoord::new(3, -5), Some(Piece::new(PieceKind::Queen, Color::White)));
-        board.set(HexCoord::new(5, -5), Some(Piece::new(PieceKind::King, Color::Black)));
+        board.set(
+            HexCoord::new(3, -5),
+            Some(Piece::new(PieceKind::Queen, Color::White)),
+        );
+        board.set(
+            HexCoord::new(5, -5),
+            Some(Piece::new(PieceKind::King, Color::Black)),
+        );
         board.black_king = HexCoord::new(5, -5);
 
         let state = GameState::from_board(board);
@@ -1412,10 +1941,16 @@ fn run_stalemate_detection() {
         println!("  In check: {}, Status: {:?}", in_check, status);
 
         // King should be in check (queen on (3,-5) attacks (5,-5) via cardinal (1,0))
-        assert!(in_check, "Black king should be in check from queen at (3,-5)");
+        assert!(
+            in_check,
+            "Black king should be in check from queen at (3,-5)"
+        );
         // Status should NOT be stalemate
-        assert_ne!(status, GameStatus::Stalemate,
-            "Position with king in check should not be stalemate");
+        assert_ne!(
+            status,
+            GameStatus::Stalemate,
+            "Position with king in check should not be stalemate"
+        );
         println!("  PASSED — Check position correctly distinguished from stalemate");
     }
 
@@ -1464,4 +1999,3 @@ fn main() {
     println!("║     ALL VALIDATION TESTS PASSED              ║");
     println!("╚══════════════════════════════════════════════╝");
 }
-

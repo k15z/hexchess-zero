@@ -5,8 +5,8 @@ use std::collections::BTreeSet;
 use std::sync::LazyLock;
 
 use crate::board::{
-    Board, Color, HexCoord, PieceKind,
-    CARDINAL_DIRS, DIAGONAL_DIRS, KNIGHT_OFFSETS, PROMOTION_PIECES,
+    Board, CARDINAL_DIRS, Color, DIAGONAL_DIRS, HexCoord, KNIGHT_OFFSETS, PROMOTION_PIECES,
+    PieceKind,
 };
 use crate::movegen::Move;
 
@@ -86,11 +86,12 @@ pub fn encode_board(board: &Board) -> [f32; TENSOR_SIZE] {
 
     // En passant (channel 15): single cell.
     if let Some(ep) = board.en_passant
-        && ep.is_valid() {
-            let col = (ep.q + 5) as usize;
-            let row = (ep.r + 5) as usize;
-            tensor[idx(15, col, row)] = 1.0;
-        }
+        && ep.is_valid()
+    {
+        let col = (ep.q + 5) as usize;
+        let row = (ep.r + 5) as usize;
+        tensor[idx(15, col, row)] = 1.0;
+    }
 
     tensor
 }
@@ -107,15 +108,13 @@ fn piece_channel(color: Color, kind: PieceKind) -> usize {
 /// A canonical (from, to, promotion) tuple for the move index table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct MoveEntry {
-    from_idx: u8,   // 0..90  (cell index of source)
-    to_idx: u8,     // 0..90  (cell index of destination)
+    from_idx: u8,                 // 0..90  (cell index of source)
+    to_idx: u8,                   // 0..90  (cell index of destination)
     promotion: Option<PieceKind>, // None for non-promotion moves
 }
 
-
 /// Maximum ray length on the board (diameter is 10, so max 10 steps).
 const MAX_RAY_LEN: usize = 10;
-
 
 /// Returns true if `coord` sits on a promotion rank for the given color.
 ///
@@ -299,8 +298,7 @@ fn ordinal_to_promotion(o: u8) -> Option<PieceKind> {
 
 static MOVE_INDEX: LazyLock<MoveIndex> = LazyLock::new(|| {
     let entries = build_move_table();
-    let mut reverse =
-        std::collections::HashMap::with_capacity(entries.len());
+    let mut reverse = std::collections::HashMap::with_capacity(entries.len());
     for (i, e) in entries.iter().enumerate() {
         let key = (e.from_idx, e.to_idx, promotion_ordinal(e.promotion));
         reverse.insert(key, i);
@@ -574,10 +572,14 @@ mod tests {
         let to = HexCoord::new(0, 5);
         assert!(is_promotion_cell(to), "target should be a promotion cell");
 
-        let idx_q = move_to_index(&Move::new(from, to, None).with_promotion(PieceKind::Queen)).unwrap();
-        let idx_r = move_to_index(&Move::new(from, to, None).with_promotion(PieceKind::Rook)).unwrap();
-        let idx_b = move_to_index(&Move::new(from, to, None).with_promotion(PieceKind::Bishop)).unwrap();
-        let idx_n = move_to_index(&Move::new(from, to, None).with_promotion(PieceKind::Knight)).unwrap();
+        let idx_q =
+            move_to_index(&Move::new(from, to, None).with_promotion(PieceKind::Queen)).unwrap();
+        let idx_r =
+            move_to_index(&Move::new(from, to, None).with_promotion(PieceKind::Rook)).unwrap();
+        let idx_b =
+            move_to_index(&Move::new(from, to, None).with_promotion(PieceKind::Bishop)).unwrap();
+        let idx_n =
+            move_to_index(&Move::new(from, to, None).with_promotion(PieceKind::Knight)).unwrap();
 
         let mut indices = vec![idx_q, idx_r, idx_b, idx_n];
         indices.sort();

@@ -24,7 +24,9 @@ mod onnx_impl {
             let session = Session::builder()?
                 .with_intra_threads(1)?
                 .commit_from_file(path)?;
-            Ok(Self { session: Mutex::new(session) })
+            Ok(Self {
+                session: Mutex::new(session),
+            })
         }
     }
 
@@ -138,17 +140,19 @@ mod tract_impl {
         fn from_typed_model(optimized: TypedModel) -> TractResult<Self> {
             let policy_idx = find_output_index(&optimized, "policy")
                 .expect("model has no output named 'policy'");
-            let value_idx = find_output_index(&optimized, "value")
-                .expect("model has no output named 'value'");
+            let value_idx =
+                find_output_index(&optimized, "value").expect("model has no output named 'value'");
             let model = optimized.into_runnable()?;
-            Ok(Self { model: Mutex::new(model), policy_idx, value_idx })
+            Ok(Self {
+                model: Mutex::new(model),
+                policy_idx,
+                value_idx,
+            })
         }
 
         /// Load an ONNX model from a file path.
         pub fn from_path(path: impl AsRef<Path>) -> TractResult<Self> {
-            let optimized = tract_onnx::onnx()
-                .model_for_path(path)?
-                .into_optimized()?;
+            let optimized = tract_onnx::onnx().model_for_path(path)?.into_optimized()?;
             Self::from_typed_model(optimized)
         }
 
@@ -166,14 +170,14 @@ mod tract_impl {
             let d = serialization::BOARD_DIM;
 
             let flat = serialization::encode_board(&state.board);
-            let input: Tensor = tract_ndarray::Array4::from_shape_vec(
-                (1, c, d, d),
-                flat.to_vec(),
-            )
-            .expect("shape mismatch")
-            .into();
+            let input: Tensor = tract_ndarray::Array4::from_shape_vec((1, c, d, d), flat.to_vec())
+                .expect("shape mismatch")
+                .into();
 
-            let outputs = self.model.lock().unwrap()
+            let outputs = self
+                .model
+                .lock()
+                .unwrap()
                 .run(tvec![input.into()])
                 .expect("tract inference failed");
 
@@ -251,10 +255,18 @@ mod tests {
             "value mismatch: tract={tract_value}, onnx={onnx_value}"
         );
 
-        let tract_top = tract_policy.iter().enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).unwrap().0;
-        let onnx_top = onnx_policy.iter().enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).unwrap().0;
+        let tract_top = tract_policy
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .unwrap()
+            .0;
+        let onnx_top = onnx_policy
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .unwrap()
+            .0;
         assert_eq!(tract_top, onnx_top, "top move index mismatch");
     }
 }

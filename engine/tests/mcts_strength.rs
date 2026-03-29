@@ -100,7 +100,10 @@ fn mcts_captures_free_queen() {
     let game = GameState::from_board(board);
     let legal = game.legal_moves();
     assert!(
-        legal.iter().any(|m| m.to == HexCoord::new(2, 0) && m.captured.map(|p| p.kind) == Some(PieceKind::Queen)),
+        legal
+            .iter()
+            .any(|m| m.to == HexCoord::new(2, 0)
+                && m.captured.map(|p| p.kind) == Some(PieceKind::Queen)),
         "queen capture must be a legal move in this position",
     );
 
@@ -131,19 +134,27 @@ fn mcts_finds_checkmate_in_1() {
     let game = GameState::from_board(board);
     let legal = game.legal_moves();
 
-    let checkmate_moves: Vec<_> = legal.iter().filter(|&mv| {
-        let mut test = game.clone();
-        test.apply_move(*mv);
-        test.status() == hexchess_engine::game::GameStatus::Checkmate(Color::White)
-    }).collect();
+    let checkmate_moves: Vec<_> = legal
+        .iter()
+        .filter(|&mv| {
+            let mut test = game.clone();
+            test.apply_move(*mv);
+            test.status() == hexchess_engine::game::GameStatus::Checkmate(Color::White)
+        })
+        .collect();
 
-    assert!(!checkmate_moves.is_empty(), "position must have at least one mate-in-1");
+    assert!(
+        !checkmate_moves.is_empty(),
+        "position must have at least one mate-in-1"
+    );
 
     let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
     let result = search.search(&game, 500);
 
     assert!(
-        checkmate_moves.iter().any(|m| m.from == result.best_move.from && m.to == result.best_move.to),
+        checkmate_moves
+            .iter()
+            .any(|m| m.from == result.best_move.from && m.to == result.best_move.to),
         "MCTS should find checkmate in 1! Mate moves: {:?}, MCTS chose: {:?}",
         checkmate_moves,
         result.best_move,
@@ -163,7 +174,11 @@ fn mcts_beats_random() {
     let mut draws = 0;
 
     for i in 0..num_games {
-        let mcts_color = if i % 2 == 0 { Color::White } else { Color::Black };
+        let mcts_color = if i % 2 == 0 {
+            Color::White
+        } else {
+            Color::Black
+        };
         match play_mcts_vs_random(mcts_color, 200) {
             Some(winner) if winner == mcts_color => mcts_wins += 1,
             Some(_) => random_wins += 1,
@@ -223,7 +238,11 @@ fn mcts_value_reflects_material_advantage() {
     let game = GameState::from_board(board);
     let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
     let result = search.search(&game, 200);
-    assert!(result.value > 0.0, "White up a queen should have positive value, got {}", result.value);
+    assert!(
+        result.value > 0.0,
+        "White up a queen should have positive value, got {}",
+        result.value
+    );
 }
 
 #[test]
@@ -236,7 +255,11 @@ fn mcts_value_negative_when_losing() {
     let game = GameState::from_board(board);
     let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
     let result = search.search(&game, 200);
-    assert!(result.value < 0.0, "White down a queen should have negative value, got {}", result.value);
+    assert!(
+        result.value < 0.0,
+        "White down a queen should have negative value, got {}",
+        result.value
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -255,7 +278,10 @@ fn root_qvalue_perspective_is_side_to_move() {
     let game = GameState::from_board(board);
     let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
     let result = search.search(&game, 200);
-    assert!(result.value > 0.0, "White to move with extra queen should be positive");
+    assert!(
+        result.value > 0.0,
+        "White to move with extra queen should be positive"
+    );
 
     // Black to move, black has extra queen — value should also be positive
     // (value is always from the side-to-move's perspective).
@@ -268,5 +294,8 @@ fn root_qvalue_perspective_is_side_to_move() {
     let game2 = GameState::from_board(board2);
     let mut search2 = MctsSearch::new(Box::new(HeuristicEvaluator));
     let result2 = search2.search(&game2, 200);
-    assert!(result2.value > 0.0, "Black to move with extra queen should be positive");
+    assert!(
+        result2.value > 0.0,
+        "Black to move with extra queen should be positive"
+    );
 }

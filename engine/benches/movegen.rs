@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use hexchess_engine::board::Board;
 use hexchess_engine::movegen::generate_legal_moves;
 
