@@ -143,9 +143,7 @@ def run_self_play(config: Config | None = None) -> tuple[Path, dict]:
             "hexchess bindings not available. Run `maturin develop` in bindings/python/"
         )
 
-    # When using NN model, run sequentially (each worker loads model separately)
-    using_model = cfg.prev_best_model_path.exists()
-    workers = 1 if using_model else cfg.num_self_play_workers
+    workers = cfg.num_self_play_workers
 
     num_indices = hexchess.num_move_indices()
     print(
