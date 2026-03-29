@@ -2,7 +2,6 @@ from __future__ import annotations
 """Pit two models against each other to decide whether to promote a new model."""
 
 import time
-from multiprocessing import Pool
 from pathlib import Path
 
 from .config import Config
@@ -77,12 +76,6 @@ def play_arena_game(
         return "new" if not winner_is_white else "old"
 
 
-def _arena_game_worker(args: tuple) -> str:
-    """Worker function for multiprocessing."""
-    simulations, new_goes_first, new_model_path, old_model_path = args
-    return play_arena_game(simulations, new_goes_first, new_model_path, old_model_path)
-
-
 def run_arena(config: Config | None = None) -> dict:
     """
     Run an arena match between the new and current-best models.
@@ -97,7 +90,7 @@ def run_arena(config: Config | None = None) -> dict:
     old_path = str(old_model) if old_model.exists() else None
     new_label = new_path if new_path else "random"
     old_label = old_path if old_path else "random"
-    print(f"Arena: {cfg.arena_games} games, {cfg.arena_simulations} sims/move, {cfg.num_arena_workers} workers", flush=True)
+    print(f"Arena: {cfg.arena_games} games, {cfg.arena_simulations} sims/move", flush=True)
     print(f"  new: {new_label}", flush=True)
     print(f"  old: {old_label}", flush=True)
 
@@ -108,15 +101,14 @@ def run_arena(config: Config | None = None) -> dict:
     t0 = time.time()
     last_log_time = t0
     log_interval = 10  # seconds between progress lines
-    workers = cfg.num_arena_workers
 
-    args = [
-        (cfg.arena_simulations, i % 2 == 0, new_path, old_path)
-        for i in range(cfg.arena_games)
-    ]
+    for i in range(cfg.arena_games):
+        new_goes_first = i % 2 == 0
+        result = play_arena_game(
+            cfg.arena_simulations, new_goes_first, new_path, old_path,
+        )
+        game_num = i + 1
 
-    def _ingest(result: str, game_num: int) -> None:
-        nonlocal new_wins, old_wins, draws, last_log_time
         if result == "new":
             new_wins += 1
         elif result == "old":
@@ -138,14 +130,6 @@ def run_arena(config: Config | None = None) -> dict:
                 flush=True,
             )
 
-    if workers > 1:
-        with Pool(processes=workers) as pool:
-            for i, result in enumerate(pool.imap_unordered(_arena_game_worker, args)):
-                _ingest(result, i + 1)
-    else:
-        for i, a in enumerate(args):
-            result = _arena_game_worker(a)
-            _ingest(result, i + 1)
     total_decided = new_wins + old_wins
     win_rate = new_wins / total_decided if total_decided > 0 else 0.5
     promoted = win_rate >= cfg.win_threshold
@@ -176,25 +160,3 @@ def promote_model(config: Config | None = None) -> None:
         import shutil
         shutil.copy2(latest_pt, cfg.best_checkpoint_path)
         print(f"Promoted checkpoint: {latest_pt} -> {cfg.best_checkpoint_path}")
-
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Run arena match between models")
-    parser.add_argument("--games", type=int, default=None, help="Number of arena games")
-    parser.add_argument("--simulations", type=int, default=None, help="MCTS simulations per move")
-    parser.add_argument("--workers", type=int, default=None, help="Number of parallel workers")
-    args = parser.parse_args()
-
-    cfg = Config()
-    if args.games is not None:
-        cfg.arena_games = args.games
-    if args.simulations is not None:
-        cfg.arena_simulations = args.simulations
-    if args.workers is not None:
-        cfg.num_arena_workers = args.workers
-
-    results = run_arena(cfg)
-    if results["promoted"]:
-        promote_model(cfg)

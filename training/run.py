@@ -154,8 +154,6 @@ def cmd_worker(args) -> None:
     cfg = AsyncConfig()
     if args.simulations is not None:
         cfg.num_simulations = args.simulations
-    if args.workers is not None:
-        cfg.num_self_play_workers = args.workers
     if args.batch_size is not None:
         cfg.worker_batch_size = args.batch_size
 
@@ -176,8 +174,6 @@ def cmd_trainer(args) -> None:
         cfg.batch_size = args.batch_size
     if args.arena_games is not None:
         cfg.arena_games = args.arena_games
-    if args.arena_workers is not None:
-        cfg.num_arena_workers = args.arena_workers
 
     run_trainer(cfg)
 
@@ -233,7 +229,6 @@ def main() -> None:
     common.add_argument("--simulations", type=int, default=None, help="MCTS simulations")
     common.add_argument("--epochs", type=int, default=None, help="Training epochs")
     common.add_argument("--batch-size", type=int, default=None, help="Training batch size")
-    common.add_argument("--workers", type=int, default=None, help="Self-play workers")
     common.add_argument("--generation", type=int, default=None, help="Starting generation number")
 
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
@@ -250,7 +245,6 @@ def main() -> None:
     # --- Async distributed commands ---
     worker_parser = subparsers.add_parser("worker", help="Run async self-play worker loop")
     worker_parser.add_argument("--simulations", type=int, default=None, help="MCTS simulations per move")
-    worker_parser.add_argument("--workers", type=int, default=None, help="Number of parallel worker processes")
     worker_parser.add_argument("--batch-size", type=int, default=None, help="Games per batch before flushing")
 
     trainer_parser = subparsers.add_parser("trainer", help="Run async continuous trainer loop")
@@ -258,7 +252,6 @@ def main() -> None:
     trainer_parser.add_argument("--steps", type=int, default=None, help="Training steps per cycle")
     trainer_parser.add_argument("--batch-size", type=int, default=None, help="Training batch size")
     trainer_parser.add_argument("--arena-games", type=int, default=None, help="Arena games per evaluation")
-    trainer_parser.add_argument("--arena-workers", type=int, default=None, help="Arena parallel workers")
 
     subparsers.add_parser("status", help="Show async training cluster status")
 
@@ -289,8 +282,6 @@ def main() -> None:
         cfg.training_epochs = args.epochs
     if args.batch_size is not None:
         cfg.batch_size = args.batch_size
-    if args.workers is not None:
-        cfg.num_self_play_workers = args.workers
 
     # Auto-detect generation: resume after the latest existing one
     if args.generation is not None:

@@ -54,6 +54,16 @@ def export_to_onnx(
         opset_version=17,
     )
 
+    # Re-save with all weights embedded in a single file (torch.onnx.export
+    # may create a separate .data file for large models).
+    model_proto = onnx.load(str(output_path))
+    onnx.save_model(model_proto, str(output_path), save_as_external_data=False)
+
+    # Clean up any leftover external data file
+    data_file = output_path.parent / (output_path.name + ".data")
+    if data_file.exists():
+        data_file.unlink()
+
     print(f"Exported ONNX model to {output_path}")
 
     # Verify the exported model

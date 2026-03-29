@@ -37,13 +37,25 @@ mod onnx_impl {
 
     impl OnnxEvaluator {
         /// Load an ONNX model from the given file path.
-        pub fn from_path(path: impl AsRef<Path>) -> Result<Self, ort::Error> {
+        ///
+        /// `intra_threads` controls the number of threads ONNX Runtime uses for
+        /// intra-op parallelism (e.g. matrix multiplications). Pass `0` to let
+        /// ORT auto-detect based on available cores, or a specific number to pin.
+        pub fn from_path_with_threads(
+            path: impl AsRef<Path>,
+            intra_threads: usize,
+        ) -> Result<Self, ort::Error> {
             let session = Session::builder()?
-                .with_intra_threads(1)?
+                .with_intra_threads(intra_threads)?
                 .commit_from_file(path)?;
             Ok(Self {
                 session: Mutex::new(session),
             })
+        }
+
+        /// Load an ONNX model with default thread settings (auto-detect cores).
+        pub fn from_path(path: impl AsRef<Path>) -> Result<Self, ort::Error> {
+            Self::from_path_with_threads(path, 0)
         }
     }
 

@@ -169,18 +169,21 @@ impl PyMctsSearch {
     /// uses it as the evaluator for all subsequent `run()` calls.
     /// Otherwise, uses a heuristic evaluator (uniform policy, material value).
     #[new]
-    #[pyo3(signature = (simulations=800, c_puct=1.5, model_path=None, batch_size=32))]
+    #[pyo3(signature = (simulations=800, c_puct=1.5, model_path=None, batch_size=32, tt_capacity=100_000, intra_threads=0))]
     fn new(
         simulations: u32,
         c_puct: f32,
         model_path: Option<String>,
         batch_size: usize,
+        tt_capacity: usize,
+        intra_threads: usize,
     ) -> PyResult<Self> {
         let evaluator: Box<dyn Evaluator> = match model_path {
             Some(path) => {
-                let eval = OnnxEvaluator::from_path(&path).map_err(|e| {
-                    PyValueError::new_err(format!("failed to load ONNX model '{path}': {e}"))
-                })?;
+                let eval =
+                    OnnxEvaluator::from_path_with_threads(&path, intra_threads).map_err(|e| {
+                        PyValueError::new_err(format!("failed to load ONNX model '{path}': {e}"))
+                    })?;
                 Box::new(eval)
             }
             None => Box::new(HeuristicEvaluator),
@@ -188,6 +191,7 @@ impl PyMctsSearch {
         let mut search = EngineSearch::new(evaluator);
         search.set_c_puct(c_puct);
         search.set_batch_size(batch_size);
+        search.set_tt_capacity(tt_capacity);
         Ok(PyMctsSearch {
             search,
             simulations,

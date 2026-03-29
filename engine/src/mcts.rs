@@ -174,6 +174,10 @@ pub struct MctsSearch {
     /// Transposition table: zobrist_hash -> (policy, value).
     /// Avoids re-running NN inference for positions seen before.
     tt: HashMap<u64, (Vec<f32>, f32)>,
+    /// Maximum number of entries in the transposition table. When exceeded,
+    /// the table is cleared to prevent unbounded memory growth. Default: 100k
+    /// entries (~1.6 GB with ~16KB policy vectors).
+    tt_capacity: usize,
 }
 
 impl MctsSearch {
@@ -185,12 +189,19 @@ impl MctsSearch {
             batch_size: 32,
             dirichlet: None,
             tt: HashMap::new(),
+            tt_capacity: 100_000,
         }
     }
 
     /// Set the PUCT exploration constant.
     pub fn set_c_puct(&mut self, c_puct: f32) {
         self.c_puct = c_puct;
+    }
+
+    /// Set the maximum transposition table capacity (number of entries).
+    /// When the table exceeds this limit, it is cleared entirely.
+    pub fn set_tt_capacity(&mut self, capacity: usize) {
+        self.tt_capacity = capacity;
     }
 
     /// Set the batch size for batched NN inference. A value of 1 disables
@@ -207,6 +218,14 @@ impl MctsSearch {
     /// Clear the tree for a new search. Keeps the transposition table.
     pub fn reset(&mut self) {
         self.nodes.clear();
+    }
+
+    /// Insert into the transposition table, clearing it first if at capacity.
+    fn tt_insert(&mut self, hash: u64, entry: (Vec<f32>, f32)) {
+        if self.tt.len() >= self.tt_capacity {
+            self.tt.clear();
+        }
+        self.tt.insert(hash, entry);
     }
 
     /// Clear everything including the transposition table.
@@ -282,7 +301,7 @@ impl MctsSearch {
                 cached.clone()
             } else {
                 let result = self.evaluator.evaluate(state);
-                self.tt.insert(hash, result.clone());
+                self.tt_insert(hash, result.clone());
                 result
             };
             self.expand(node_idx, state, &policy);
@@ -413,7 +432,7 @@ impl MctsSearch {
                     let node_idx = *leaf.path.last().unwrap();
 
                     if !self.nodes[node_idx].is_expanded {
-                        self.tt.insert(leaf.hash, (policy.clone(), *val));
+                        self.tt_insert(leaf.hash, (policy.clone(), *val));
                         self.expand(node_idx, leaf_state, policy);
                     }
                     *val as f64
