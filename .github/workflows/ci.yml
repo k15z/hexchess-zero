@@ -105,3 +105,32 @@ jobs:
           python-version: "3.12"
       - run: pip install maturin
       - run: cd bindings/python && maturin build
+
+  docker-publish:
+    name: Publish Training Image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [rust-test, python-bindings]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/k15z/hexchess-zero/training
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:sha-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
