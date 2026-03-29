@@ -1,6 +1,7 @@
 from __future__ import annotations
 """Self-play game generation using MCTS via the hexchess engine."""
 
+import math
 import time
 import uuid
 from multiprocessing import Pool
@@ -87,7 +88,13 @@ def play_one_game(config: Config) -> tuple[str, list[dict]]:
     elif status == "checkmate_black":
         outcome_white = -1.0
     else:
-        outcome_white = 0.0
+        # For draws, use material heuristic so the value head gets signal.
+        # Without this, all-draw self-play produces zero-valued training data.
+        piece_values = {"pawn": 1, "knight": 3, "bishop": 3, "rook": 5, "queen": 9}
+        white_mat = sum(piece_values.get(p["piece"], 0) for p in game.board_state() if p["color"] == "white")
+        black_mat = sum(piece_values.get(p["piece"], 0) for p in game.board_state() if p["color"] == "black")
+        diff = (white_mat - black_mat) / 4.0  # normalize: queen up ≈ 0.95
+        outcome_white = max(-1.0, min(1.0, math.tanh(diff)))
 
     # Fill in outcome from each side's perspective
     for sample in samples:

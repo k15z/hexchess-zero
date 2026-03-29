@@ -307,7 +307,7 @@ function scheduleSelfPlayMove() {
     const delay = parseInt(document.getElementById("speed-slider").value, 10);
     selfPlayTimer = setTimeout(() => {
         try {
-            const m = ai.bestMove(game);
+            const m = ai.bestMoveWithTemperature(game, 0.8);
             game.applyMove(m.from_q, m.from_r, m.to_q, m.to_r, m.promotion);
             recordLastMove(m.from_q, m.from_r, m.to_q, m.to_r);
             moveCount++;

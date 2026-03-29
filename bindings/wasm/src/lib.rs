@@ -173,8 +173,15 @@ impl AiPlayer {
     /// Returns {from_q, from_r, to_q, to_r, promotion}.
     #[wasm_bindgen(js_name = "bestMove")]
     pub fn best_move(&self, game: &Game) -> JsValue {
+        self.best_move_with_temperature(game, 0.0)
+    }
+
+    /// Like bestMove but with temperature for move selection.
+    /// temperature=0: greedy, temperature=1: proportional to visit counts.
+    #[wasm_bindgen(js_name = "bestMoveWithTemperature")]
+    pub fn best_move_with_temperature(&self, game: &Game, temperature: f32) -> JsValue {
         let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
-        let result = search.search(&game.state, self.simulations);
+        let result = search.search_with_temperature(&game.state, self.simulations, temperature);
         let mv = result.best_move;
         to_js(&JsMove {
             from_q: mv.from.q,
