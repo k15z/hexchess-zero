@@ -46,7 +46,7 @@ class Config:
     temperature_low: float = 0.01
     dirichlet_alpha: float = 0.3
     dirichlet_epsilon: float = 0.25
-    num_self_play_workers: int = 10
+    num_self_play_workers: int = 4
 
     # --- Training ---
     training_epochs: int = 5
