@@ -35,12 +35,13 @@ def latest_generation() -> int:
 
 
 @dataclass
-class Config:
+class _BaseConfig:
+    """Shared hyperparameters between synchronous and async training modes."""
+
     # --- MCTS ---
     num_simulations: int = 500
 
     # --- Self-play ---
-    num_self_play_games: int = 1000
     temperature_threshold: int = 60  # after this many moves, temperature → near-zero
     temperature_high: float = 1.0
     temperature_low: float = 0.01
@@ -49,7 +50,6 @@ class Config:
     num_self_play_workers: int = 7
 
     # --- Training ---
-    training_epochs: int = 5
     batch_size: int = 256
     learning_rate: float = 0.001
     l2_regularization: float = 1e-4
@@ -68,7 +68,12 @@ class Config:
     arena_simulations: int = 500
     num_arena_workers: int = 7
 
-    # --- Generation ---
+
+@dataclass
+class Config(_BaseConfig):
+    # --- Generational training ---
+    num_self_play_games: int = 1000
+    training_epochs: int = 5
     generation: int = 1
 
     # --- Current generation paths ---
@@ -125,6 +130,61 @@ class Config:
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
 
+@dataclass
+class AsyncConfig(_BaseConfig):
+    """Configuration for the async distributed training pipeline.
+
+    Uses a flat directory structure instead of generational dirs:
+      .data/models/       — best.onnx, best.pt, best.meta.json
+      .data/training_data/ — version-tagged .npz files
+      .data/logs/          — append-only JSONL logs
+    """
+
+    # --- Async-specific ---
+    worker_batch_size: int = 50  # games per flush
+    steps_per_cycle: int = 2000  # training steps between arena evaluations
+    min_positions_to_train: int = 10_000  # wait for this much data before training
+
+    # --- Paths ---
+
+    @property
+    def models_dir(self) -> Path:
+        return _data_root() / "models"
+
+    @property
+    def training_data_dir(self) -> Path:
+        return _data_root() / "training_data"
+
+    @property
+    def logs_dir(self) -> Path:
+        return _data_root() / "logs"
+
+    @property
+    def best_model_path(self) -> Path:
+        return self.models_dir / "best.onnx"
+
+    @property
+    def best_checkpoint_path(self) -> Path:
+        return self.models_dir / "best.pt"
+
+    @property
+    def best_meta_path(self) -> Path:
+        return self.models_dir / "best.meta.json"
+
+    @property
+    def candidate_model_path(self) -> Path:
+        return self.models_dir / "candidate.onnx"
+
+    @property
+    def candidate_checkpoint_path(self) -> Path:
+        return self.models_dir / "candidate.pt"
+
+    def ensure_dirs(self) -> None:
+        self.models_dir.mkdir(parents=True, exist_ok=True)
+        self.training_data_dir.mkdir(parents=True, exist_ok=True)
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+
+
 if __name__ == "__main__":
     cfg = Config()
     print("Training pipeline configuration:")
@@ -133,3 +193,9 @@ if __name__ == "__main__":
     print(f"  generation_dir: {cfg.generation_dir}")
     print(f"  model_dir: {cfg.model_dir}")
     print(f"  data_dir: {cfg.data_dir}")
+
+    print("\nAsync configuration:")
+    acfg = AsyncConfig()
+    print(f"  models_dir: {acfg.models_dir}")
+    print(f"  training_data_dir: {acfg.training_data_dir}")
+    print(f"  best_model_path: {acfg.best_model_path}")
