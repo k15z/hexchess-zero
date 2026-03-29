@@ -4,6 +4,7 @@ use serde::Serialize;
 use hexchess_engine::board::{self, PieceKind};
 use hexchess_engine::game::GameState;
 use hexchess_engine::mcts::{MctsSearch, HeuristicEvaluator};
+use hexchess_engine::inference::TractEvaluator;
 use hexchess_engine::movegen;
 
 // ---------------------------------------------------------------------------
@@ -172,6 +173,18 @@ impl AiPlayer {
             search: MctsSearch::new(Box::new(HeuristicEvaluator)),
             simulations,
         }
+    }
+
+    /// Create an AI player that uses a neural network model.
+    /// `model_bytes` should be the contents of an ONNX model file.
+    #[wasm_bindgen(js_name = "withModel")]
+    pub fn with_model(simulations: u32, model_bytes: &[u8]) -> Result<AiPlayer, JsError> {
+        let evaluator = TractEvaluator::from_bytes(model_bytes)
+            .map_err(|e| JsError::new(&format!("failed to load model: {e}")))?;
+        Ok(AiPlayer {
+            search: MctsSearch::new(Box::new(evaluator)),
+            simulations,
+        })
     }
 
     /// Returns {from_q, from_r, to_q, to_r, promotion}.
