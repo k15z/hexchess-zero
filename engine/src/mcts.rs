@@ -211,10 +211,12 @@ impl MctsSearch {
         let root = MctsNode::new(None, None, None, 1.0);
         self.nodes.push(root);
 
+        // Use a single mutable state with apply/undo instead of cloning per sim.
+        let mut working_state = state.clone();
+
         // Run simulations.
         for _ in 0..num_simulations {
-            let mut current_state = state.clone();
-            self.simulate(0, &mut current_state);
+            self.simulate(0, &mut working_state);
         }
 
         self.extract_result(state, temperature)
@@ -225,10 +227,13 @@ impl MctsSearch {
     // ------------------------------------------------------------------
 
     /// One simulation: select -> expand/evaluate -> backpropagate.
+    ///
+    /// The state must be at the root position on entry and is restored before return.
     fn simulate(&mut self, root_idx: usize, state: &mut GameState) {
         // Phase 1: SELECT — walk down tree using PUCT.
         let mut node_idx = root_idx;
         let mut path = vec![node_idx];
+        let mut depth = 0u32;
 
         while self.nodes[node_idx].is_expanded && !self.nodes[node_idx].children.is_empty() {
             node_idx = self.select_child(node_idx);
@@ -238,6 +243,7 @@ impl MctsSearch {
                 .expect("non-root node must have an action");
             state.apply_move(action);
             path.push(node_idx);
+            depth += 1;
         }
 
         // Phase 2: EXPAND + EVALUATE.
@@ -261,6 +267,11 @@ impl MctsSearch {
         // The value is from the perspective of the side to move at `node_idx`.
         // As we walk back up, we negate at each level.
         self.backpropagate(&path, value);
+
+        // Undo all moves to restore state to root position.
+        for _ in 0..depth {
+            state.undo_move();
+        }
     }
 
     /// Select the child of `node_idx` with the highest PUCT score.
