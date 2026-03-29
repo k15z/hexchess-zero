@@ -29,7 +29,7 @@ pub trait Evaluator: Send + Sync {
 // HeuristicEvaluator
 // ---------------------------------------------------------------------------
 
-/// Heuristic policy (biased toward better moves) and positional value.
+/// Uniform policy over legal moves with material-aware value estimate.
 pub struct HeuristicEvaluator;
 
 impl Evaluator for HeuristicEvaluator {
@@ -39,40 +39,15 @@ impl Evaluator for HeuristicEvaluator {
         let mut policy = vec![0.0f32; num_indices];
 
         if !moves.is_empty() {
-            // One-ply lookahead: score each move by the resulting position eval.
-            // We evaluate from the opponent's perspective after our move, so negate.
-            let mut scratch = state.clone();
-            let mut scores: Vec<(usize, f32)> = Vec::with_capacity(moves.len());
-
+            let prob = 1.0 / moves.len() as f32;
             for mv in &moves {
                 if let Some(idx) = serialization::move_to_index(mv) {
-                    scratch.apply_move(*mv);
-                    // eval::evaluate returns score for side-to-move (now the
-                    // opponent after our move) — negate to get our perspective.
-                    let score = -(eval::evaluate(&scratch) as f32);
-                    scores.push((idx, score));
-                    scratch.undo_move();
-                }
-            }
-
-            // Softmax with temperature to convert scores to probabilities.
-            // temperature controls exploration: lower = more greedy.
-            let temperature = 200.0f32; // in centipawns
-            let max_score = scores.iter().map(|(_, s)| *s).fold(f32::NEG_INFINITY, f32::max);
-            let mut sum = 0.0f32;
-            for (idx, score) in &scores {
-                let exp = ((score - max_score) / temperature).exp();
-                policy[*idx] = exp;
-                sum += exp;
-            }
-            if sum > 0.0 {
-                for p in policy.iter_mut() {
-                    *p /= sum;
+                    policy[idx] = prob;
                 }
             }
         }
 
-        // Use the heuristic eval (centipawns) and map to [-1, 1] with tanh.
+        // Material + terminal-aware value mapped to [-1, 1].
         // Terminal states (±10000) saturate to ±1.0, material diffs scale smoothly.
         let cp = eval::evaluate(state) as f32;
         let value = (cp / 400.0).tanh();
