@@ -23,16 +23,8 @@ __pycache__/
 dist/
 target/wheels/
 
-# Training data and checkpoints
-data/
-models/checkpoints/
-models/*.onnx
-models/*.pt
-
-# Models (large checkpoints — small ONNX files are OK)
-models/*.pt
-models/*.pth
-models/*.bin
+# Training data, models, and checkpoints
+.data/
 
 # Node
 node_modules/

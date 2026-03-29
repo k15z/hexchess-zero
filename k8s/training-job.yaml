@@ -32,23 +32,11 @@ spec:
         - name: training
           image: hexchess-training:latest
           imagePullPolicy: Never
-          args:
-            - "loop"
-            - "--iterations"
-            - "10"
-            - "--games"
-            - "500"
-            - "--simulations"
-            - "250"
-            - "--workers"
-            - "10"
+          args: ["loop"]  # uses config.py defaults; override with e.g. --generations 20
           volumeMounts:
             - name: data
-              mountPath: /app/models
-              subPath: models
-            - name: data
-              mountPath: /app/data
-              subPath: data
+              mountPath: /app/.data
+              subPath: .data
           resources:
             requests:
               memory: 4Gi

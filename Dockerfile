@@ -38,4 +38,4 @@ COPY training/ training/
 
 # Default: run full training loop
 ENTRYPOINT ["python", "-m", "training"]
-CMD ["loop", "--iterations", "10"]
+CMD ["loop"]

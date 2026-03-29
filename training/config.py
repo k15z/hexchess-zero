@@ -1,6 +1,5 @@
 """Hyperparameters and paths for the AlphaZero-style training pipeline."""
 
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -10,13 +9,38 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def _data_root() -> Path:
+    return _project_root() / ".data"
+
+
+def latest_generation() -> int:
+    """Find the highest existing generation number, or 0 if none exist.
+
+    Only counts generations that contain actual files (not empty dirs
+    created by ensure_dirs()).
+    """
+    root = _data_root()
+    if not root.exists():
+        return 0
+    gens = []
+    for d in root.iterdir():
+        if d.is_dir() and d.name.startswith("gen"):
+            try:
+                n = int(d.name[3:])
+            except ValueError:
+                continue
+            if any(d.rglob("*.*")):
+                gens.append(n)
+    return max(gens) if gens else 0
+
+
 @dataclass
 class Config:
     # --- MCTS ---
-    num_simulations: int = 250
+    num_simulations: int = 500
 
     # --- Self-play ---
-    num_self_play_games: int = 500
+    num_self_play_games: int = 200
     temperature_threshold: int = 30  # after this many moves, temperature → near-zero
     temperature_high: float = 1.0
     temperature_low: float = 0.01
@@ -41,26 +65,53 @@ class Config:
     # --- Arena ---
     arena_games: int = 25
     win_threshold: float = 0.60
-    arena_simulations: int = 250
+    arena_simulations: int = 500
 
-    # --- Paths (relative to project root) ---
-    model_dir: Path = field(default_factory=lambda: _project_root() / "models")
-    data_dir: Path = field(default_factory=lambda: _project_root() / "data" / "self_play")
-    checkpoint_dir: Path = field(default_factory=lambda: _project_root() / "models" / "checkpoints")
-    best_model_path: Path = field(
-        default_factory=lambda: _project_root() / "models" / "best.onnx"
-    )
-    best_checkpoint_path: Path = field(
-        default_factory=lambda: _project_root() / "models" / "best.pt"
-    )
+    # --- Generation ---
+    generation: int = 1
+
+    # --- Current generation paths ---
+
+    @property
+    def generation_dir(self) -> Path:
+        return _data_root() / f"gen{self.generation}"
+
+    @property
+    def model_dir(self) -> Path:
+        return self.generation_dir / "model"
+
+    @property
+    def data_dir(self) -> Path:
+        return self.generation_dir / "data"
+
+    @property
+    def best_model_path(self) -> Path:
+        return self.model_dir / "best.onnx"
+
+    @property
+    def best_checkpoint_path(self) -> Path:
+        return self.model_dir / "best.pt"
+
+    # --- Previous generation paths (for bootstrapping) ---
+    # At generation 1 these point to gen0 which won't exist — callers
+    # check .exists() and fall back to random/scratch initialization.
+
+    @property
+    def prev_generation_dir(self) -> Path:
+        return _data_root() / f"gen{self.generation - 1}"
+
+    @property
+    def prev_best_model_path(self) -> Path:
+        return self.prev_generation_dir / "model" / "best.onnx"
+
+    @property
+    def prev_best_checkpoint_path(self) -> Path:
+        return self.prev_generation_dir / "model" / "best.pt"
 
     def ensure_dirs(self) -> None:
         """Create all necessary directories."""
         self.model_dir.mkdir(parents=True, exist_ok=True)
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
-
-
 
 
 if __name__ == "__main__":
@@ -68,3 +119,6 @@ if __name__ == "__main__":
     print("Training pipeline configuration:")
     for k, v in cfg.__dict__.items():
         print(f"  {k}: {v}")
+    print(f"  generation_dir: {cfg.generation_dir}")
+    print(f"  model_dir: {cfg.model_dir}")
+    print(f"  data_dir: {cfg.data_dir}")

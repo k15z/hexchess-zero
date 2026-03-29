@@ -87,7 +87,7 @@ def run_arena(config: Config | None = None) -> dict:
     cfg = config or Config()
 
     new_model = cfg.model_dir / "latest.onnx"
-    old_model = cfg.best_model_path
+    old_model = cfg.prev_best_model_path
     new_path = str(new_model) if new_model.exists() else None
     old_path = str(old_model) if old_model.exists() else None
     print(f"Arena: {cfg.arena_games} games | new={'NN' if new_path else 'random'} vs old={'NN' if old_path else 'random'}", flush=True)
@@ -149,7 +149,7 @@ def promote_model(config: Config | None = None) -> None:
     """Copy the latest checkpoint to the best model slot."""
     cfg = config or Config()
     latest_onnx = cfg.model_dir / "latest.onnx"
-    latest_pt = cfg.checkpoint_dir / "latest.pt"
+    latest_pt = cfg.model_dir / "latest.pt"
 
     if latest_onnx.exists():
         import shutil

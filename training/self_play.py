@@ -33,7 +33,7 @@ def play_one_game(config: Config) -> tuple[str, list[dict]]:
         )
 
     game = hexchess.Game()
-    model_path = str(config.best_model_path) if config.best_model_path.exists() else None
+    model_path = str(config.prev_best_model_path) if config.prev_best_model_path.exists() else None
     search = hexchess.MctsSearch(
         simulations=config.num_simulations,
         model_path=model_path,
@@ -144,7 +144,7 @@ def run_self_play(config: Config | None = None) -> Path:
         )
 
     # When using NN model, run sequentially (each worker loads model separately)
-    using_model = cfg.best_model_path.exists()
+    using_model = cfg.prev_best_model_path.exists()
     workers = 1 if using_model else cfg.num_self_play_workers
 
     num_indices = hexchess.num_move_indices()

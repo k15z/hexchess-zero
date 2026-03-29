@@ -2,10 +2,11 @@ from __future__ import annotations
 """Main training orchestrator: self-play -> train -> export -> arena -> promote."""
 
 import argparse
+import shutil
 import time
 from pathlib import Path
 
-from .config import Config
+from .config import Config, latest_generation
 
 
 def step_self_play(config: Config) -> Path:
@@ -30,7 +31,7 @@ def step_export(config: Config) -> Path:
 
     print("\n--- Export ---", flush=True)
 
-    checkpoint = config.checkpoint_dir / "latest.pt"
+    checkpoint = config.model_dir / "latest.pt"
     output = config.model_dir / "latest.onnx"
 
     if not checkpoint.exists():
@@ -52,46 +53,58 @@ def step_arena(config: Config) -> bool:
     return results["promoted"]
 
 
-def run_full_loop(config: Config, num_iterations: int = 10) -> None:
+def run_full_loop(config: Config, num_generations: int = 10) -> None:
     """
     Run the full AlphaZero training loop.
 
-    Each iteration:
-      1. Self-play: generate training data
-      2. Train: update network weights
+    Each generation:
+      1. Self-play: generate training data (using prev gen's best model)
+      2. Train: update network weights (initializing from prev gen's checkpoint)
       3. Export: convert to ONNX
-      4. Arena: evaluate against current best
-      5. Promote: if new model wins enough
+      4. Arena: evaluate against previous generation's best
+      5. Promote: if new model wins enough, save as this gen's best
     """
-    print(f"AlphaZero loop: {num_iterations} iterations, "
-          f"{config.num_self_play_games} games/iter, "
+    start_gen = config.generation
+    end_gen = start_gen + num_generations - 1
+
+    print(f"AlphaZero loop: generations {start_gen}-{end_gen}, "
+          f"{config.num_self_play_games} games/gen, "
           f"{config.num_simulations} sims/move, "
           f"{config.training_epochs} epochs", flush=True)
 
-    config.ensure_dirs()
     loop_t0 = time.time()
 
-    for iteration in range(1, num_iterations + 1):
-        print(f"\n====== Iteration {iteration}/{num_iterations} ======", flush=True)
+    for gen in range(start_gen, end_gen + 1):
+        config.generation = gen
+        config.ensure_dirs()
+
+        print(f"\n====== Generation {gen} ======", flush=True)
         t0 = time.time()
 
         step_self_play(config)
         step_train(config)
         step_export(config)
 
-        # Auto-promote on first iteration when no best model exists
-        if not config.best_model_path.exists():
+        # Auto-promote on first generation (no previous best to compare against)
+        if not config.prev_best_model_path.exists():
             from .arena import promote_model
-            print("No best model yet — auto-promoting.", flush=True)
+            print("No previous best model — auto-promoting.", flush=True)
             promote_model(config)
             promoted = True
         else:
             promoted = step_arena(config)
+            if not promoted:
+                # Carry forward previous best so the next generation has
+                # an unbroken chain to bootstrap from.
+                shutil.copy2(config.prev_best_model_path, config.best_model_path)
+                if config.prev_best_checkpoint_path.exists():
+                    shutil.copy2(config.prev_best_checkpoint_path, config.best_checkpoint_path)
+                print(f"Carried forward previous best to {config.best_model_path}", flush=True)
 
         elapsed = time.time() - t0
         total = time.time() - loop_t0
         status = "PROMOTED" if promoted else "kept"
-        print(f"Iteration {iteration} done in {elapsed:.0f}s ({status}) | total {total:.0f}s", flush=True)
+        print(f"Generation {gen} done in {elapsed:.0f}s ({status}) | total {total:.0f}s", flush=True)
 
 
 def main() -> None:
@@ -105,11 +118,12 @@ def main() -> None:
     common.add_argument("--epochs", type=int, default=None, help="Training epochs")
     common.add_argument("--batch-size", type=int, default=None, help="Training batch size")
     common.add_argument("--workers", type=int, default=None, help="Self-play workers")
+    common.add_argument("--generation", type=int, default=None, help="Starting generation number")
 
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
     loop_parser = subparsers.add_parser("loop", parents=[common], help="Run the full training loop")
-    loop_parser.add_argument("--iterations", type=int, default=10, help="Number of training iterations")
+    loop_parser.add_argument("--generations", type=int, default=10, help="Number of generations to run")
 
     subparsers.add_parser("self-play", parents=[common], help="Run self-play game generation")
     subparsers.add_parser("train", parents=[common], help="Train the network")
@@ -131,12 +145,18 @@ def main() -> None:
     if args.workers is not None:
         cfg.num_self_play_workers = args.workers
 
+    # Auto-detect generation: resume after the latest existing one
+    if args.generation is not None:
+        cfg.generation = args.generation
+    else:
+        cfg.generation = latest_generation() + 1
+
     if args.command is None:
         parser.print_help()
         return
 
     if args.command == "loop":
-        run_full_loop(cfg, num_iterations=args.iterations)
+        run_full_loop(cfg, num_generations=args.generations)
     elif args.command == "self-play":
         step_self_play(cfg)
     elif args.command == "train":

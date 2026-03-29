@@ -139,9 +139,9 @@ def train(config: Config | None = None) -> Path:
 
     # Build or load model
     model = build_model(cfg).to(device)
-    if cfg.best_checkpoint_path.exists():
-        print(f"Loading existing checkpoint: {cfg.best_checkpoint_path}")
-        model.load_state_dict(torch.load(cfg.best_checkpoint_path, map_location=device))
+    if cfg.prev_best_checkpoint_path.exists():
+        print(f"Loading checkpoint from previous generation: {cfg.prev_best_checkpoint_path}")
+        model.load_state_dict(torch.load(cfg.prev_best_checkpoint_path, map_location=device))
 
     # Optimizer
     optimizer = optim.Adam(
@@ -209,7 +209,7 @@ def train(config: Config | None = None) -> Path:
             )
 
     # Save checkpoint
-    checkpoint_path = cfg.checkpoint_dir / "latest.pt"
+    checkpoint_path = cfg.model_dir / "latest.pt"
     torch.save(model.state_dict(), checkpoint_path)
     print(f"Saved checkpoint to {checkpoint_path}")
 

@@ -1,8 +1,7 @@
 .git/
 .venv/
 target/
-data/
-models/
+.data/
 *.onnx
 *.pt
 training_log.txt

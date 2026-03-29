@@ -91,18 +91,18 @@ if __name__ == "__main__":
         "--checkpoint",
         type=str,
         default=None,
-        help="Path to .pt checkpoint (default: models/checkpoints/latest.pt)",
+        help="Path to .pt checkpoint (default: .data/genN/model/latest.pt)",
     )
     parser.add_argument(
         "--output",
         type=str,
         default=None,
-        help="Output .onnx path (default: models/latest.onnx)",
+        help="Output .onnx path (default: .data/genN/model/latest.onnx)",
     )
     args = parser.parse_args()
 
     cfg = Config()
-    checkpoint = Path(args.checkpoint) if args.checkpoint else cfg.checkpoint_dir / "latest.pt"
+    checkpoint = Path(args.checkpoint) if args.checkpoint else cfg.model_dir / "latest.pt"
     output = Path(args.output) if args.output else cfg.model_dir / "latest.onnx"
 
     if not checkpoint.exists():
