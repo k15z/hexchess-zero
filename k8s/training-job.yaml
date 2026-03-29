@@ -1,0 +1,62 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hexchess
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hexchess-data
+  namespace: hexchess
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hexchess-training
+  namespace: hexchess
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 86400
+  template:
+    metadata:
+      labels:
+        app: hexchess-training
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: training
+          image: hexchess-training:latest
+          imagePullPolicy: Never
+          args:
+            - "loop"
+            - "--iterations"
+            - "10"
+            - "--games"
+            - "500"
+            - "--simulations"
+            - "250"
+            - "--workers"
+            - "10"
+          volumeMounts:
+            - name: data
+              mountPath: /app/models
+              subPath: models
+            - name: data
+              mountPath: /app/data
+              subPath: data
+          resources:
+            requests:
+              memory: 4Gi
+              cpu: "7"
+            limits:
+              memory: 12Gi
+              cpu: "8"
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: hexchess-data

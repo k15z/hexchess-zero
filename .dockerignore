@@ -1,0 +1,9 @@
+.git/
+.venv/
+target/
+data/
+models/
+*.onnx
+*.pt
+training_log.txt
+deploy/
