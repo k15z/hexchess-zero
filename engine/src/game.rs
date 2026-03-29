@@ -1,4 +1,4 @@
-use crate::board::{coord_to_index, Board, Color, HexCoord, Piece, PieceKind, ZOBRIST};
+use crate::board::{Board, Color, HexCoord, Piece, PieceKind, ZOBRIST, coord_to_index};
 use crate::movegen::{self, Move};
 
 // ---------------------------------------------------------------------------
@@ -8,7 +8,7 @@ use crate::movegen::{self, Move};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GameStatus {
     Ongoing,
-    Checkmate(Color),       // Color is the **winner**
+    Checkmate(Color), // Color is the **winner**
     Stalemate,
     DrawByRepetition,
     DrawByFiftyMoves,
@@ -37,9 +37,9 @@ impl GameStatus {
 #[derive(Clone, Debug)]
 struct UndoInfo {
     mv: Move,
-    en_passant: Option<HexCoord>,   // en-passant state *before* this move
-    halfmove_clock: u16,            // halfmove clock *before* this move
-    zobrist_hash: u64,              // zobrist hash *before* this move
+    en_passant: Option<HexCoord>, // en-passant state *before* this move
+    halfmove_clock: u16,          // halfmove clock *before* this move
+    zobrist_hash: u64,            // zobrist hash *before* this move
 }
 
 // ---------------------------------------------------------------------------
@@ -117,7 +117,7 @@ impl GameState {
             GameStatus::Ongoing => None,
             GameStatus::Checkmate(winner) => {
                 if winner == self.side_to_move() {
-                    Some(1.0)  // side to move won
+                    Some(1.0) // side to move won
                 } else {
                     Some(-1.0) // side to move lost (they're checkmated)
                 }
@@ -164,7 +164,11 @@ impl GameState {
     /// Check whether the current position has appeared at least 3 times.
     fn is_draw_by_repetition(&self) -> bool {
         let current = self.board.zobrist_hash;
-        let count = self.position_history.iter().filter(|&&h| h == current).count();
+        let count = self
+            .position_history
+            .iter()
+            .filter(|&&h| h == current)
+            .count();
         count >= 3
     }
 
@@ -175,13 +179,14 @@ impl GameState {
 
         for cell in &self.board.cells {
             if let Some(piece) = cell
-                && piece.kind != PieceKind::King {
-                    non_king_count += 1;
-                    if non_king_count > 1 {
-                        return false;
-                    }
-                    lone_kind = piece.kind;
+                && piece.kind != PieceKind::King
+            {
+                non_king_count += 1;
+                if non_king_count > 1 {
+                    return false;
                 }
+                lone_kind = piece.kind;
+            }
         }
 
         // K vs K, or K+B vs K
@@ -204,7 +209,9 @@ impl GameState {
         let side = self.board.side_to_move;
 
         // 2. Pick up the piece at `from`
-        let mut piece = self.board.get(mv.from)
+        let mut piece = self
+            .board
+            .get(mv.from)
             .expect("apply_move: no piece at `from`");
         self.board.set(mv.from, None);
 
@@ -222,7 +229,10 @@ impl GameState {
 
         // 4. Handle promotion
         if let Some(promo_kind) = mv.promotion {
-            piece = Piece { kind: promo_kind, color: side };
+            piece = Piece {
+                kind: promo_kind,
+                color: side,
+            };
         }
 
         // 5. Place piece on destination
@@ -242,13 +252,15 @@ impl GameState {
 
         // 7. Update Zobrist hash for en passant change
         if let Some(old_ep) = undo.en_passant
-            && let Some(idx) = coord_to_index(old_ep) {
-                self.board.zobrist_hash ^= ZOBRIST.en_passant[idx];
-            }
+            && let Some(idx) = coord_to_index(old_ep)
+        {
+            self.board.zobrist_hash ^= ZOBRIST.en_passant[idx];
+        }
         if let Some(new_ep) = self.board.en_passant
-            && let Some(idx) = coord_to_index(new_ep) {
-                self.board.zobrist_hash ^= ZOBRIST.en_passant[idx];
-            }
+            && let Some(idx) = coord_to_index(new_ep)
+        {
+            self.board.zobrist_hash ^= ZOBRIST.en_passant[idx];
+        }
 
         // 8. Update clocks
         if piece.kind == PieceKind::Pawn || mv.captured.is_some() || mv.is_en_passant {
@@ -272,8 +284,7 @@ impl GameState {
     }
 
     pub fn undo_move(&mut self) {
-        let undo = self.move_history.pop()
-            .expect("undo_move: no move to undo");
+        let undo = self.move_history.pop().expect("undo_move: no move to undo");
         let mv = &undo.mv;
 
         // Pop position history (the hash pushed by apply_move)
@@ -284,12 +295,14 @@ impl GameState {
         let side = self.board.side_to_move; // side that made the move we're undoing
 
         // Determine what piece is currently on `to`
-        let mut piece = self.board.get(mv.to)
-            .expect("undo_move: no piece at `to`");
+        let mut piece = self.board.get(mv.to).expect("undo_move: no piece at `to`");
 
         // Undo promotion: restore the piece to a pawn
         if mv.promotion.is_some() {
-            piece = Piece { kind: PieceKind::Pawn, color: side };
+            piece = Piece {
+                kind: PieceKind::Pawn,
+                color: side,
+            };
         }
 
         // Move piece back to `from`
@@ -410,7 +423,10 @@ mod tests {
         let mut board = kings_only_board();
         board.set(
             HexCoord::new(2, -5),
-            Some(Piece { kind: PieceKind::Rook, color: Color::White }),
+            Some(Piece {
+                kind: PieceKind::Rook,
+                color: Color::White,
+            }),
         );
         let mut game = GameState::from_board(board);
 
@@ -443,9 +459,15 @@ mod tests {
         let mut board = kings_only_board();
         board.set(
             HexCoord::new(2, -3),
-            Some(Piece { kind: PieceKind::Rook, color: Color::White }),
+            Some(Piece {
+                kind: PieceKind::Rook,
+                color: Color::White,
+            }),
         );
-        let black_knight = Piece { kind: PieceKind::Knight, color: Color::Black };
+        let black_knight = Piece {
+            kind: PieceKind::Knight,
+            color: Color::Black,
+        };
         board.set(HexCoord::new(2, 0), Some(black_knight));
 
         let mut game = GameState::from_board(board);
@@ -457,7 +479,10 @@ mod tests {
         // The black knight should be gone, white rook on (2,0)
         assert_eq!(
             game.board.get(HexCoord::new(2, 0)),
-            Some(Piece { kind: PieceKind::Rook, color: Color::White }),
+            Some(Piece {
+                kind: PieceKind::Rook,
+                color: Color::White
+            }),
         );
         assert_eq!(game.board.get(HexCoord::new(2, -3)), None);
 
@@ -473,7 +498,10 @@ mod tests {
         // White pawn that will double-push
         board.set(
             HexCoord::new(0, -1),
-            Some(Piece { kind: PieceKind::Pawn, color: Color::White }),
+            Some(Piece {
+                kind: PieceKind::Pawn,
+                color: Color::White,
+            }),
         );
         let mut game = GameState::from_board(board);
 
@@ -493,7 +521,10 @@ mod tests {
         // Now set up a black pawn that could capture ep
         game.board.set(
             HexCoord::new(1, 0),
-            Some(Piece { kind: PieceKind::Pawn, color: Color::Black }),
+            Some(Piece {
+                kind: PieceKind::Pawn,
+                color: Color::Black,
+            }),
         );
 
         let cells_before_ep = game.board.cells;
@@ -502,7 +533,10 @@ mod tests {
             from: HexCoord::new(1, 0),
             to: HexCoord::new(0, 0),
             promotion: None,
-            captured: Some(Piece { kind: PieceKind::Pawn, color: Color::White }),
+            captured: Some(Piece {
+                kind: PieceKind::Pawn,
+                color: Color::White,
+            }),
             is_en_passant: true,
         };
         game.apply_move(ep_capture);
@@ -511,7 +545,10 @@ mod tests {
         assert_eq!(game.board.get(HexCoord::new(0, 1)), None);
         assert_eq!(
             game.board.get(HexCoord::new(0, 0)),
-            Some(Piece { kind: PieceKind::Pawn, color: Color::Black }),
+            Some(Piece {
+                kind: PieceKind::Pawn,
+                color: Color::Black
+            }),
         );
 
         game.undo_move();
@@ -531,11 +568,17 @@ mod tests {
         board.black_king = HexCoord::new(3, 2); // move black king elsewhere
         board.set(
             HexCoord::new(3, 2),
-            Some(Piece { kind: PieceKind::King, color: Color::Black }),
+            Some(Piece {
+                kind: PieceKind::King,
+                color: Color::Black,
+            }),
         );
         board.set(
             HexCoord::new(0, 4),
-            Some(Piece { kind: PieceKind::Pawn, color: Color::White }),
+            Some(Piece {
+                kind: PieceKind::Pawn,
+                color: Color::White,
+            }),
         );
         let mut game = GameState::from_board(board);
         let cells_before = game.board.cells;
@@ -551,7 +594,10 @@ mod tests {
 
         assert_eq!(
             game.board.get(HexCoord::new(0, 5)),
-            Some(Piece { kind: PieceKind::Queen, color: Color::White }),
+            Some(Piece {
+                kind: PieceKind::Queen,
+                color: Color::White
+            }),
         );
 
         game.undo_move();
@@ -636,7 +682,10 @@ mod tests {
         let mut board = kings_only_board();
         board.set(
             HexCoord::new(1, -3),
-            Some(Piece { kind: PieceKind::Bishop, color: Color::White }),
+            Some(Piece {
+                kind: PieceKind::Bishop,
+                color: Color::White,
+            }),
         );
         let game = GameState::from_board(board);
         assert!(game.is_insufficient_material());
@@ -649,7 +698,10 @@ mod tests {
         let mut board = kings_only_board();
         board.set(
             HexCoord::new(1, -3),
-            Some(Piece { kind: PieceKind::Rook, color: Color::White }),
+            Some(Piece {
+                kind: PieceKind::Rook,
+                color: Color::White,
+            }),
         );
         let game = GameState::from_board(board);
         assert!(!game.is_insufficient_material());
@@ -662,11 +714,17 @@ mod tests {
         let mut board = kings_only_board();
         board.set(
             HexCoord::new(2, -5),
-            Some(Piece { kind: PieceKind::Rook, color: Color::White }),
+            Some(Piece {
+                kind: PieceKind::Rook,
+                color: Color::White,
+            }),
         );
         board.set(
             HexCoord::new(-2, 5),
-            Some(Piece { kind: PieceKind::Rook, color: Color::Black }),
+            Some(Piece {
+                kind: PieceKind::Rook,
+                color: Color::Black,
+            }),
         );
         let mut game = GameState::from_board(board);
 
@@ -685,15 +743,24 @@ mod tests {
         // Place rook and pawn
         board.set(
             HexCoord::new(2, -5),
-            Some(Piece { kind: PieceKind::Rook, color: Color::White }),
+            Some(Piece {
+                kind: PieceKind::Rook,
+                color: Color::White,
+            }),
         );
         board.set(
             HexCoord::new(0, -1),
-            Some(Piece { kind: PieceKind::Pawn, color: Color::White }),
+            Some(Piece {
+                kind: PieceKind::Pawn,
+                color: Color::White,
+            }),
         );
         board.set(
             HexCoord::new(-2, 5),
-            Some(Piece { kind: PieceKind::Rook, color: Color::Black }),
+            Some(Piece {
+                kind: PieceKind::Rook,
+                color: Color::Black,
+            }),
         );
         let mut game = GameState::from_board(board);
 
@@ -717,11 +784,17 @@ mod tests {
         let mut board = kings_only_board();
         board.set(
             HexCoord::new(2, -5),
-            Some(Piece { kind: PieceKind::Rook, color: Color::White }),
+            Some(Piece {
+                kind: PieceKind::Rook,
+                color: Color::White,
+            }),
         );
         board.set(
             HexCoord::new(-2, 5),
-            Some(Piece { kind: PieceKind::Rook, color: Color::Black }),
+            Some(Piece {
+                kind: PieceKind::Rook,
+                color: Color::Black,
+            }),
         );
         let mut game = GameState::from_board(board);
 
@@ -739,7 +812,10 @@ mod tests {
         let mut board = kings_only_board();
         board.set(
             HexCoord::new(-2, 5),
-            Some(Piece { kind: PieceKind::Rook, color: Color::Black }),
+            Some(Piece {
+                kind: PieceKind::Rook,
+                color: Color::Black,
+            }),
         );
         let mut game = GameState::from_board(board);
 

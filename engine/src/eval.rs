@@ -15,7 +15,10 @@ pub fn piece_value(kind: PieceKind) -> i32 {
 
 /// Count total material for a color in centipawns.
 pub fn material(board: &Board, color: Color) -> i32 {
-    board.all_pieces(color).map(|(_, p)| piece_value(p.kind)).sum()
+    board
+        .all_pieces(color)
+        .map(|(_, p)| piece_value(p.kind))
+        .sum()
 }
 
 /// Evaluate a game state from the perspective of the side to move.
@@ -50,10 +53,15 @@ pub fn evaluate(state: &GameState) -> i32 {
 /// already know the game is ongoing.
 pub fn evaluate_board(board: &Board) -> i32 {
     let us = board.side_to_move;
-    board.cells.iter().flatten().map(|p| {
-        let sign = if p.color == us { 1 } else { -1 };
-        sign * piece_value(p.kind)
-    }).sum()
+    board
+        .cells
+        .iter()
+        .flatten()
+        .map(|p| {
+            let sign = if p.color == us { 1 } else { -1 };
+            sign * piece_value(p.kind)
+        })
+        .sum()
 }
 
 #[cfg(test)]
@@ -72,7 +80,11 @@ mod tests {
         let mut state = GameState::new();
         state.board.set(HexCoord::new(0, -1), None);
         let score = evaluate(&state);
-        assert!(score < 0, "Expected negative eval after removing white pawn, got {}", score);
+        assert!(
+            score < 0,
+            "Expected negative eval after removing white pawn, got {}",
+            score
+        );
     }
 
     #[test]

@@ -1,10 +1,10 @@
-use wasm_bindgen::prelude::*;
 use serde::Serialize;
+use wasm_bindgen::prelude::*;
 
 use hexchess_engine::board::{self, PieceKind};
 use hexchess_engine::game::GameState;
-use hexchess_engine::mcts::{MctsSearch, HeuristicEvaluator};
 use hexchess_engine::inference::TractEvaluator;
+use hexchess_engine::mcts::{HeuristicEvaluator, MctsSearch};
 use hexchess_engine::movegen;
 
 // ---------------------------------------------------------------------------
@@ -53,13 +53,17 @@ pub struct Game {
 impl Game {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Game {
-        Game { state: GameState::new() }
+        Game {
+            state: GameState::new(),
+        }
     }
 
     /// All legal moves as [{from_q, from_r, to_q, to_r, promotion}].
     #[wasm_bindgen(js_name = "legalMoves")]
     pub fn legal_moves(&self) -> JsValue {
-        let moves: Vec<JsMove> = self.state.legal_moves()
+        let moves: Vec<JsMove> = self
+            .state
+            .legal_moves()
             .iter()
             .map(|m| JsMove {
                 from_q: m.from.q,
@@ -82,20 +86,26 @@ impl Game {
         to_r: i8,
         promotion: Option<String>,
     ) -> Result<(), JsError> {
-        let promo_kind = promotion.as_deref()
-            .map(|s| PieceKind::parse(s)
-                .ok_or_else(|| JsError::new(&format!("invalid promotion piece: {s}"))))
+        let promo_kind = promotion
+            .as_deref()
+            .map(|s| {
+                PieceKind::parse(s)
+                    .ok_or_else(|| JsError::new(&format!("invalid promotion piece: {s}")))
+            })
             .transpose()?;
 
         let from = board::HexCoord::new(from_q, from_r);
         let to = board::HexCoord::new(to_q, to_r);
 
         let legal = self.state.legal_moves();
-        let mv = legal.iter()
+        let mv = legal
+            .iter()
             .find(|m| m.from == from && m.to == to && m.promotion == promo_kind)
-            .ok_or_else(|| JsError::new(&format!(
-                "illegal move: ({from_q},{from_r})->({to_q},{to_r})"
-            )))?;
+            .ok_or_else(|| {
+                JsError::new(&format!(
+                    "illegal move: ({from_q},{from_r})->({to_q},{to_r})"
+                ))
+            })?;
 
         self.state.apply_move(*mv);
         Ok(())
@@ -122,7 +132,12 @@ impl Game {
     /// All pieces on the board as [{q, r, piece, color}].
     #[wasm_bindgen(js_name = "boardState")]
     pub fn board_state(&self) -> JsValue {
-        let pieces: Vec<JsPiece> = self.state.board.cells.iter().enumerate()
+        let pieces: Vec<JsPiece> = self
+            .state
+            .board
+            .cells
+            .iter()
+            .enumerate()
             .filter_map(|(idx, cell)| {
                 cell.map(|piece| {
                     let coord = board::index_to_coord(idx);
@@ -197,7 +212,9 @@ impl AiPlayer {
     /// temperature=0: greedy, temperature=1: proportional to visit counts.
     #[wasm_bindgen(js_name = "bestMoveWithTemperature")]
     pub fn best_move_with_temperature(&mut self, game: &Game, temperature: f32) -> JsValue {
-        let result = self.search.search_with_temperature(&game.state, self.simulations, temperature);
+        let result =
+            self.search
+                .search_with_temperature(&game.state, self.simulations, temperature);
         let mv = result.best_move;
         to_js(&JsMove {
             from_q: mv.from.q,

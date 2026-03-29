@@ -137,24 +137,10 @@ pub fn all_coords() -> impl Iterator<Item = (usize, HexCoord)> {
 // ---------------------------------------------------------------------------
 
 /// The 6 edge-adjacent (cardinal) directions in axial coordinates.
-pub const CARDINAL_DIRS: [(i8, i8); 6] = [
-    (1, 0),
-    (-1, 0),
-    (0, 1),
-    (0, -1),
-    (1, -1),
-    (-1, 1),
-];
+pub const CARDINAL_DIRS: [(i8, i8); 6] = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, -1), (-1, 1)];
 
 /// The 6 vertex-adjacent (diagonal) directions in axial coordinates.
-pub const DIAGONAL_DIRS: [(i8, i8); 6] = [
-    (2, -1),
-    (-2, 1),
-    (1, 1),
-    (-1, -1),
-    (1, -2),
-    (-1, 2),
-];
+pub const DIAGONAL_DIRS: [(i8, i8); 6] = [(2, -1), (-2, 1), (1, 1), (-1, -1), (1, -2), (-1, 2)];
 
 /// All 12 directions (6 cardinal + 6 diagonal).
 pub const ALL_DIRS: [(i8, i8); 12] = [
@@ -176,21 +162,44 @@ pub const ALL_DIRS: [(i8, i8); 12] = [
 
 /// Hex knight jump offsets in axial coordinates (12 jumps).
 pub const KNIGHT_OFFSETS: [(i8, i8); 12] = [
-    (1, 2), (2, 1), (3, -1), (1, -3),
-    (-1, -2), (-2, -1), (-3, 1), (-1, 3),
-    (-2, 3), (-3, 2), (2, -3), (3, -2),
+    (1, 2),
+    (2, 1),
+    (3, -1),
+    (1, -3),
+    (-1, -2),
+    (-2, -1),
+    (-3, 1),
+    (-1, 3),
+    (-2, 3),
+    (-3, 2),
+    (2, -3),
+    (3, -2),
 ];
 
 /// White pawn starting positions (axial coords).
 pub const WHITE_PAWN_START: [(i8, i8); 9] = [
-    (-4, -1), (-3, -1), (-2, -1), (-1, -1), (0, -1),
-    (1, -2), (2, -3), (3, -4), (4, -5),
+    (-4, -1),
+    (-3, -1),
+    (-2, -1),
+    (-1, -1),
+    (0, -1),
+    (1, -2),
+    (2, -3),
+    (3, -4),
+    (4, -5),
 ];
 
 /// Black pawn starting positions (mirror of white).
 pub const BLACK_PAWN_START: [(i8, i8); 9] = [
-    (4, 1), (3, 1), (2, 1), (1, 1), (0, 1),
-    (-1, 2), (-2, 3), (-3, 4), (-4, 5),
+    (4, 1),
+    (3, 1),
+    (2, 1),
+    (1, 1),
+    (0, 1),
+    (-1, 2),
+    (-2, 3),
+    (-3, 4),
+    (-4, 5),
 ];
 
 // ---------------------------------------------------------------------------
@@ -303,7 +312,10 @@ impl PieceKind {
 
 /// Promotion piece choices.
 pub const PROMOTION_PIECES: [PieceKind; 4] = [
-    PieceKind::Queen, PieceKind::Rook, PieceKind::Bishop, PieceKind::Knight,
+    PieceKind::Queen,
+    PieceKind::Rook,
+    PieceKind::Bishop,
+    PieceKind::Knight,
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -414,21 +426,48 @@ impl Board {
 
         // --- White pieces ---
         for &(q, r) in &WHITE_PAWN_START {
-            board.place(HexCoord::new(q, r), Piece::new(PieceKind::Pawn, Color::White));
+            board.place(
+                HexCoord::new(q, r),
+                Piece::new(PieceKind::Pawn, Color::White),
+            );
         }
 
         // Rooks
-        board.place(HexCoord::new(-3, -2), Piece::new(PieceKind::Rook, Color::White));
-        board.place(HexCoord::new(3, -5), Piece::new(PieceKind::Rook, Color::White));
+        board.place(
+            HexCoord::new(-3, -2),
+            Piece::new(PieceKind::Rook, Color::White),
+        );
+        board.place(
+            HexCoord::new(3, -5),
+            Piece::new(PieceKind::Rook, Color::White),
+        );
         // Knights
-        board.place(HexCoord::new(-2, -3), Piece::new(PieceKind::Knight, Color::White));
-        board.place(HexCoord::new(2, -5), Piece::new(PieceKind::Knight, Color::White));
+        board.place(
+            HexCoord::new(-2, -3),
+            Piece::new(PieceKind::Knight, Color::White),
+        );
+        board.place(
+            HexCoord::new(2, -5),
+            Piece::new(PieceKind::Knight, Color::White),
+        );
         // Bishops
-        board.place(HexCoord::new(0, -5), Piece::new(PieceKind::Bishop, Color::White));
-        board.place(HexCoord::new(0, -4), Piece::new(PieceKind::Bishop, Color::White));
-        board.place(HexCoord::new(0, -3), Piece::new(PieceKind::Bishop, Color::White));
+        board.place(
+            HexCoord::new(0, -5),
+            Piece::new(PieceKind::Bishop, Color::White),
+        );
+        board.place(
+            HexCoord::new(0, -4),
+            Piece::new(PieceKind::Bishop, Color::White),
+        );
+        board.place(
+            HexCoord::new(0, -3),
+            Piece::new(PieceKind::Bishop, Color::White),
+        );
         // Queen
-        board.place(HexCoord::new(-1, -4), Piece::new(PieceKind::Queen, Color::White));
+        board.place(
+            HexCoord::new(-1, -4),
+            Piece::new(PieceKind::Queen, Color::White),
+        );
         // King
         let wk = HexCoord::new(1, -5);
         board.place(wk, Piece::new(PieceKind::King, Color::White));
@@ -436,21 +475,48 @@ impl Board {
 
         // --- Black pieces ---
         for &(q, r) in &BLACK_PAWN_START {
-            board.place(HexCoord::new(q, r), Piece::new(PieceKind::Pawn, Color::Black));
+            board.place(
+                HexCoord::new(q, r),
+                Piece::new(PieceKind::Pawn, Color::Black),
+            );
         }
 
         // Rooks
-        board.place(HexCoord::new(3, 2), Piece::new(PieceKind::Rook, Color::Black));
-        board.place(HexCoord::new(-3, 5), Piece::new(PieceKind::Rook, Color::Black));
+        board.place(
+            HexCoord::new(3, 2),
+            Piece::new(PieceKind::Rook, Color::Black),
+        );
+        board.place(
+            HexCoord::new(-3, 5),
+            Piece::new(PieceKind::Rook, Color::Black),
+        );
         // Knights
-        board.place(HexCoord::new(2, 3), Piece::new(PieceKind::Knight, Color::Black));
-        board.place(HexCoord::new(-2, 5), Piece::new(PieceKind::Knight, Color::Black));
+        board.place(
+            HexCoord::new(2, 3),
+            Piece::new(PieceKind::Knight, Color::Black),
+        );
+        board.place(
+            HexCoord::new(-2, 5),
+            Piece::new(PieceKind::Knight, Color::Black),
+        );
         // Bishops
-        board.place(HexCoord::new(0, 5), Piece::new(PieceKind::Bishop, Color::Black));
-        board.place(HexCoord::new(0, 4), Piece::new(PieceKind::Bishop, Color::Black));
-        board.place(HexCoord::new(0, 3), Piece::new(PieceKind::Bishop, Color::Black));
+        board.place(
+            HexCoord::new(0, 5),
+            Piece::new(PieceKind::Bishop, Color::Black),
+        );
+        board.place(
+            HexCoord::new(0, 4),
+            Piece::new(PieceKind::Bishop, Color::Black),
+        );
+        board.place(
+            HexCoord::new(0, 3),
+            Piece::new(PieceKind::Bishop, Color::Black),
+        );
         // Queen
-        board.place(HexCoord::new(1, 4), Piece::new(PieceKind::Queen, Color::Black));
+        board.place(
+            HexCoord::new(1, 4),
+            Piece::new(PieceKind::Queen, Color::Black),
+        );
         // King
         let bk = HexCoord::new(-1, 5);
         board.place(bk, Piece::new(PieceKind::King, Color::Black));
@@ -491,9 +557,10 @@ impl Board {
             h ^= ZOBRIST.side_to_move;
         }
         if let Some(ep) = self.en_passant
-            && let Some(ep_idx) = coord_to_index(ep) {
-                h ^= ZOBRIST.en_passant[ep_idx];
-            }
+            && let Some(ep_idx) = coord_to_index(ep)
+        {
+            h ^= ZOBRIST.en_passant[ep_idx];
+        }
         h
     }
 
@@ -523,12 +590,13 @@ impl Board {
 
         // Update king cache
         if let Some(piece) = cell
-            && piece.kind == PieceKind::King {
-                match piece.color {
-                    Color::White => self.white_king = coord,
-                    Color::Black => self.black_king = coord,
-                }
+            && piece.kind == PieceKind::King
+        {
+            match piece.color {
+                Color::White => self.white_king = coord,
+                Color::Black => self.black_king = coord,
             }
+        }
 
         self.cells[idx] = cell;
     }
@@ -544,20 +612,26 @@ impl Board {
 
     /// Iterate over all pieces of a given color, yielding `(HexCoord, Piece)`.
     pub fn all_pieces(&self, color: Color) -> impl Iterator<Item = (HexCoord, Piece)> + '_ {
-        self.cells.iter().enumerate().filter_map(move |(idx, cell)| {
-            cell.and_then(|p| {
-                if p.color == color {
-                    Some((index_to_coord(idx), p))
-                } else {
-                    None
-                }
+        self.cells
+            .iter()
+            .enumerate()
+            .filter_map(move |(idx, cell)| {
+                cell.and_then(|p| {
+                    if p.color == color {
+                        Some((index_to_coord(idx), p))
+                    } else {
+                        None
+                    }
+                })
             })
-        })
     }
 
     /// Count all pieces of a given color.
     pub fn piece_count(&self, color: Color) -> usize {
-        self.cells.iter().filter(|c| c.is_some_and(|p| p.color == color)).count()
+        self.cells
+            .iter()
+            .filter(|c| c.is_some_and(|p| p.color == color))
+            .count()
     }
 }
 
@@ -576,7 +650,11 @@ impl fmt::Display for Board {
         // Print in a simple row-based format.
         // We iterate over axial coords grouped by `r` (rows), with `q` increasing left-to-right.
         writeln!(f, "  Side to move: {}", self.side_to_move)?;
-        writeln!(f, "  Halfmove clock: {}, Fullmove: {}", self.halfmove_clock, self.fullmove_number)?;
+        writeln!(
+            f,
+            "  Halfmove clock: {}, Fullmove: {}",
+            self.halfmove_clock, self.fullmove_number
+        )?;
         if let Some(ep) = self.en_passant {
             writeln!(f, "  En passant: {}", ep)?;
         }
@@ -627,11 +705,12 @@ mod tests {
     #[test]
     fn test_corners_valid() {
         // All 6 "corners" of the radius-5 hex
-        let corners = [
-            (5, 0), (-5, 0), (0, 5), (0, -5), (5, -5), (-5, 5),
-        ];
+        let corners = [(5, 0), (-5, 0), (0, 5), (0, -5), (5, -5), (-5, 5)];
         for (q, r) in corners {
-            assert!(HexCoord::new(q, r).is_valid(), "Corner ({q},{r}) should be valid");
+            assert!(
+                HexCoord::new(q, r).is_valid(),
+                "Corner ({q},{r}) should be valid"
+            );
         }
     }
 
@@ -705,7 +784,8 @@ mod tests {
     #[test]
     fn test_center_has_six_cardinal_neighbors() {
         let center = HexCoord::new(0, 0);
-        let count = CARDINAL_DIRS.iter()
+        let count = CARDINAL_DIRS
+            .iter()
             .filter(|&&(dq, dr)| center.step(dq, dr).is_some())
             .count();
         assert_eq!(count, 6);
@@ -714,7 +794,8 @@ mod tests {
     #[test]
     fn test_center_has_six_diagonal_neighbors() {
         let center = HexCoord::new(0, 0);
-        let count = DIAGONAL_DIRS.iter()
+        let count = DIAGONAL_DIRS
+            .iter()
             .filter(|&&(dq, dr)| center.step(dq, dr).is_some())
             .count();
         assert_eq!(count, 6);
@@ -723,10 +804,14 @@ mod tests {
     #[test]
     fn test_corner_has_fewer_neighbors() {
         let corner = HexCoord::new(5, 0);
-        let card = CARDINAL_DIRS.iter()
+        let card = CARDINAL_DIRS
+            .iter()
             .filter(|&&(dq, dr)| corner.step(dq, dr).is_some())
             .count();
-        assert!(card < 6, "corner should have fewer than 6 cardinal neighbors");
+        assert!(
+            card < 6,
+            "corner should have fewer than 6 cardinal neighbors"
+        );
     }
 
     // -- Initial position -----------------------------------------------------
@@ -770,8 +855,15 @@ mod tests {
     fn test_initial_white_pawns() {
         let board = Board::new();
         let expected: [(i8, i8); 9] = [
-            (-4, -1), (-3, -1), (-2, -1), (-1, -1), (0, -1),
-            (1, -2), (2, -3), (3, -4), (4, -5),
+            (-4, -1),
+            (-3, -1),
+            (-2, -1),
+            (-1, -1),
+            (0, -1),
+            (1, -2),
+            (2, -3),
+            (3, -4),
+            (4, -5),
         ];
         for (q, r) in expected {
             let cell = board.get(HexCoord::new(q, r));
@@ -787,8 +879,15 @@ mod tests {
     fn test_initial_black_pawns() {
         let board = Board::new();
         let expected: [(i8, i8); 9] = [
-            (4, 1), (3, 1), (2, 1), (1, 1), (0, 1),
-            (-1, 2), (-2, 3), (-3, 4), (-4, 5),
+            (4, 1),
+            (3, 1),
+            (2, 1),
+            (1, 1),
+            (0, 1),
+            (-1, 2),
+            (-2, 3),
+            (-3, 4),
+            (-4, 5),
         ];
         for (q, r) in expected {
             let cell = board.get(HexCoord::new(q, r));
@@ -803,11 +902,13 @@ mod tests {
     #[test]
     fn test_initial_three_bishops_per_side() {
         let board = Board::new();
-        let wb: Vec<_> = board.all_pieces(Color::White)
+        let wb: Vec<_> = board
+            .all_pieces(Color::White)
             .filter(|(_, p)| p.kind == PieceKind::Bishop)
             .collect();
         assert_eq!(wb.len(), 3, "White should have 3 bishops");
-        let bb: Vec<_> = board.all_pieces(Color::Black)
+        let bb: Vec<_> = board
+            .all_pieces(Color::Black)
             .filter(|(_, p)| p.kind == PieceKind::Bishop)
             .collect();
         assert_eq!(bb.len(), 3, "Black should have 3 bishops");
@@ -838,7 +939,10 @@ mod tests {
                 mirrored,
                 Some(Piece::new(piece.kind, Color::Black)),
                 "White {} at {} should mirror to black {} at {}",
-                piece.kind.symbol(), coord, piece.kind.symbol(), mirror
+                piece.kind.symbol(),
+                coord,
+                piece.kind.symbol(),
+                mirror
             );
         }
     }
@@ -848,7 +952,10 @@ mod tests {
     #[test]
     fn test_zobrist_nonzero() {
         let board = Board::new();
-        assert_ne!(board.zobrist_hash, 0, "starting position hash should not be zero");
+        assert_ne!(
+            board.zobrist_hash, 0,
+            "starting position hash should not be zero"
+        );
     }
 
     #[test]
@@ -872,7 +979,10 @@ mod tests {
     fn test_zobrist_deterministic() {
         let b1 = Board::new();
         let b2 = Board::new();
-        assert_eq!(b1.zobrist_hash, b2.zobrist_hash, "same position should have same hash");
+        assert_eq!(
+            b1.zobrist_hash, b2.zobrist_hash,
+            "same position should have same hash"
+        );
     }
 
     #[test]

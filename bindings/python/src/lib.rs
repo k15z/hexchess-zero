@@ -1,5 +1,5 @@
-use pyo3::prelude::*;
 use pyo3::exceptions::PyValueError;
+use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
 use numpy::ndarray::{Array1, Array3, Array4};
@@ -8,7 +8,9 @@ use numpy::{IntoPyArray, PyArray3, PyArray4};
 use hexchess_engine::board::{self, HexCoord, PieceKind};
 use hexchess_engine::game::GameState;
 use hexchess_engine::inference::OnnxEvaluator;
-use hexchess_engine::mcts::{DirichletConfig, Evaluator, MctsSearch as EngineSearch, HeuristicEvaluator};
+use hexchess_engine::mcts::{
+    DirichletConfig, Evaluator, HeuristicEvaluator, MctsSearch as EngineSearch,
+};
 
 use hexchess_engine::movegen;
 use hexchess_engine::serialization;
@@ -168,11 +170,17 @@ impl PyMctsSearch {
     /// Otherwise, uses a heuristic evaluator (uniform policy, material value).
     #[new]
     #[pyo3(signature = (simulations=800, c_puct=1.5, model_path=None, batch_size=32))]
-    fn new(simulations: u32, c_puct: f32, model_path: Option<String>, batch_size: usize) -> PyResult<Self> {
+    fn new(
+        simulations: u32,
+        c_puct: f32,
+        model_path: Option<String>,
+        batch_size: usize,
+    ) -> PyResult<Self> {
         let evaluator: Box<dyn Evaluator> = match model_path {
             Some(path) => {
-                let eval = OnnxEvaluator::from_path(&path)
-                    .map_err(|e| PyValueError::new_err(format!("failed to load ONNX model '{path}': {e}")))?;
+                let eval = OnnxEvaluator::from_path(&path).map_err(|e| {
+                    PyValueError::new_err(format!("failed to load ONNX model '{path}': {e}"))
+                })?;
                 Box::new(eval)
             }
             None => Box::new(HeuristicEvaluator),
@@ -180,7 +188,10 @@ impl PyMctsSearch {
         let mut search = EngineSearch::new(evaluator);
         search.set_c_puct(c_puct);
         search.set_batch_size(batch_size);
-        Ok(PyMctsSearch { search, simulations })
+        Ok(PyMctsSearch {
+            search,
+            simulations,
+        })
     }
 
     /// Run MCTS search. Returns dict {best_move, policy, value, nodes}.
@@ -203,7 +214,9 @@ impl PyMctsSearch {
         }
 
         let temp = temperature.unwrap_or(0.0);
-        let result = self.search.search_with_temperature(&game.state, self.simulations, temp);
+        let result = self
+            .search
+            .search_with_temperature(&game.state, self.simulations, temp);
 
         // Build the result dict.
         let dict = PyDict::new(py);
@@ -229,7 +242,11 @@ impl PyMctsSearch {
 fn encode_board<'py>(py: Python<'py>, game: &PyGame) -> Bound<'py, PyArray3<f32>> {
     let flat = serialization::encode_board(&game.state.board);
     let array = Array3::from_shape_vec(
-        (serialization::NUM_CHANNELS, serialization::BOARD_DIM, serialization::BOARD_DIM),
+        (
+            serialization::NUM_CHANNELS,
+            serialization::BOARD_DIM,
+            serialization::BOARD_DIM,
+        ),
         flat.to_vec(),
     )
     .expect("shape mismatch in encode_board");
@@ -238,7 +255,10 @@ fn encode_board<'py>(py: Python<'py>, game: &PyGame) -> Bound<'py, PyArray3<f32>
 
 /// Encode a batch of games as a numpy array of shape (N, 16, 11, 11).
 #[pyfunction]
-fn encode_batch<'py>(py: Python<'py>, games: Vec<Bound<'py, PyAny>>) -> PyResult<Bound<'py, PyArray4<f32>>> {
+fn encode_batch<'py>(
+    py: Python<'py>,
+    games: Vec<Bound<'py, PyAny>>,
+) -> PyResult<Bound<'py, PyArray4<f32>>> {
     let n = games.len();
     let c = serialization::NUM_CHANNELS;
     let h = serialization::BOARD_DIM;
@@ -251,8 +271,7 @@ fn encode_batch<'py>(py: Python<'py>, games: Vec<Bound<'py, PyAny>>) -> PyResult
         data.extend_from_slice(&flat);
     }
 
-    let array = Array4::from_shape_vec((n, c, h, w), data)
-        .expect("shape mismatch in encode_batch");
+    let array = Array4::from_shape_vec((n, c, h, w), data).expect("shape mismatch in encode_batch");
     Ok(array.into_pyarray(py))
 }
 

@@ -4,8 +4,8 @@
 //! and precomputed lookup tables for knights and sliding-piece rays.
 
 use crate::board::{
-    coord_to_index, index_to_coord, Board, Cell, Color, HexCoord, Piece, PieceKind,
-    ALL_DIRS, KNIGHT_OFFSETS, WHITE_PAWN_START, BLACK_PAWN_START, PROMOTION_PIECES,
+    ALL_DIRS, BLACK_PAWN_START, Board, Cell, Color, HexCoord, KNIGHT_OFFSETS, PROMOTION_PIECES,
+    Piece, PieceKind, WHITE_PAWN_START, coord_to_index, index_to_coord,
 };
 
 /// Unwrapping coord_to_index for internal use with known-valid coordinates.
@@ -99,10 +99,7 @@ impl MoveList {
     }
 
     pub fn iter(&self) -> MoveListIter<'_> {
-        MoveListIter {
-            list: self,
-            idx: 0,
-        }
+        MoveListIter { list: self, idx: 0 }
     }
 
     pub fn to_vec(&self) -> Vec<Move> {
@@ -215,7 +212,6 @@ fn tables() -> &'static Tables {
 // Pawn constants and helpers
 // ---------------------------------------------------------------------------
 
-
 /// White promotion squares (top edge of board).
 /// Condition in axial: (q >= 0 && q + r == 5) || (q < 0 && r == 5).
 const WHITE_PROMOTION: [(i8, i8); 11] = [
@@ -253,9 +249,7 @@ fn is_pawn_start(coord: HexCoord, color: Color) -> bool {
         Color::White => &WHITE_PAWN_START,
         Color::Black => &BLACK_PAWN_START,
     };
-    positions
-        .iter()
-        .any(|&(q, r)| coord.q == q && coord.r == r)
+    positions.iter().any(|&(q, r)| coord.q == q && coord.r == r)
 }
 
 #[inline]
@@ -264,9 +258,7 @@ fn is_promotion_square(coord: HexCoord, color: Color) -> bool {
         Color::White => &WHITE_PROMOTION[..],
         Color::Black => &BLACK_PROMOTION[..],
     };
-    squares
-        .iter()
-        .any(|&(q, r)| coord.q == q && coord.r == r)
+    squares.iter().any(|&(q, r)| coord.q == q && coord.r == r)
 }
 
 /// Returns (forward, left_capture, right_capture) direction offsets for a pawn.
@@ -280,7 +272,6 @@ fn pawn_dirs(color: Color) -> ((i8, i8), (i8, i8), (i8, i8)) {
         Color::Black => ((0, -1), (1, -1), (-1, 0)),
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // Direction index sets (into ALL_DIRS)
@@ -313,12 +304,8 @@ pub fn generate_pseudo_legal_moves(board: &Board) -> MoveList {
         match piece.kind {
             PieceKind::Pawn => gen_pawn(board, from, color, &mut moves),
             PieceKind::Knight => gen_knight(board, from, color, &mut moves),
-            PieceKind::Bishop => {
-                gen_sliding(board, from, color, &DIAGONAL_DIR_INDICES, &mut moves)
-            }
-            PieceKind::Rook => {
-                gen_sliding(board, from, color, &CARDINAL_DIR_INDICES, &mut moves)
-            }
+            PieceKind::Bishop => gen_sliding(board, from, color, &DIAGONAL_DIR_INDICES, &mut moves),
+            PieceKind::Rook => gen_sliding(board, from, color, &CARDINAL_DIR_INDICES, &mut moves),
             PieceKind::Queen => gen_sliding(board, from, color, &ALL_DIR_INDICES, &mut moves),
             PieceKind::King => gen_king(board, from, color, &mut moves),
         }
@@ -369,7 +356,10 @@ fn gen_pawn(board: &Board, from: HexCoord, color: Color, moves: &mut MoveList) {
             }
         } else if board.en_passant == Some(to) {
             // EP always captures an opponent pawn — store it for undo.
-            let captured_pawn = Some(Piece { kind: PieceKind::Pawn, color: color.opponent() });
+            let captured_pawn = Some(Piece {
+                kind: PieceKind::Pawn,
+                color: color.opponent(),
+            });
             moves.push(Move {
                 from,
                 to,
@@ -453,9 +443,11 @@ fn attacked_by_pawn(board: &Board, coord: HexCoord, by_color: Color) -> bool {
         let src = coord.offset(-dq, -dr);
         if src.is_valid()
             && let Some(p) = board.get(src)
-                && p.color == by_color && p.kind == PieceKind::Pawn {
-                    return true;
-                }
+            && p.color == by_color
+            && p.kind == PieceKind::Pawn
+        {
+            return true;
+        }
     }
     false
 }
@@ -465,9 +457,11 @@ fn attacked_by_knight(board: &Board, coord: HexCoord, by_color: Color) -> bool {
     let idx = cell_index(coord);
     for &src_idx in &tab.knight_moves[idx] {
         if let Some(p) = board.cells[src_idx]
-            && p.color == by_color && p.kind == PieceKind::Knight {
-                return true;
-            }
+            && p.color == by_color
+            && p.kind == PieceKind::Knight
+        {
+            return true;
+        }
     }
     false
 }
@@ -518,9 +512,11 @@ fn attacked_by_king(board: &Board, coord: HexCoord, by_color: Color) -> bool {
         let src = coord.offset(dq, dr);
         if src.is_valid()
             && let Some(p) = board.get(src)
-                && p.color == by_color && p.kind == PieceKind::King {
-                    return true;
-                }
+            && p.color == by_color
+            && p.kind == PieceKind::King
+        {
+            return true;
+        }
     }
     false
 }
@@ -543,7 +539,9 @@ pub fn is_in_check(board: &Board, color: Color) -> bool {
 /// Does NOT update zobrist hash or position history.
 fn apply_move_minimal(board: &Board, m: &Move) -> Board {
     let mut b = board.clone();
-    let piece = b.get(m.from).expect("apply_move_minimal: no piece at `from`");
+    let piece = b
+        .get(m.from)
+        .expect("apply_move_minimal: no piece at `from`");
 
     // Remove piece from origin
     b.set(m.from, None);
@@ -612,8 +610,20 @@ mod tests {
         let mut b = Board::empty();
         b.white_king = HexCoord::new(wk.0, wk.1);
         b.black_king = HexCoord::new(bk.0, bk.1);
-        b.set(HexCoord::new(wk.0, wk.1), Some(Piece { kind: PieceKind::King, color: Color::White }));
-        b.set(HexCoord::new(bk.0, bk.1), Some(Piece { kind: PieceKind::King, color: Color::Black }));
+        b.set(
+            HexCoord::new(wk.0, wk.1),
+            Some(Piece {
+                kind: PieceKind::King,
+                color: Color::White,
+            }),
+        );
+        b.set(
+            HexCoord::new(bk.0, bk.1),
+            Some(Piece {
+                kind: PieceKind::King,
+                color: Color::Black,
+            }),
+        );
         b
     }
 
@@ -704,7 +714,10 @@ mod tests {
         place(&mut board, 0, -1, PieceKind::Pawn, Color::White);
 
         let moves = generate_pseudo_legal_moves(&board);
-        let pm: Vec<_> = moves.iter().filter(|m| m.from == HexCoord::new(0, -1)).collect();
+        let pm: Vec<_> = moves
+            .iter()
+            .filter(|m| m.from == HexCoord::new(0, -1))
+            .collect();
 
         assert_eq!(pm.len(), 2, "Pawn on start should have 2 forward moves");
         assert!(pm.iter().any(|m| m.to == HexCoord::new(0, 0)));
@@ -717,7 +730,10 @@ mod tests {
         place(&mut board, 0, 0, PieceKind::Pawn, Color::White);
 
         let moves = generate_pseudo_legal_moves(&board);
-        let pm: Vec<_> = moves.iter().filter(|m| m.from == HexCoord::new(0, 0)).collect();
+        let pm: Vec<_> = moves
+            .iter()
+            .filter(|m| m.from == HexCoord::new(0, 0))
+            .collect();
 
         assert_eq!(pm.len(), 1);
         assert_eq!(pm[0].to, HexCoord::new(0, 1));
@@ -731,7 +747,10 @@ mod tests {
         place(&mut board, 1, 0, PieceKind::Pawn, Color::Black);
 
         let moves = generate_pseudo_legal_moves(&board);
-        let pm: Vec<_> = moves.iter().filter(|m| m.from == HexCoord::new(0, 0)).collect();
+        let pm: Vec<_> = moves
+            .iter()
+            .filter(|m| m.from == HexCoord::new(0, 0))
+            .collect();
 
         // 1 forward + 2 captures = 3
         assert_eq!(pm.len(), 3);
@@ -743,7 +762,10 @@ mod tests {
         place(&mut board, 0, 4, PieceKind::Pawn, Color::White);
 
         let moves = generate_pseudo_legal_moves(&board);
-        let pm: Vec<_> = moves.iter().filter(|m| m.from == HexCoord::new(0, 4)).collect();
+        let pm: Vec<_> = moves
+            .iter()
+            .filter(|m| m.from == HexCoord::new(0, 4))
+            .collect();
 
         assert_eq!(pm.len(), 4, "Should get 4 promotion choices");
         assert!(pm.iter().all(|m| m.promotion.is_some()));
@@ -771,7 +793,10 @@ mod tests {
         board.side_to_move = Color::Black;
 
         let moves = generate_pseudo_legal_moves(&board);
-        let pm: Vec<_> = moves.iter().filter(|m| m.from == HexCoord::new(0, 1)).collect();
+        let pm: Vec<_> = moves
+            .iter()
+            .filter(|m| m.from == HexCoord::new(0, 1))
+            .collect();
 
         assert_eq!(pm.len(), 2);
         assert!(pm.iter().any(|m| m.to == HexCoord::new(0, 0)));
@@ -786,7 +811,10 @@ mod tests {
         place(&mut board, 0, 0, PieceKind::Rook, Color::White);
 
         let moves = generate_pseudo_legal_moves(&board);
-        let rm: Vec<_> = moves.iter().filter(|m| m.from == HexCoord::new(0, 0)).collect();
+        let rm: Vec<_> = moves
+            .iter()
+            .filter(|m| m.from == HexCoord::new(0, 0))
+            .collect();
 
         // 6 cardinal directions x 5 cells each = 30, minus:
         // (-1,0) direction: 4 cells then white king at (-5,0) blocks = 4
@@ -803,7 +831,10 @@ mod tests {
         place(&mut board, 0, 0, PieceKind::Bishop, Color::White);
 
         let moves = generate_pseudo_legal_moves(&board);
-        let bm: Vec<_> = moves.iter().filter(|m| m.from == HexCoord::new(0, 0)).collect();
+        let bm: Vec<_> = moves
+            .iter()
+            .filter(|m| m.from == HexCoord::new(0, 0))
+            .collect();
 
         // Each of 6 diagonal directions from center reaches 2 valid cells.
         // 6 x 2 = 12
@@ -820,7 +851,10 @@ mod tests {
         place(&mut board, 0, 0, PieceKind::King, Color::White);
 
         let moves = generate_pseudo_legal_moves(&board);
-        let km: Vec<_> = moves.iter().filter(|m| m.from == HexCoord::new(0, 0)).collect();
+        let km: Vec<_> = moves
+            .iter()
+            .filter(|m| m.from == HexCoord::new(0, 0))
+            .collect();
 
         // All 12 neighbors of center are valid on the board.
         assert_eq!(km.len(), 12);
@@ -843,10 +877,22 @@ mod tests {
         place(&mut board, 0, 0, PieceKind::Pawn, Color::White);
 
         // White pawn at (0,0) captures on (-1,1) and (1,0).
-        assert!(is_square_attacked(&board, HexCoord::new(-1, 1), Color::White));
-        assert!(is_square_attacked(&board, HexCoord::new(1, 0), Color::White));
+        assert!(is_square_attacked(
+            &board,
+            HexCoord::new(-1, 1),
+            Color::White
+        ));
+        assert!(is_square_attacked(
+            &board,
+            HexCoord::new(1, 0),
+            Color::White
+        ));
         // Does NOT attack the forward square.
-        assert!(!is_square_attacked(&board, HexCoord::new(0, 1), Color::White));
+        assert!(!is_square_attacked(
+            &board,
+            HexCoord::new(0, 1),
+            Color::White
+        ));
     }
 
     // ===== Pin test =====
@@ -879,7 +925,10 @@ mod tests {
         place(&mut board, 0, 5, PieceKind::Rook, Color::Black);
 
         let legal = generate_legal_moves(&board);
-        let km: Vec<_> = legal.iter().filter(|m| m.from == HexCoord::new(0, 0)).collect();
+        let km: Vec<_> = legal
+            .iter()
+            .filter(|m| m.from == HexCoord::new(0, 0))
+            .collect();
 
         // King should not be able to step onto q=0 (still attacked after vacating).
         for m in &km {

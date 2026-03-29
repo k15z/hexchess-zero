@@ -88,7 +88,12 @@ struct MctsNode {
 }
 
 impl MctsNode {
-    fn new(action: Option<Move>, action_index: Option<usize>, parent: Option<usize>, prior: f32) -> Self {
+    fn new(
+        action: Option<Move>,
+        action_index: Option<usize>,
+        parent: Option<usize>,
+        prior: f32,
+    ) -> Self {
         Self {
             action,
             action_index,
@@ -304,12 +309,7 @@ impl MctsSearch {
     ///    discourage duplicate paths within the same batch.
     /// 2. **Batch evaluate** all leaves that need NN inference in one call.
     /// 3. **Expand + backpropagate** each leaf, removing virtual loss.
-    fn simulate_batched(
-        &mut self,
-        root_idx: usize,
-        state: &mut GameState,
-        num_simulations: u32,
-    ) {
+    fn simulate_batched(&mut self, root_idx: usize, state: &mut GameState, num_simulations: u32) {
         struct LeafInfo {
             path: Vec<usize>,
             leaf_state: Option<GameState>,
@@ -331,8 +331,7 @@ impl MctsSearch {
                 let mut node_idx = root_idx;
                 let mut path = vec![node_idx];
 
-                while self.nodes[node_idx].is_expanded
-                    && !self.nodes[node_idx].children.is_empty()
+                while self.nodes[node_idx].is_expanded && !self.nodes[node_idx].children.is_empty()
                 {
                     node_idx = self.select_child(node_idx);
                     let action = self.nodes[node_idx]
@@ -464,9 +463,7 @@ impl MctsSearch {
             // Negate: child stores value from its own side-to-move perspective,
             // but the parent wants to maximize from the parent's perspective.
             let q = -child.q_value();
-            let u = self.c_puct as f64
-                * child.prior as f64
-                * parent_visits_sqrt
+            let u = self.c_puct as f64 * child.prior as f64 * parent_visits_sqrt
                 / (1.0 + child.visit_count as f64);
             let score = q + u;
             if score > best_score {
@@ -515,13 +512,18 @@ impl MctsSearch {
 
         // Apply Dirichlet noise at the root (node_idx == 0).
         if node_idx == 0
-            && let Some(ref config) = self.dirichlet {
-                self.apply_dirichlet_noise(&mut children_info, config.epsilon, config.alpha);
-            }
+            && let Some(ref config) = self.dirichlet
+        {
+            self.apply_dirichlet_noise(&mut children_info, config.epsilon, config.alpha);
+        }
 
         // Create child nodes.
         for (mv, mv_idx, prior) in children_info {
-            let action_index = if mv_idx == usize::MAX { None } else { Some(mv_idx) };
+            let action_index = if mv_idx == usize::MAX {
+                None
+            } else {
+                Some(mv_idx)
+            };
             let child = MctsNode::new(Some(mv), action_index, Some(node_idx), prior);
             let child_idx = self.nodes.len();
             self.nodes.push(child);
@@ -568,15 +570,20 @@ impl MctsSearch {
         let mut policy = vec![0.0f32; num_indices];
 
         // Build visit-count distribution.
-        let total_child_visits: u32 = root.children.iter().map(|&i| self.nodes[i].visit_count).sum();
+        let total_child_visits: u32 = root
+            .children
+            .iter()
+            .map(|&i| self.nodes[i].visit_count)
+            .sum();
 
         // Populate policy with raw visit counts (will normalize later).
         for &child_idx in &root.children {
             let child = &self.nodes[child_idx];
             if let Some(mv_idx) = child.action_index
-                && mv_idx < num_indices {
-                    policy[mv_idx] = child.visit_count as f32;
-                }
+                && mv_idx < num_indices
+            {
+                policy[mv_idx] = child.visit_count as f32;
+            }
         }
 
         // Select best move.
@@ -614,7 +621,9 @@ impl MctsSearch {
                 for p in policy.iter() {
                     if *p > 0.0 {
                         let lp = p.ln() * inv_temp;
-                        if lp > max_log { max_log = lp; }
+                        if lp > max_log {
+                            max_log = lp;
+                        }
                     }
                 }
                 // Subtract max for numerical stability, then exponentiate
@@ -756,7 +765,11 @@ mod tests {
         let (policy, value) = evaluator.evaluate(&state);
 
         // Starting position is symmetric — value should be near zero.
-        assert!(value.abs() < 1e-4, "value should be ~0.0 for starting pos, got {}", value);
+        assert!(
+            value.abs() < 1e-4,
+            "value should be ~0.0 for starting pos, got {}",
+            value
+        );
 
         // Policy should sum to ~1 over legal moves.
         let sum: f32 = policy.iter().sum();
@@ -783,7 +796,9 @@ mod tests {
         // Should return a valid move.
         let legal = state.legal_moves();
         assert!(
-            legal.iter().any(|m| m.from == result.best_move.from && m.to == result.best_move.to),
+            legal
+                .iter()
+                .any(|m| m.from == result.best_move.from && m.to == result.best_move.to),
             "best move must be a legal move",
         );
     }
@@ -796,7 +811,9 @@ mod tests {
 
         let legal = state.legal_moves();
         assert!(
-            legal.iter().any(|m| m.from == result.best_move.from && m.to == result.best_move.to),
+            legal
+                .iter()
+                .any(|m| m.from == result.best_move.from && m.to == result.best_move.to),
             "search must return a legal move",
         );
 
@@ -820,7 +837,9 @@ mod tests {
         let result = search.search_with_temperature(&state, 50, 1.0);
         let legal = state.legal_moves();
         assert!(
-            legal.iter().any(|m| m.from == result.best_move.from && m.to == result.best_move.to),
+            legal
+                .iter()
+                .any(|m| m.from == result.best_move.from && m.to == result.best_move.to),
         );
     }
 
@@ -833,7 +852,9 @@ mod tests {
 
         let legal = state.legal_moves();
         assert!(
-            legal.iter().any(|m| m.from == result.best_move.from && m.to == result.best_move.to),
+            legal
+                .iter()
+                .any(|m| m.from == result.best_move.from && m.to == result.best_move.to),
         );
     }
 
@@ -886,13 +907,18 @@ mod tests {
 
     impl Evaluator for CountingEvaluator {
         fn evaluate(&self, state: &GameState) -> (Vec<f32>, f32) {
-            self.single_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.single_calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             HeuristicEvaluator.evaluate(state)
         }
 
         fn evaluate_batch(&self, states: &[&GameState]) -> Vec<(Vec<f32>, f32)> {
-            self.batch_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            states.iter().map(|s| HeuristicEvaluator.evaluate(s)).collect()
+            self.batch_calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            states
+                .iter()
+                .map(|s| HeuristicEvaluator.evaluate(s))
+                .collect()
         }
     }
 
@@ -916,7 +942,9 @@ mod tests {
 
         let legal = state.legal_moves();
         assert!(
-            legal.iter().any(|m| m.from == result.best_move.from && m.to == result.best_move.to),
+            legal
+                .iter()
+                .any(|m| m.from == result.best_move.from && m.to == result.best_move.to),
             "batched search must return a legal move",
         );
 
@@ -939,11 +967,18 @@ mod tests {
         let state = GameState::new();
         let _ = search.search(&state, 40);
 
-        let single = evaluator.single_calls.load(std::sync::atomic::Ordering::Relaxed);
-        let batch = evaluator.batch_calls.load(std::sync::atomic::Ordering::Relaxed);
+        let single = evaluator
+            .single_calls
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let batch = evaluator
+            .batch_calls
+            .load(std::sync::atomic::Ordering::Relaxed);
 
         // Batched path should call evaluate_batch, not evaluate.
-        assert_eq!(single, 0, "single evaluate should not be called in batched mode");
+        assert_eq!(
+            single, 0,
+            "single evaluate should not be called in batched mode"
+        );
         assert!(batch > 0, "evaluate_batch should have been called");
     }
 
@@ -956,7 +991,9 @@ mod tests {
         let result = search.search_with_temperature(&state, 50, 1.0);
         let legal = state.legal_moves();
         assert!(
-            legal.iter().any(|m| m.from == result.best_move.from && m.to == result.best_move.to),
+            legal
+                .iter()
+                .any(|m| m.from == result.best_move.from && m.to == result.best_move.to),
         );
     }
 
@@ -970,7 +1007,9 @@ mod tests {
         let result = search.search(&state, 50);
         let legal = state.legal_moves();
         assert!(
-            legal.iter().any(|m| m.from == result.best_move.from && m.to == result.best_move.to),
+            legal
+                .iter()
+                .any(|m| m.from == result.best_move.from && m.to == result.best_move.to),
         );
     }
 
@@ -1003,8 +1042,12 @@ mod tests {
         let state = GameState::new();
         let _ = search.search(&state, 20);
 
-        let single = evaluator.single_calls.load(std::sync::atomic::Ordering::Relaxed);
-        let batch = evaluator.batch_calls.load(std::sync::atomic::Ordering::Relaxed);
+        let single = evaluator
+            .single_calls
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let batch = evaluator
+            .batch_calls
+            .load(std::sync::atomic::Ordering::Relaxed);
 
         // Sequential path should call evaluate, not evaluate_batch.
         assert!(single > 0, "sequential path should call evaluate");
@@ -1030,8 +1073,16 @@ mod tests {
         let legal = state.legal_moves();
 
         // Both return legal moves.
-        assert!(legal.iter().any(|m| m.from == r_seq.best_move.from && m.to == r_seq.best_move.to));
-        assert!(legal.iter().any(|m| m.from == r_bat.best_move.from && m.to == r_bat.best_move.to));
+        assert!(
+            legal
+                .iter()
+                .any(|m| m.from == r_seq.best_move.from && m.to == r_seq.best_move.to)
+        );
+        assert!(
+            legal
+                .iter()
+                .any(|m| m.from == r_bat.best_move.from && m.to == r_bat.best_move.to)
+        );
 
         // Both have valid policies.
         let sum_seq: f32 = r_seq.policy.iter().sum();
@@ -1060,7 +1111,9 @@ mod tests {
 
             let legal = state.legal_moves();
             assert!(
-                legal.iter().any(|m| m.from == result.best_move.from && m.to == result.best_move.to),
+                legal
+                    .iter()
+                    .any(|m| m.from == result.best_move.from && m.to == result.best_move.to),
                 "batch_size={bs}: must return a legal move",
             );
 
@@ -1119,7 +1172,11 @@ mod tests {
 
         // Children visits + initial root-only visits should equal root visits.
         let root = &search.nodes[0];
-        let children_visits: u32 = root.children.iter().map(|&i| search.nodes[i].visit_count).sum();
+        let children_visits: u32 = root
+            .children
+            .iter()
+            .map(|&i| search.nodes[i].visit_count)
+            .sum();
         // The gap is from the first batch where root wasn't yet expanded —
         // up to batch_size leaves may all land on the unexpanded root.
         let gap = sims - children_visits;

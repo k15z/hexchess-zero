@@ -1,7 +1,7 @@
 pub mod board;
-pub mod movegen;
-pub mod game;
 pub mod eval;
-pub mod mcts;
-pub mod serialization;
+pub mod game;
 pub mod inference;
+pub mod mcts;
+pub mod movegen;
+pub mod serialization;
