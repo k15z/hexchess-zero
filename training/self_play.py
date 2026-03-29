@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 import time
-import uuid
+from datetime import datetime, timezone
 from multiprocessing import Pool
 from pathlib import Path
 
@@ -113,11 +113,27 @@ def _play_game_worker(args: tuple) -> tuple[str, list[dict]]:
     return play_one_game(config)
 
 
+def _flush_samples(samples: list[dict], data_dir: Path) -> Path:
+    """Write accumulated samples to a timestamped .npz file and return the path."""
+    boards = np.stack([s["board"] for s in samples])
+    policies = np.stack([s["policy"] for s in samples])
+    outcomes = np.array([s["outcome"] for s in samples], dtype=np.float32)
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    # Short random suffix to avoid collisions between distributed workers
+    suffix = np.random.default_rng().integers(0, 0xFFFF_FFFF)
+    filename = f"selfplay_{ts}_{suffix:08x}.npz"
+    save_path = data_dir / filename
+    np.savez_compressed(save_path, boards=boards, policies=policies, outcomes=outcomes)
+    return save_path
+
+
 def run_self_play(config: Config | None = None) -> Path:
     """
     Run a batch of self-play games and save training data.
 
-    Returns the path to the saved .npz file.
+    Data is flushed to disk every `flush_every` games to bound memory usage.
+    Returns the data directory (which may contain multiple .npz files).
     """
     cfg = config or Config()
     cfg.ensure_dirs()
@@ -137,29 +153,41 @@ def run_self_play(config: Config | None = None) -> Path:
         f"{cfg.num_simulations} simulations/move"
     )
 
-    all_samples: list[dict] = []
-    outcomes: dict[str, int] = {}
+    flush_every = 50
+    pending_samples: list[dict] = []
+    games_since_flush = 0
+    total_positions = 0
+    saved_files: list[Path] = []
+    outcome_counts: dict[str, int] = {}
     t0 = time.time()
     last_log_time = t0
     log_interval = 10  # seconds between progress lines
 
     def _ingest(result: tuple[str, list[dict]], game_num: int) -> None:
-        nonlocal last_log_time
+        nonlocal last_log_time, games_since_flush, total_positions
         status, game_samples = result
-        all_samples.extend(game_samples)
-        outcomes[status] = outcomes.get(status, 0) + 1
+        pending_samples.extend(game_samples)
+        total_positions += len(game_samples)
+        games_since_flush += 1
+        outcome_counts[status] = outcome_counts.get(status, 0) + 1
+
+        # Flush to disk periodically
+        is_last = game_num == cfg.num_self_play_games
+        if pending_samples and (games_since_flush >= flush_every or is_last):
+            path = _flush_samples(pending_samples, cfg.data_dir)
+            saved_files.append(path)
+            pending_samples.clear()
+            games_since_flush = 0
 
         now = time.time()
         elapsed = now - t0
-        # Log on first game, last game, or every log_interval seconds
-        is_last = game_num == cfg.num_self_play_games
         if game_num == 1 or is_last or (now - last_log_time) >= log_interval:
             last_log_time = now
-            outcome_str = " ".join(f"{k}={v}" for k, v in sorted(outcomes.items()))
-            avg_moves = len(all_samples) / game_num
+            outcome_str = " ".join(f"{k}={v}" for k, v in sorted(outcome_counts.items()))
+            avg_moves = total_positions / game_num
             print(
                 f"  {game_num}/{cfg.num_self_play_games} games | "
-                f"{len(all_samples)} pos ({avg_moves:.0f} avg moves/game) | "
+                f"{total_positions} pos ({avg_moves:.0f} avg moves/game) | "
                 f"{elapsed:.0f}s ({elapsed/game_num:.1f}s/game) | {outcome_str}",
                 flush=True,
             )
@@ -174,22 +202,12 @@ def run_self_play(config: Config | None = None) -> Path:
             result = _play_game_worker((cfg, i))
             _ingest(result, i + 1)
 
-    if not all_samples:
+    if total_positions == 0:
         print("Warning: no samples generated.")
-        return cfg.data_dir
+    else:
+        print(f"Saved {total_positions} positions across {len(saved_files)} files")
 
-    # Stack into arrays
-    boards = np.stack([s["board"] for s in all_samples])
-    policies = np.stack([s["policy"] for s in all_samples])
-    outcomes = np.array([s["outcome"] for s in all_samples], dtype=np.float32)
-
-    # Save to .npz
-    filename = f"selfplay_{uuid.uuid4().hex[:8]}.npz"
-    save_path = cfg.data_dir / filename
-    np.savez_compressed(save_path, boards=boards, policies=policies, outcomes=outcomes)
-
-    print(f"Saved {len(all_samples)} positions to {save_path}")
-    return save_path
+    return cfg.data_dir
 
 
 if __name__ == "__main__":
