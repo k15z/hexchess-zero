@@ -92,7 +92,13 @@ export function useGame() {
       aiRef.current = createAiPlayer(500);
       setState({ engineLoaded: true, ...snapshot(gameRef.current!) });
     });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      gameRef.current?.free();
+      gameRef.current = null;
+      aiRef.current?.free();
+      aiRef.current = null;
+    };
   }, [setState]);
 
   const scheduleAiMove = useCallback(() => {
@@ -123,6 +129,7 @@ export function useGame() {
       clearTimeout(selfPlayTimerRef.current);
       selfPlayTimerRef.current = null;
     }
+    gameRef.current?.free();
     gameRef.current = createGame();
     const s = stateRef.current;
     setState({
@@ -266,6 +273,7 @@ export function useGame() {
       setState({ selfPlayMode: false });
       return;
     }
+    gameRef.current?.free();
     gameRef.current = createGame();
     setState({
       selfPlayMode: true,
@@ -286,6 +294,7 @@ export function useGame() {
   const loadModel = useCallback(async (file: File) => {
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
+      aiRef.current?.free();
       aiRef.current = createAiPlayerWithModel(500, bytes);
       setState({ modelName: file.name });
       refresh();
@@ -296,6 +305,7 @@ export function useGame() {
   }, [setState, refresh]);
 
   const clearModel = useCallback(() => {
+    aiRef.current?.free();
     aiRef.current = createAiPlayer(500);
     setState({ modelName: null });
   }, [setState]);

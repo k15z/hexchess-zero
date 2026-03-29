@@ -429,12 +429,17 @@ impl MctsSearch {
         }
     }
 
-    /// Apply virtual loss along a path: increment visit counts and subtract
-    /// VIRTUAL_LOSS from value sums to discourage re-selection.
+    /// Apply virtual loss along a path: increment visit counts and add
+    /// VIRTUAL_LOSS to value sums to discourage re-selection.
+    ///
+    /// Rationale: PUCT uses `q = -child.q_value()` (negated for parent's
+    /// perspective). Adding to `value_sum` makes `q_value()` more positive,
+    /// so `-q_value()` becomes more negative, lowering the PUCT score and
+    /// discouraging the parent from re-selecting this child.
     fn apply_virtual_loss(&mut self, path: &[usize]) {
         for &idx in path {
             self.nodes[idx].visit_count += 1;
-            self.nodes[idx].value_sum -= VIRTUAL_LOSS;
+            self.nodes[idx].value_sum += VIRTUAL_LOSS;
         }
     }
 
@@ -442,7 +447,7 @@ impl MctsSearch {
     fn remove_virtual_loss(&mut self, path: &[usize]) {
         for &idx in path {
             self.nodes[idx].visit_count -= 1;
-            self.nodes[idx].value_sum += VIRTUAL_LOSS;
+            self.nodes[idx].value_sum -= VIRTUAL_LOSS;
         }
     }
 
@@ -1122,6 +1127,48 @@ mod tests {
             gap <= search.batch_size as u32,
             "visit gap ({gap}) should be at most batch_size ({})",
             search.batch_size,
+        );
+    }
+
+    /// Virtual loss must *discourage* re-selection of a node within the same
+    /// batch. This test catches sign errors: if VL is subtracted instead of
+    /// added to `value_sum`, the negated q-value in PUCT actually *increases*,
+    /// causing the batched search to funnel all visits into one child.
+    #[test]
+    fn virtual_loss_discourages_reselection() {
+        // Set up a position and run a batched search.
+        let state = GameState::new();
+        let sims = 200u32;
+
+        let mut search = MctsSearch::new(random_evaluator());
+        search.set_batch_size(16);
+        let _ = search.search(&state, sims);
+
+        let root = &search.nodes[0];
+        let child_visits: Vec<u32> = root
+            .children
+            .iter()
+            .map(|&i| search.nodes[i].visit_count)
+            .collect();
+        let max_visits = *child_visits.iter().max().unwrap();
+        let num_children = child_visits.len() as u32;
+        let total: u32 = child_visits.iter().sum();
+
+        // With correct virtual loss, visits should be spread across children.
+        // No single child should hog more than 50% of total visits.
+        // (With inverted VL, the first child gets nearly ALL visits.)
+        assert!(
+            max_visits < total / 2,
+            "One child has {max_visits}/{total} visits — virtual loss is not \
+             discouraging re-selection (expected spread across {num_children} children)",
+        );
+
+        // At least 60% of children should have been visited at least once.
+        let visited = child_visits.iter().filter(|&&v| v > 0).count() as u32;
+        assert!(
+            visited * 5 >= num_children * 3,
+            "Only {visited}/{num_children} children visited — virtual loss \
+             may be funnelling visits into too few children",
         );
     }
 }

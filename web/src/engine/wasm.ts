@@ -34,11 +34,13 @@ export interface GameHandle {
   isGameOver(): boolean;
   sideToMove(): string;
   isInCheck(): boolean;
+  free(): void;
 }
 
 export interface AiHandle {
   bestMove(game: GameHandle): Move;
   bestMoveWithTemperature(game: GameHandle, temp: number): Move;
+  free(): void;
 }
 
 export function createGame(): GameHandle {
