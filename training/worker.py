@@ -1,16 +1,19 @@
 from __future__ import annotations
 """Continuous self-play worker for async distributed training.
 
-Runs an infinite loop: fetch the latest model, play a batch of games,
-write training data, repeat. Polls best.meta.json between batches to
-pick up newly promoted models.
+Runs an infinite loop: fetch the latest model, play a game, accumulate
+samples, flush to disk periodically. Polls best.meta.json between
+batches to pick up newly promoted models.
+
+Concurrency is handled at the k8s level (multiple replicas), not via
+multiprocessing. Each replica runs a single process and lets ONNX
+Runtime use all available cores for inference.
 """
 
 import json
 import os
 import time
 from datetime import datetime, timezone
-from multiprocessing import Pool
 from pathlib import Path
 
 import numpy as np
@@ -42,18 +45,12 @@ def _read_model_version(cfg: AsyncConfig) -> tuple[int, str | None]:
     return version, model_path
 
 
-def _play_one_game(args: tuple) -> tuple[str, list[dict]]:
-    """Worker function: play a single self-play game."""
-    cfg, model_path = args
-    if hexchess is None:
-        raise ImportError("hexchess bindings not available")
-
+def _play_one_game(
+    search: "hexchess.MctsSearch",
+    cfg: AsyncConfig,
+) -> tuple[str, list[dict]]:
+    """Play a single self-play game and return training samples."""
     game = hexchess.Game()
-    search = hexchess.MctsSearch(
-        simulations=cfg.num_simulations,
-        model_path=model_path,
-    )
-
     samples = []
     move_number = 0
 
@@ -146,14 +143,18 @@ def run_worker(cfg: AsyncConfig) -> None:
     cfg.ensure_dirs()
 
     current_version, model_path = _read_model_version(cfg)
-    workers = cfg.num_self_play_workers
     batch_size = cfg.worker_batch_size
     total_games = 0
     total_positions = 0
 
-    logger.info("Worker starting: {} processes, {} games/batch, {} sims/move",
-                workers, batch_size, cfg.num_simulations)
+    logger.info("Worker starting: {} games/batch, {} sims/move",
+                batch_size, cfg.num_simulations)
     logger.info("Model version: v{} ({})", current_version, model_path or "random")
+
+    search = hexchess.MctsSearch(
+        simulations=cfg.num_simulations,
+        model_path=model_path,
+    )
 
     while True:
         batch_t0 = time.time()
@@ -161,21 +162,11 @@ def run_worker(cfg: AsyncConfig) -> None:
         outcome_counts: dict[str, int] = {}
         batch_games = 0
 
-        args = [(cfg, model_path) for _ in range(batch_size)]
-
-        if workers > 1:
-            with Pool(processes=workers) as pool:
-                for result in pool.imap_unordered(_play_one_game, args):
-                    status, game_samples = result
-                    pending_samples.extend(game_samples)
-                    outcome_counts[status] = outcome_counts.get(status, 0) + 1
-                    batch_games += 1
-        else:
-            for a in args:
-                status, game_samples = _play_one_game(a)
-                pending_samples.extend(game_samples)
-                outcome_counts[status] = outcome_counts.get(status, 0) + 1
-                batch_games += 1
+        for _ in range(batch_size):
+            status, game_samples = _play_one_game(search, cfg)
+            pending_samples.extend(game_samples)
+            outcome_counts[status] = outcome_counts.get(status, 0) + 1
+            batch_games += 1
 
         if pending_samples:
             path = _flush_samples(pending_samples, cfg.training_data_dir, current_version)
@@ -208,3 +199,7 @@ def run_worker(cfg: AsyncConfig) -> None:
             logger.info("Model updated: v{} -> v{}", current_version, new_version)
             current_version = new_version
             model_path = new_model_path
+            search = hexchess.MctsSearch(
+                simulations=cfg.num_simulations,
+                model_path=model_path,
+            )

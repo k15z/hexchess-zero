@@ -47,7 +47,6 @@ class _BaseConfig:
     temperature_low: float = 0.01
     dirichlet_alpha: float = 0.3
     dirichlet_epsilon: float = 0.25
-    num_self_play_workers: int = 7
 
     # --- Training ---
     batch_size: int = 256
@@ -66,7 +65,6 @@ class _BaseConfig:
     arena_games: int = 50
     win_threshold: float = 0.60
     arena_simulations: int = 500
-    num_arena_workers: int = 7
 
 
 @dataclass

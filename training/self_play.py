@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
-from multiprocessing import Pool
 from pathlib import Path
 
 import numpy as np
@@ -16,8 +15,10 @@ except ImportError:
     hexchess = None
 
 
-
-def play_one_game(config: Config) -> tuple[str, list[dict]]:
+def play_one_game(
+    search: "hexchess.MctsSearch",
+    config: Config,
+) -> tuple[str, list[dict]]:
     """
     Play a single self-play game and return a list of training samples.
 
@@ -26,42 +27,27 @@ def play_one_game(config: Config) -> tuple[str, list[dict]]:
         policy: np.ndarray of shape (num_move_indices,)
         outcome: float  (filled in after game ends)
     """
-    if hexchess is None:
-        raise ImportError(
-            "hexchess bindings not available. Run `maturin develop` in bindings/python/"
-        )
-
     game = hexchess.Game()
-    model_path = str(config.prev_best_model_path) if config.prev_best_model_path.exists() else None
-    search = hexchess.MctsSearch(
-        simulations=config.num_simulations,
-        model_path=model_path,
-    )
-    num_indices = hexchess.num_move_indices()
 
-    samples = []  # list of (board_tensor, policy_vector, side_to_move)
+    samples = []
     move_number = 0
 
     while not game.is_game_over():
-        # Encode current board
-        board_tensor = hexchess.encode_board(game)  # (16, 11, 11) numpy array
+        board_tensor = hexchess.encode_board(game)
 
-        # Determine temperature
         if move_number < config.temperature_threshold:
             temperature = config.temperature_high
         else:
             temperature = config.temperature_low
 
-        # Run MCTS with Dirichlet noise at the root for exploration
         result = search.run(
             game,
             temperature=temperature,
             dirichlet_epsilon=config.dirichlet_epsilon,
             dirichlet_alpha=config.dirichlet_alpha,
         )
-        policy = result["policy"]  # already temperature-scaled by engine
+        policy = result["policy"]
 
-        # Record sample (outcome filled in later)
         side = game.side_to_move()
         samples.append(
             {
@@ -71,7 +57,6 @@ def play_one_game(config: Config) -> tuple[str, list[dict]]:
             }
         )
 
-        # The engine already selected the best move via temperature sampling
         best = result["best_move"]
         game.apply_move(
             best["from_q"], best["from_r"],
@@ -96,15 +81,9 @@ def play_one_game(config: Config) -> tuple[str, list[dict]]:
         else:
             # Flip W and L for black's perspective
             sample["outcome"] = np.array([wdl_white[2], wdl_white[1], wdl_white[0]], dtype=np.float32)
-        del sample["side"]  # no longer needed
+        del sample["side"]
 
     return status, samples
-
-
-def _play_game_worker(args: tuple) -> tuple[str, list[dict]]:
-    """Worker function for multiprocessing."""
-    config, game_idx = args
-    return play_one_game(config)
 
 
 def _flush_samples(samples: list[dict], data_dir: Path) -> Path:
@@ -114,7 +93,6 @@ def _flush_samples(samples: list[dict], data_dir: Path) -> Path:
     outcomes = np.stack([s["outcome"] for s in samples])
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-    # Short random suffix to avoid collisions between distributed workers
     suffix = np.random.default_rng().integers(0, 0xFFFF_FFFF)
     filename = f"selfplay_{ts}_{suffix:08x}.npz"
     save_path = data_dir / filename
@@ -137,12 +115,15 @@ def run_self_play(config: Config | None = None) -> tuple[Path, dict]:
             "hexchess bindings not available. Run `maturin develop` in bindings/python/"
         )
 
-    workers = cfg.num_self_play_workers
-
-    num_indices = hexchess.num_move_indices()
     print(
         f"Starting self-play: {cfg.num_self_play_games} games, "
         f"{cfg.num_simulations} simulations/move"
+    )
+
+    model_path = str(cfg.prev_best_model_path) if cfg.prev_best_model_path.exists() else None
+    search = hexchess.MctsSearch(
+        simulations=cfg.num_simulations,
+        model_path=model_path,
     )
 
     flush_every = 50
@@ -155,13 +136,13 @@ def run_self_play(config: Config | None = None) -> tuple[Path, dict]:
     last_log_time = t0
     log_interval = 10  # seconds between progress lines
 
-    def _ingest(result: tuple[str, list[dict]], game_num: int) -> None:
-        nonlocal last_log_time, games_since_flush, total_positions
-        status, game_samples = result
+    for i in range(cfg.num_self_play_games):
+        status, game_samples = play_one_game(search, cfg)
         pending_samples.extend(game_samples)
         total_positions += len(game_samples)
         games_since_flush += 1
         outcome_counts[status] = outcome_counts.get(status, 0) + 1
+        game_num = i + 1
 
         # Flush to disk periodically
         is_last = game_num == cfg.num_self_play_games
@@ -184,16 +165,6 @@ def run_self_play(config: Config | None = None) -> tuple[Path, dict]:
                 flush=True,
             )
 
-    if workers > 1:
-        args = [(cfg, i) for i in range(cfg.num_self_play_games)]
-        with Pool(processes=workers) as pool:
-            for i, result in enumerate(pool.imap_unordered(_play_game_worker, args)):
-                _ingest(result, i + 1)
-    else:
-        for i in range(cfg.num_self_play_games):
-            result = _play_game_worker((cfg, i))
-            _ingest(result, i + 1)
-
     if total_positions == 0:
         print("Warning: no samples generated.")
     else:
@@ -209,23 +180,3 @@ def run_self_play(config: Config | None = None) -> tuple[Path, dict]:
     }
 
     return cfg.data_dir, stats
-
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Run self-play game generation")
-    parser.add_argument("--games", type=int, default=None, help="Number of games")
-    parser.add_argument("--simulations", type=int, default=None, help="MCTS simulations per move")
-    parser.add_argument("--workers", type=int, default=None, help="Number of parallel workers")
-    args = parser.parse_args()
-
-    cfg = Config()
-    if args.games is not None:
-        cfg.num_self_play_games = args.games
-    if args.simulations is not None:
-        cfg.num_simulations = args.simulations
-    if args.workers is not None:
-        cfg.num_self_play_workers = args.workers
-
-    run_self_play(cfg)  # stats discarded in CLI mode

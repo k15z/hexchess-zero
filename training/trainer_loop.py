@@ -21,7 +21,7 @@ import torch.optim as optim
 from loguru import logger
 from torch.utils.data import DataLoader, IterableDataset
 
-from .arena import _arena_game_worker
+from .arena import play_arena_game
 from .config import AsyncConfig
 from .export import export_to_onnx
 from .model import build_model
@@ -167,31 +167,30 @@ def _count_available_positions(data_dir: Path) -> int:
 
 def _run_arena_inline(cfg: AsyncConfig) -> dict:
     """Run arena: candidate vs best, return results dict."""
-    from multiprocessing import Pool
-
     new_path = str(cfg.candidate_model_path) if cfg.candidate_model_path.exists() else None
     old_path = str(cfg.best_model_path) if cfg.best_model_path.exists() else None
 
-    logger.info("Arena: {} games, {} sims/move, {} workers",
-                cfg.arena_games, cfg.arena_simulations, cfg.num_arena_workers)
+    logger.info("Arena: {} games, {} sims/move",
+                cfg.arena_games, cfg.arena_simulations)
 
     new_wins = old_wins = draws = 0
     t0 = time.time()
     last_log_time = t0
 
-    args = [
-        (cfg.arena_simulations, i % 2 == 0, new_path, old_path)
-        for i in range(cfg.arena_games)
-    ]
+    for i in range(cfg.arena_games):
+        new_goes_first = i % 2 == 0
+        result = play_arena_game(
+            cfg.arena_simulations, new_goes_first, new_path, old_path,
+        )
+        game_num = i + 1
 
-    def _tally(result: str, game_num: int) -> None:
-        nonlocal new_wins, old_wins, draws, last_log_time
         if result == "new":
             new_wins += 1
         elif result == "old":
             old_wins += 1
         else:
             draws += 1
+
         now = time.time()
         total_decided = new_wins + old_wins
         rate = new_wins / total_decided if total_decided > 0 else 0.5
@@ -201,16 +200,6 @@ def _run_arena_inline(cfg: AsyncConfig) -> dict:
             elapsed = now - t0
             logger.info("  arena {}/{} (new={} old={} draw={} rate={:.0%}) {:.0f}s",
                         game_num, cfg.arena_games, new_wins, old_wins, draws, rate, elapsed)
-
-    workers = cfg.num_arena_workers
-    if workers > 1:
-        with Pool(processes=workers) as pool:
-            for i, result in enumerate(pool.imap_unordered(_arena_game_worker, args)):
-                _tally(result, i + 1)
-    else:
-        for i, a in enumerate(args):
-            result = _arena_game_worker(a)
-            _tally(result, i + 1)
 
     total_decided = new_wins + old_wins
     win_rate = new_wins / total_decided if total_decided > 0 else 0.5
