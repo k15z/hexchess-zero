@@ -13,13 +13,12 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, 'reconfigure') else None
-
 import random
 
 import numpy as np
 import torch
 import torch.optim as optim
+from loguru import logger
 from torch.utils.data import DataLoader, IterableDataset
 
 from .arena import _arena_game_worker
@@ -33,7 +32,7 @@ _shutdown_requested = False
 def _handle_signal(signum, frame):
     global _shutdown_requested
     _shutdown_requested = True
-    print(f"Shutdown requested (signal {signum}), finishing current cycle...", flush=True)
+    logger.warning("Shutdown requested (signal {}), finishing current cycle...", signum)
 
 
 def _read_model_version(cfg: AsyncConfig) -> int:
@@ -173,8 +172,8 @@ def _run_arena_inline(cfg: AsyncConfig) -> dict:
     new_path = str(cfg.candidate_model_path) if cfg.candidate_model_path.exists() else None
     old_path = str(cfg.best_model_path) if cfg.best_model_path.exists() else None
 
-    print(f"Arena: {cfg.arena_games} games, {cfg.arena_simulations} sims/move, "
-          f"{cfg.num_arena_workers} workers", flush=True)
+    logger.info("Arena: {} games, {} sims/move, {} workers",
+                cfg.arena_games, cfg.arena_simulations, cfg.num_arena_workers)
 
     new_wins = old_wins = draws = 0
     t0 = time.time()
@@ -200,12 +199,8 @@ def _run_arena_inline(cfg: AsyncConfig) -> dict:
         if game_num == 1 or is_last or (now - last_log_time) >= 15:
             last_log_time = now
             elapsed = now - t0
-            print(
-                f"  arena {game_num}/{cfg.arena_games} "
-                f"(new={new_wins} old={old_wins} draw={draws} "
-                f"rate={rate:.0%}) {elapsed:.0f}s",
-                flush=True,
-            )
+            logger.info("  arena {}/{} (new={} old={} draw={} rate={:.0%}) {:.0f}s",
+                        game_num, cfg.arena_games, new_wins, old_wins, draws, rate, elapsed)
 
     workers = cfg.num_arena_workers
     if workers > 1:
@@ -223,11 +218,8 @@ def _run_arena_inline(cfg: AsyncConfig) -> dict:
 
     elapsed = time.time() - t0
     verdict = "PROMOTED" if promoted else "kept current"
-    print(
-        f"Arena done: new={new_wins} old={old_wins} draw={draws} "
-        f"rate={win_rate:.0%} ({elapsed:.0f}s) -> {verdict}",
-        flush=True,
-    )
+    logger.info("Arena done: new={} old={} draw={} rate={:.0%} ({:.0f}s) -> {}",
+                new_wins, old_wins, draws, win_rate, elapsed, verdict)
 
     return {
         "new_wins": new_wins,
@@ -256,7 +248,7 @@ def _prune_old_data(cfg: AsyncConfig) -> int:
         except OSError:
             continue
     if removed:
-        print(f"Cleaned up {removed} orphaned .tmp.npz files", flush=True)
+        logger.info("Cleaned up {} orphaned .tmp.npz files", removed)
 
     if not all_files:
         return removed
@@ -278,7 +270,7 @@ def _prune_old_data(cfg: AsyncConfig) -> int:
         f.unlink(missing_ok=True)
 
     if to_remove:
-        print(f"Pruned {len(to_remove)} old data files", flush=True)
+        logger.info("Pruned {} old data files", len(to_remove))
     return len(to_remove) + removed
 
 
@@ -302,14 +294,14 @@ def run_trainer(cfg: AsyncConfig) -> None:
         device = torch.device("mps")
     else:
         device = torch.device("cpu")
-    print(f"Trainer starting on device: {device}", flush=True)
+    logger.info("Trainer starting on device: {}", device)
 
     current_version = _read_model_version(cfg)
 
     # Persistent model and optimizer across cycles
     model = build_model(cfg).to(device)
     if cfg.best_checkpoint_path.exists():
-        print(f"Loading checkpoint: {cfg.best_checkpoint_path}", flush=True)
+        logger.info("Loading checkpoint: {}", cfg.best_checkpoint_path)
         model.load_state_dict(torch.load(cfg.best_checkpoint_path, map_location=device, weights_only=True))
 
     optimizer = optim.Adam(
@@ -325,25 +317,23 @@ def run_trainer(cfg: AsyncConfig) -> None:
         # Wait for enough training data
         available = _count_available_positions(cfg.training_data_dir)
         if available < cfg.min_positions_to_train:
-            print(
-                f"Waiting for data: ~{available}/{cfg.min_positions_to_train} positions",
-                flush=True,
-            )
+            logger.info("Waiting for data: ~{}/{} positions", available, cfg.min_positions_to_train)
             time.sleep(30)
             continue
 
         cycle += 1
         cycle_t0 = time.time()
-        print(f"\n{'='*60}", flush=True)
-        print(f"Training cycle {cycle} | model v{current_version} | "
-              f"~{available:,} positions available", flush=True)
-        print(f"{'='*60}", flush=True)
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info("Training cycle {} | model v{} | ~{:,} positions available",
+                     cycle, current_version, available)
+        logger.info("=" * 60)
 
         # Check if model was promoted externally (shouldn't happen with single
         # trainer, but defensive)
         disk_version = _read_model_version(cfg)
         if disk_version > current_version and cfg.best_checkpoint_path.exists():
-            print(f"Model updated externally: v{current_version} -> v{disk_version}, reloading", flush=True)
+            logger.info("Model updated externally: v{} -> v{}, reloading", current_version, disk_version)
             model.load_state_dict(torch.load(cfg.best_checkpoint_path, map_location=device, weights_only=True))
             optimizer = optim.Adam(model.parameters(), lr=cfg.learning_rate, weight_decay=cfg.l2_regularization)
             current_version = disk_version
@@ -351,12 +341,12 @@ def run_trainer(cfg: AsyncConfig) -> None:
         # Load data
         dataset = SlidingWindowBuffer(cfg.training_data_dir, max_positions=cfg.replay_buffer_size)
         if dataset.total_positions == 0:
-            print("No valid training data found, waiting...", flush=True)
+            logger.info("No valid training data found, waiting...")
             time.sleep(30)
             continue
 
-        print(f"Sliding window: {dataset.total_positions:,} positions from "
-              f"{len(dataset.files)} files", flush=True)
+        logger.info("Sliding window: {:,} positions from {} files",
+                     dataset.total_positions, len(dataset.files))
 
         dataloader = DataLoader(dataset, batch_size=cfg.batch_size, num_workers=0)
 
@@ -368,7 +358,7 @@ def run_trainer(cfg: AsyncConfig) -> None:
         train_t0 = time.time()
         log_interval = 100  # log every N steps
 
-        print(f"Training for {cfg.steps_per_cycle} steps (batch_size={cfg.batch_size})...", flush=True)
+        logger.info("Training for {} steps (batch_size={})...", cfg.steps_per_cycle, cfg.batch_size)
 
         training_done = False
         data_passes = 0
@@ -411,12 +401,11 @@ def run_trainer(cfg: AsyncConfig) -> None:
                     steps_per_sec = step / elapsed if elapsed > 0 else 0
                     avg_p = cycle_policy_loss / step
                     avg_v = cycle_value_loss / step
-                    print(
-                        f"  step {step:>5}/{cfg.steps_per_cycle} | "
-                        f"loss: policy={avg_p:.4f} value={avg_v:.4f} total={avg_p+avg_v:.4f} | "
-                        f"{steps_per_sec:.1f} steps/s | "
-                        f"{elapsed:.0f}s elapsed",
-                        flush=True,
+                    logger.info(
+                        "  step {:>5}/{} | loss: policy={:.4f} value={:.4f} total={:.4f} | "
+                        "{:.1f} steps/s | {:.0f}s elapsed",
+                        step, cfg.steps_per_cycle, avg_p, avg_v, avg_p + avg_v,
+                        steps_per_sec, elapsed,
                     )
 
             if not training_done:
@@ -428,20 +417,19 @@ def run_trainer(cfg: AsyncConfig) -> None:
         train_elapsed = time.time() - train_t0
         avg_policy = cycle_policy_loss / max(step, 1)
         avg_value = cycle_value_loss / max(step, 1)
-        print(
-            f"Training complete: {step} steps in {train_elapsed:.0f}s "
-            f"({data_passes} data pass{'es' if data_passes > 1 else ''}) | "
-            f"policy={avg_policy:.4f} value={avg_value:.4f}",
-            flush=True,
+        logger.info(
+            "Training complete: {} steps in {:.0f}s ({} data pass{}) | policy={:.4f} value={:.4f}",
+            step, train_elapsed, data_passes, "es" if data_passes > 1 else "",
+            avg_policy, avg_value,
         )
 
         if _shutdown_requested:
             torch.save(model.state_dict(), cfg.candidate_checkpoint_path)
-            print("Saved checkpoint before shutdown.", flush=True)
+            logger.info("Saved checkpoint before shutdown.")
             break
 
         # Export candidate
-        print("Exporting candidate ONNX model...", flush=True)
+        logger.info("Exporting candidate ONNX model...")
         candidate_pt = cfg.candidate_checkpoint_path
         candidate_onnx = cfg.candidate_model_path
         torch.save(model.state_dict(), candidate_pt)
@@ -459,8 +447,8 @@ def run_trainer(cfg: AsyncConfig) -> None:
             })
             current_version = new_version
             cycle_elapsed = time.time() - cycle_t0
-            print(f"Auto-promoted first model as v{new_version} "
-                  f"(cycle took {cycle_elapsed:.0f}s)", flush=True)
+            logger.info("Auto-promoted first model as v{} (cycle took {:.0f}s)",
+                        new_version, cycle_elapsed)
 
             _log_event(cfg, {
                 "event": "promotion",
@@ -488,18 +476,17 @@ def run_trainer(cfg: AsyncConfig) -> None:
                 "win_rate": arena_results["win_rate"],
             })
             current_version = new_version
-            print(f"Promoted to v{new_version} "
-                  f"(win rate: {arena_results['win_rate']:.0%})", flush=True)
+            logger.info("Promoted to v{} (win rate: {:.0%})", new_version, arena_results["win_rate"])
         else:
             # Reload the best checkpoint since our candidate didn't win
-            print(f"Not promoted (win rate: {arena_results['win_rate']:.0%}). "
-                  f"Reverting to v{current_version}.", flush=True)
+            logger.warning("Not promoted (win rate: {:.0%}). Reverting to v{}.",
+                           arena_results["win_rate"], current_version)
             model.load_state_dict(torch.load(cfg.best_checkpoint_path, map_location=device, weights_only=True))
             optimizer = optim.Adam(model.parameters(), lr=cfg.learning_rate, weight_decay=cfg.l2_regularization)
 
         cycle_elapsed = time.time() - cycle_t0
-        print(f"Cycle {cycle} done in {cycle_elapsed:.0f}s | "
-              f"total steps: {total_steps_all_time:,}", flush=True)
+        logger.info("Cycle {} done in {:.0f}s | total steps: {:,}",
+                     cycle, cycle_elapsed, total_steps_all_time)
 
         _log_event(cfg, {
             "event": "cycle_complete",
@@ -518,5 +505,5 @@ def run_trainer(cfg: AsyncConfig) -> None:
         # Prune old data
         _prune_old_data(cfg)
 
-    print("Trainer shutdown.", flush=True)
+    logger.info("Trainer shutdown.")
     sys.exit(0)

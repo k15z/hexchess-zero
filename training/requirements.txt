@@ -3,3 +3,4 @@ numpy>=1.24
 onnx>=1.14
 onnxruntime>=1.15
 onnxscript>=0.1
+loguru>=0.7

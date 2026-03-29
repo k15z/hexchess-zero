@@ -4,11 +4,24 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from loguru import logger
+
 from .config import AsyncConfig, Config, latest_generation
+
+
+def _configure_logging() -> None:
+    """Set up loguru for container-friendly logging."""
+    logger.remove()  # remove default stderr handler
+    logger.add(
+        sys.stderr,
+        format="<level>{level: <8}</level> | {time:HH:mm:ss} | {message}",
+        level="DEBUG",
+    )
 
 
 def step_self_play(config: Config) -> tuple[Path, dict]:
@@ -135,6 +148,7 @@ def run_full_loop(config: Config, num_generations: int = 10) -> None:
 
 def cmd_worker(args) -> None:
     """Run the async self-play worker loop."""
+    _configure_logging()
     from .worker import run_worker
 
     cfg = AsyncConfig()
@@ -150,6 +164,7 @@ def cmd_worker(args) -> None:
 
 def cmd_trainer(args) -> None:
     """Run the async continuous trainer loop."""
+    _configure_logging()
     from .trainer_loop import run_trainer
 
     cfg = AsyncConfig()

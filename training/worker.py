@@ -8,27 +8,20 @@ pick up newly promoted models.
 
 import json
 import os
-import signal
-import sys
 import time
 from datetime import datetime, timezone
 from multiprocessing import Pool
 from pathlib import Path
 
 import numpy as np
+from loguru import logger
 
 from .config import AsyncConfig
-
-sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, 'reconfigure') else None
 
 try:
     import hexchess
 except ImportError:
     hexchess = None
-
-def _handle_signal(signum, frame):
-    print(f"Shutdown requested (signal {signum}), exiting immediately.", flush=True)
-    os._exit(0)
 
 
 def _read_model_version(cfg: AsyncConfig) -> tuple[int, str | None]:
@@ -150,9 +143,6 @@ def run_worker(cfg: AsyncConfig) -> None:
     if hexchess is None:
         raise ImportError("hexchess bindings not available. Run `maturin develop` in bindings/python/")
 
-    signal.signal(signal.SIGTERM, _handle_signal)
-    signal.signal(signal.SIGINT, _handle_signal)
-
     cfg.ensure_dirs()
 
     current_version, model_path = _read_model_version(cfg)
@@ -161,9 +151,9 @@ def run_worker(cfg: AsyncConfig) -> None:
     total_games = 0
     total_positions = 0
 
-    print(f"Worker starting: {workers} processes, {batch_size} games/batch, "
-          f"{cfg.num_simulations} sims/move", flush=True)
-    print(f"Model version: v{current_version} ({model_path or 'random'})", flush=True)
+    logger.info("Worker starting: {} processes, {} games/batch, {} sims/move",
+                workers, batch_size, cfg.num_simulations)
+    logger.info("Model version: v{} ({})", current_version, model_path or "random")
 
     while True:
         batch_t0 = time.time()
@@ -193,12 +183,13 @@ def run_worker(cfg: AsyncConfig) -> None:
             total_positions += len(pending_samples)
             elapsed = time.time() - batch_t0
 
-            print(
-                f"Batch: {batch_games} games, {len(pending_samples)} pos, "
-                f"{elapsed:.0f}s ({elapsed/max(batch_games,1):.1f}s/game) | "
-                f"total: {total_games} games, {total_positions} pos | "
-                f"v{current_version} | {path.name}",
-                flush=True,
+            logger.info(
+                "Batch: {} games, {} pos, {:.0f}s ({:.1f}s/game) | "
+                "total: {} games, {} pos | v{} | {}",
+                batch_games, len(pending_samples),
+                elapsed, elapsed / max(batch_games, 1),
+                total_games, total_positions,
+                current_version, path.name,
             )
 
             _log_event(cfg, {
@@ -214,7 +205,6 @@ def run_worker(cfg: AsyncConfig) -> None:
         # Check for model update
         new_version, new_model_path = _read_model_version(cfg)
         if new_version > current_version:
-            print(f"Model updated: v{current_version} -> v{new_version}", flush=True)
+            logger.info("Model updated: v{} -> v{}", current_version, new_version)
             current_version = new_version
             model_path = new_model_path
-
