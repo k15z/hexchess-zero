@@ -40,7 +40,7 @@ class Config:
     num_simulations: int = 500
 
     # --- Self-play ---
-    num_self_play_games: int = 200
+    num_self_play_games: int = 400
     temperature_threshold: int = 30  # after this many moves, temperature → near-zero
     temperature_high: float = 1.0
     temperature_low: float = 0.01
@@ -53,7 +53,7 @@ class Config:
     batch_size: int = 256
     learning_rate: float = 0.001
     l2_regularization: float = 1e-4
-    replay_buffer_size: int = 50_000
+    replay_buffer_size: int = 500_000
 
     # --- Network architecture ---
     num_residual_blocks: int = 4
@@ -63,7 +63,7 @@ class Config:
     board_width: int = 11
 
     # --- Arena ---
-    arena_games: int = 25
+    arena_games: int = 50
     win_threshold: float = 0.60
     arena_simulations: int = 500
     num_arena_workers: int = 7
@@ -108,6 +108,16 @@ class Config:
     @property
     def prev_best_checkpoint_path(self) -> Path:
         return self.prev_generation_dir / "model" / "best.pt"
+
+    @property
+    def all_data_dirs(self) -> list[Path]:
+        """Return data dirs from gen 1 through current generation (most recent last)."""
+        dirs = []
+        for g in range(1, self.generation + 1):
+            d = _data_root() / f"gen{g}" / "data"
+            if d.exists():
+                dirs.append(d)
+        return dirs
 
     def ensure_dirs(self) -> None:
         """Create all necessary directories."""

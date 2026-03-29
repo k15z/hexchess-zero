@@ -30,21 +30,27 @@ class ReplayBuffer(IterableDataset):
 
     SHUFFLE_BUFFER_SIZE = 10_000
 
-    def __init__(self, data_dir: Path, max_positions: int = 50_000):
-        self.data_dir = data_dir
+    def __init__(self, data_dirs: list[Path], max_positions: int = 500_000):
+        self.data_dirs = data_dirs
         self.max_positions = max_positions
         self.files, self.total_positions = self._select_files()
 
     def _select_files(self) -> tuple[list[Path], int]:
-        """Pick the most recent files up to max_positions."""
-        npz_files = sorted(self.data_dir.glob("*.npz"))
-        if not npz_files:
+        """Pick the most recent files across all data dirs, up to max_positions.
+
+        Files are sorted by parent directory order (oldest generation first,
+        newest last), then by filename within each directory.  We select from
+        newest first so recent games are always included.
+        """
+        all_files: list[Path] = []
+        for d in self.data_dirs:
+            all_files.extend(sorted(d.glob("*.npz")))
+        if not all_files:
             return [], 0
 
         selected = []
         total = 0
-        for f in reversed(npz_files):
-            # Peek at size without loading arrays
+        for f in reversed(all_files):
             with np.load(f) as data:
                 n = len(data["outcomes"])
             selected.append(f)
@@ -54,8 +60,10 @@ class ReplayBuffer(IterableDataset):
 
         selected.reverse()
         total = min(total, self.max_positions)
+        num_dirs = len({f.parent for f in selected})
         print(f"Replay buffer: {total} positions from {len(selected)} files "
-              f"(skipped {len(npz_files) - len(selected)} older files)")
+              f"across {num_dirs} generation(s) "
+              f"(skipped {len(all_files) - len(selected)} older files)")
         return selected, total
 
     def __iter__(self):
@@ -125,8 +133,8 @@ def train(config: Config | None = None) -> tuple[Path, dict]:
         device = torch.device("cpu")
     print(f"Training on device: {device}")
 
-    # Load data
-    dataset = ReplayBuffer(cfg.data_dir, max_positions=cfg.replay_buffer_size)
+    # Load data from current and previous generations
+    dataset = ReplayBuffer(cfg.all_data_dirs, max_positions=cfg.replay_buffer_size)
     if dataset.total_positions == 0:
         print("No training data available. Run self-play first.")
         return cfg.best_checkpoint_path
