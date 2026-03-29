@@ -167,8 +167,8 @@ impl PyMctsSearch {
     /// uses it as the evaluator for all subsequent `run()` calls.
     /// Otherwise, uses a heuristic evaluator (uniform policy, material value).
     #[new]
-    #[pyo3(signature = (simulations=800, c_puct=1.5, model_path=None))]
-    fn new(simulations: u32, c_puct: f32, model_path: Option<String>) -> PyResult<Self> {
+    #[pyo3(signature = (simulations=800, c_puct=1.5, model_path=None, batch_size=32))]
+    fn new(simulations: u32, c_puct: f32, model_path: Option<String>, batch_size: usize) -> PyResult<Self> {
         let evaluator: Box<dyn Evaluator> = match model_path {
             Some(path) => {
                 let eval = OnnxEvaluator::from_path(&path)
@@ -179,6 +179,7 @@ impl PyMctsSearch {
         };
         let mut search = EngineSearch::new(evaluator);
         search.set_c_puct(c_puct);
+        search.set_batch_size(batch_size);
         Ok(PyMctsSearch { search, simulations })
     }
 

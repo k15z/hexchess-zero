@@ -6,7 +6,6 @@
 
 ## MCTS optimizations
 
-- Batched NN inference with virtual loss for parallel search — accumulate multiple leaf evaluations and run as a single batch through the network
 - Tree reuse across moves — keep the subtree rooted at the chosen move instead of rebuilding from scratch
 
 ## Training pipeline

@@ -23,6 +23,13 @@ use rand::Rng;
 /// positive means good for the side to move.
 pub trait Evaluator: Send + Sync {
     fn evaluate(&self, state: &GameState) -> (Vec<f32>, f32);
+
+    /// Evaluate multiple positions in a single batch. The default implementation
+    /// calls `evaluate` sequentially; backends that support batched inference
+    /// (e.g. ONNX Runtime) should override this for better throughput.
+    fn evaluate_batch(&self, states: &[&GameState]) -> Vec<(Vec<f32>, f32)> {
+        states.iter().map(|s| self.evaluate(s)).collect()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -145,11 +152,18 @@ impl Default for DirichletConfig {
 // MCTS Search
 // ---------------------------------------------------------------------------
 
+/// Virtual loss value applied during batched selection to discourage
+/// multiple paths from converging on the same leaf node.
+const VIRTUAL_LOSS: f64 = 3.0;
+
 pub struct MctsSearch {
     nodes: Vec<MctsNode>,
     evaluator: Box<dyn Evaluator>,
     /// Exploration constant for PUCT (default ~1.5).
     c_puct: f32,
+    /// Number of leaves to accumulate before a single batched NN evaluation.
+    /// A value of 1 disables batching (sequential mode). Default: 8.
+    batch_size: usize,
     /// Optional Dirichlet noise config for root priors.
     dirichlet: Option<DirichletConfig>,
     /// Transposition table: zobrist_hash -> (policy, value).
@@ -163,6 +177,7 @@ impl MctsSearch {
             nodes: Vec::new(),
             evaluator,
             c_puct: 1.5,
+            batch_size: 32,
             dirichlet: None,
             tt: HashMap::new(),
         }
@@ -171,6 +186,12 @@ impl MctsSearch {
     /// Set the PUCT exploration constant.
     pub fn set_c_puct(&mut self, c_puct: f32) {
         self.c_puct = c_puct;
+    }
+
+    /// Set the batch size for batched NN inference. A value of 1 disables
+    /// batching and falls back to the sequential code path.
+    pub fn set_batch_size(&mut self, batch_size: usize) {
+        self.batch_size = batch_size.max(1);
     }
 
     /// Enable Dirichlet noise at the root.
@@ -211,19 +232,23 @@ impl MctsSearch {
         let root = MctsNode::new(None, None, None, 1.0);
         self.nodes.push(root);
 
-        // Use a single mutable state with apply/undo instead of cloning per sim.
         let mut working_state = state.clone();
 
-        // Run simulations.
-        for _ in 0..num_simulations {
-            self.simulate(0, &mut working_state);
+        if self.batch_size <= 1 {
+            // Sequential path: one simulation at a time.
+            for _ in 0..num_simulations {
+                self.simulate(0, &mut working_state);
+            }
+        } else {
+            // Batched path: accumulate leaves, evaluate in one batch.
+            self.simulate_batched(0, &mut working_state, num_simulations);
         }
 
         self.extract_result(state, temperature)
     }
 
     // ------------------------------------------------------------------
-    // Internal helpers
+    // Internal helpers — sequential path
     // ------------------------------------------------------------------
 
     /// One simulation: select -> expand/evaluate -> backpropagate.
@@ -233,24 +258,20 @@ impl MctsSearch {
         // Phase 1: SELECT — walk down tree using PUCT.
         let mut node_idx = root_idx;
         let mut path = vec![node_idx];
-        let mut depth = 0u32;
 
         while self.nodes[node_idx].is_expanded && !self.nodes[node_idx].children.is_empty() {
             node_idx = self.select_child(node_idx);
-            // Apply the child's action to advance the game state.
             let action = self.nodes[node_idx]
                 .action
                 .expect("non-root node must have an action");
             state.apply_move(action);
             path.push(node_idx);
-            depth += 1;
         }
 
         // Phase 2: EXPAND + EVALUATE.
         let value = if state.is_game_over() {
             state.outcome_value().unwrap_or(0.0) as f64
         } else {
-            // Check transposition table before calling the (expensive) evaluator
             let hash = state.board.zobrist_hash;
             let (policy, value) = if let Some(cached) = self.tt.get(&hash) {
                 cached.clone()
@@ -259,18 +280,169 @@ impl MctsSearch {
                 self.tt.insert(hash, result.clone());
                 result
             };
-            self.expand(node_idx, state, policy);
+            self.expand(node_idx, state, &policy);
             value as f64
         };
 
         // Phase 3: BACKPROPAGATE.
-        // The value is from the perspective of the side to move at `node_idx`.
-        // As we walk back up, we negate at each level.
         self.backpropagate(&path, value);
 
         // Undo all moves to restore state to root position.
-        for _ in 0..depth {
+        for _ in 0..path.len() - 1 {
             state.undo_move();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Internal helpers — batched path with virtual loss
+    // ------------------------------------------------------------------
+
+    /// Run `num_simulations` simulations using batched NN inference.
+    ///
+    /// Accumulates up to `batch_size` leaf nodes per round:
+    /// 1. **Select** a leaf for each slot using PUCT, applying virtual loss to
+    ///    discourage duplicate paths within the same batch.
+    /// 2. **Batch evaluate** all leaves that need NN inference in one call.
+    /// 3. **Expand + backpropagate** each leaf, removing virtual loss.
+    fn simulate_batched(
+        &mut self,
+        root_idx: usize,
+        state: &mut GameState,
+        num_simulations: u32,
+    ) {
+        struct LeafInfo {
+            path: Vec<usize>,
+            leaf_state: Option<GameState>,
+            terminal_value: f64,
+            hash: u64,
+        }
+
+        let mut done = 0u32;
+        let mut leaves: Vec<LeafInfo> = Vec::with_capacity(self.batch_size);
+        let mut eval_indices: Vec<usize> = Vec::with_capacity(self.batch_size);
+
+        while done < num_simulations {
+            let batch_count = ((num_simulations - done) as usize).min(self.batch_size);
+            leaves.clear();
+            eval_indices.clear();
+
+            // --- Phase 1: SELECT leaves with virtual loss ---
+            for _ in 0..batch_count {
+                let mut node_idx = root_idx;
+                let mut path = vec![node_idx];
+
+                while self.nodes[node_idx].is_expanded
+                    && !self.nodes[node_idx].children.is_empty()
+                {
+                    node_idx = self.select_child(node_idx);
+                    let action = self.nodes[node_idx]
+                        .action
+                        .expect("non-root node must have an action");
+                    state.apply_move(action);
+                    path.push(node_idx);
+                }
+
+                let hash = state.board.zobrist_hash;
+                let moves_made = path.len() - 1; // root doesn't count
+
+                if state.is_game_over() {
+                    let val = state.outcome_value().unwrap_or(0.0) as f64;
+                    self.apply_virtual_loss(&path);
+                    leaves.push(LeafInfo {
+                        path,
+                        leaf_state: None,
+                        terminal_value: val,
+                        hash: 0,
+                    });
+                } else if let Some(cached) = self.tt.get(&hash) {
+                    // TT hit — expand immediately, no NN call needed.
+                    let (policy, value) = cached.clone();
+                    self.expand(node_idx, state, &policy);
+                    let val = value as f64;
+                    self.apply_virtual_loss(&path);
+                    leaves.push(LeafInfo {
+                        path,
+                        leaf_state: None,
+                        terminal_value: val,
+                        hash,
+                    });
+                } else {
+                    // Needs NN evaluation — snapshot the state.
+                    let snapshot = state.clone();
+                    self.apply_virtual_loss(&path);
+                    leaves.push(LeafInfo {
+                        path,
+                        leaf_state: Some(snapshot),
+                        terminal_value: 0.0,
+                        hash,
+                    });
+                }
+
+                // Undo moves to return to root.
+                for _ in 0..moves_made {
+                    state.undo_move();
+                }
+            }
+
+            // --- Phase 2: BATCH EVALUATE leaves needing NN inference ---
+            // De-duplicate by hash so we don't evaluate the same position twice.
+            let mut seen_hashes: HashMap<u64, usize> = HashMap::new();
+            for (i, l) in leaves.iter().enumerate() {
+                if l.leaf_state.is_some() && !seen_hashes.contains_key(&l.hash) {
+                    seen_hashes.insert(l.hash, eval_indices.len());
+                    eval_indices.push(i);
+                }
+            }
+
+            let eval_results: Vec<(Vec<f32>, f32)> = if eval_indices.is_empty() {
+                Vec::new()
+            } else {
+                let states_for_eval: Vec<&GameState> = eval_indices
+                    .iter()
+                    .map(|&i| leaves[i].leaf_state.as_ref().unwrap())
+                    .collect();
+                self.evaluator.evaluate_batch(&states_for_eval)
+            };
+
+            // --- Phase 3: EXPAND + BACKPROP each leaf, removing virtual loss ---
+            for leaf in &mut leaves {
+                self.remove_virtual_loss(&leaf.path);
+
+                let value = if let Some(ref leaf_state) = leaf.leaf_state {
+                    let result_idx = seen_hashes[&leaf.hash];
+                    let (policy, val) = &eval_results[result_idx];
+                    let node_idx = *leaf.path.last().unwrap();
+
+                    if !self.nodes[node_idx].is_expanded {
+                        self.tt.insert(leaf.hash, (policy.clone(), *val));
+                        self.expand(node_idx, leaf_state, policy);
+                    }
+                    *val as f64
+                } else {
+                    leaf.terminal_value
+                };
+
+                self.backpropagate(&leaf.path, value);
+            }
+
+            done += batch_count as u32;
+        }
+    }
+
+    /// Apply virtual loss along a path: increment visit counts and subtract
+    /// VIRTUAL_LOSS from value sums to discourage re-selection.
+    fn apply_virtual_loss(&mut self, path: &[usize]) {
+        for &idx in path {
+            self.nodes[idx].visit_count += 1;
+            self.nodes[idx].value_sum -= VIRTUAL_LOSS;
+        }
+    }
+
+    /// Remove virtual loss along a path (undo the effect of `apply_virtual_loss`).
+    fn remove_virtual_loss(&mut self, path: &[usize]) {
+        for &idx in path {
+            self.nodes[idx].visit_count -= 1;
+            self.nodes[idx].value_sum += VIRTUAL_LOSS;
         }
     }
 
@@ -302,7 +474,7 @@ impl MctsSearch {
     }
 
     /// Expand `node_idx` by creating children for all legal moves.
-    fn expand(&mut self, node_idx: usize, state: &GameState, policy: Vec<f32>) {
+    fn expand(&mut self, node_idx: usize, state: &GameState, policy: &[f32]) {
         let legal_moves = state.legal_moves();
         if legal_moves.is_empty() {
             return;
@@ -686,5 +858,270 @@ mod tests {
         assert!(!search.nodes.is_empty());
         search.reset();
         assert!(search.nodes.is_empty());
+    }
+
+    // ---------------------------------------------------------------
+    // Batched search tests
+    // ---------------------------------------------------------------
+
+    /// Evaluator that tracks how many times evaluate vs evaluate_batch is called.
+    struct CountingEvaluator {
+        single_calls: std::sync::atomic::AtomicU32,
+        batch_calls: std::sync::atomic::AtomicU32,
+    }
+
+    impl CountingEvaluator {
+        fn new() -> Self {
+            Self {
+                single_calls: std::sync::atomic::AtomicU32::new(0),
+                batch_calls: std::sync::atomic::AtomicU32::new(0),
+            }
+        }
+    }
+
+    impl Evaluator for CountingEvaluator {
+        fn evaluate(&self, state: &GameState) -> (Vec<f32>, f32) {
+            self.single_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            HeuristicEvaluator.evaluate(state)
+        }
+
+        fn evaluate_batch(&self, states: &[&GameState]) -> Vec<(Vec<f32>, f32)> {
+            self.batch_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            states.iter().map(|s| HeuristicEvaluator.evaluate(s)).collect()
+        }
+    }
+
+    /// Wrapper to share a CountingEvaluator via Arc while implementing Evaluator.
+    struct ArcEval(std::sync::Arc<CountingEvaluator>);
+    impl Evaluator for ArcEval {
+        fn evaluate(&self, state: &GameState) -> (Vec<f32>, f32) {
+            self.0.evaluate(state)
+        }
+        fn evaluate_batch(&self, states: &[&GameState]) -> Vec<(Vec<f32>, f32)> {
+            self.0.evaluate_batch(states)
+        }
+    }
+
+    #[test]
+    fn batched_search_returns_valid_move() {
+        let mut search = MctsSearch::new(random_evaluator());
+        search.set_batch_size(8);
+        let state = GameState::new();
+        let result = search.search(&state, 100);
+
+        let legal = state.legal_moves();
+        assert!(
+            legal.iter().any(|m| m.from == result.best_move.from && m.to == result.best_move.to),
+            "batched search must return a legal move",
+        );
+
+        let sum: f32 = result.policy.iter().sum();
+        assert!(
+            (sum - 1.0).abs() < 1e-3,
+            "batched policy should sum to 1, got {}",
+            sum,
+        );
+
+        assert!(result.nodes_searched > 0);
+    }
+
+    #[test]
+    fn batched_search_uses_evaluate_batch() {
+        let evaluator = std::sync::Arc::new(CountingEvaluator::new());
+        let eval_clone = evaluator.clone();
+        let mut search = MctsSearch::new(Box::new(ArcEval(eval_clone)));
+        search.set_batch_size(4);
+        let state = GameState::new();
+        let _ = search.search(&state, 40);
+
+        let single = evaluator.single_calls.load(std::sync::atomic::Ordering::Relaxed);
+        let batch = evaluator.batch_calls.load(std::sync::atomic::Ordering::Relaxed);
+
+        // Batched path should call evaluate_batch, not evaluate.
+        assert_eq!(single, 0, "single evaluate should not be called in batched mode");
+        assert!(batch > 0, "evaluate_batch should have been called");
+    }
+
+    #[test]
+    fn batched_search_with_temperature() {
+        let mut search = MctsSearch::new(random_evaluator());
+        search.set_batch_size(4);
+        let state = GameState::new();
+
+        let result = search.search_with_temperature(&state, 50, 1.0);
+        let legal = state.legal_moves();
+        assert!(
+            legal.iter().any(|m| m.from == result.best_move.from && m.to == result.best_move.to),
+        );
+    }
+
+    #[test]
+    fn batched_search_with_dirichlet() {
+        let mut search = MctsSearch::new(random_evaluator());
+        search.set_batch_size(4);
+        search.set_dirichlet(Some(DirichletConfig::default()));
+        let state = GameState::new();
+
+        let result = search.search(&state, 50);
+        let legal = state.legal_moves();
+        assert!(
+            legal.iter().any(|m| m.from == result.best_move.from && m.to == result.best_move.to),
+        );
+    }
+
+    #[test]
+    fn batched_more_sims_gives_more_nodes() {
+        let state = GameState::new();
+
+        let mut s1 = MctsSearch::new(random_evaluator());
+        s1.set_batch_size(4);
+        let r1 = s1.search(&state, 10);
+
+        let mut s2 = MctsSearch::new(random_evaluator());
+        s2.set_batch_size(4);
+        let r2 = s2.search(&state, 100);
+
+        assert!(
+            r2.nodes_searched > r1.nodes_searched,
+            "batched: more sims should produce more nodes: {} vs {}",
+            r2.nodes_searched,
+            r1.nodes_searched,
+        );
+    }
+
+    #[test]
+    fn batch_size_1_uses_sequential_path() {
+        let evaluator = std::sync::Arc::new(CountingEvaluator::new());
+        let eval_clone = evaluator.clone();
+        let mut search = MctsSearch::new(Box::new(ArcEval(eval_clone)));
+        search.set_batch_size(1);
+        let state = GameState::new();
+        let _ = search.search(&state, 20);
+
+        let single = evaluator.single_calls.load(std::sync::atomic::Ordering::Relaxed);
+        let batch = evaluator.batch_calls.load(std::sync::atomic::Ordering::Relaxed);
+
+        // Sequential path should call evaluate, not evaluate_batch.
+        assert!(single > 0, "sequential path should call evaluate");
+        assert_eq!(batch, 0, "sequential path should not call evaluate_batch");
+    }
+
+    /// Verify that sequential (batch=1) and batched (batch=8) produce
+    /// structurally similar results: both return legal moves, valid policies,
+    /// and comparable node counts.
+    #[test]
+    fn sequential_vs_batched_structural_equivalence() {
+        let state = GameState::new();
+        let sims = 200;
+
+        let mut seq = MctsSearch::new(random_evaluator());
+        seq.set_batch_size(1);
+        let r_seq = seq.search(&state, sims);
+
+        let mut bat = MctsSearch::new(random_evaluator());
+        bat.set_batch_size(8);
+        let r_bat = bat.search(&state, sims);
+
+        let legal = state.legal_moves();
+
+        // Both return legal moves.
+        assert!(legal.iter().any(|m| m.from == r_seq.best_move.from && m.to == r_seq.best_move.to));
+        assert!(legal.iter().any(|m| m.from == r_bat.best_move.from && m.to == r_bat.best_move.to));
+
+        // Both have valid policies.
+        let sum_seq: f32 = r_seq.policy.iter().sum();
+        let sum_bat: f32 = r_bat.policy.iter().sum();
+        assert!((sum_seq - 1.0).abs() < 1e-3);
+        assert!((sum_bat - 1.0).abs() < 1e-3);
+
+        // Node counts should be in the same ballpark (batched may differ
+        // slightly due to TT hits in batch reducing actual evaluations,
+        // but both should have expanded a comparable number of nodes).
+        assert!(
+            r_bat.nodes_searched > sims / 2,
+            "batched should still build a substantial tree: got {}",
+            r_bat.nodes_searched,
+        );
+    }
+
+    /// Various batch sizes should all produce valid results.
+    #[test]
+    fn various_batch_sizes_all_valid() {
+        let state = GameState::new();
+        for bs in [2, 3, 4, 7, 16, 32] {
+            let mut search = MctsSearch::new(random_evaluator());
+            search.set_batch_size(bs);
+            let result = search.search(&state, 64);
+
+            let legal = state.legal_moves();
+            assert!(
+                legal.iter().any(|m| m.from == result.best_move.from && m.to == result.best_move.to),
+                "batch_size={bs}: must return a legal move",
+            );
+
+            let sum: f32 = result.policy.iter().sum();
+            assert!(
+                (sum - 1.0).abs() < 1e-3,
+                "batch_size={bs}: policy should sum to 1, got {sum}",
+            );
+        }
+    }
+
+    /// Batched search shouldn't corrupt game state — verify the root
+    /// visit count matches num_simulations.
+    #[test]
+    fn batched_root_visit_count_matches_simulations() {
+        let state = GameState::new();
+        let sims = 100u32;
+
+        let mut search = MctsSearch::new(random_evaluator());
+        search.set_batch_size(8);
+        let _ = search.search(&state, sims);
+
+        // Root node should have exactly `sims` visits.
+        assert_eq!(
+            search.nodes[0].visit_count, sims,
+            "root visit count should equal num_simulations",
+        );
+    }
+
+    /// Virtual loss should be fully removed after search completes.
+    /// Verify by checking that Q-values are reasonable (not poisoned by
+    /// leaked virtual loss, which would push them far below -1.0).
+    #[test]
+    fn virtual_loss_fully_removed_after_search() {
+        let state = GameState::new();
+        let sims = 80u32;
+
+        let mut search = MctsSearch::new(random_evaluator());
+        search.set_batch_size(4);
+        let _ = search.search(&state, sims);
+
+        // Root visit count must equal num_simulations.
+        assert_eq!(search.nodes[0].visit_count, sims);
+
+        // Every node's Q-value should be in [-1, 1] (values are tanh-bounded).
+        // If virtual loss leaked, Q would be far below -1.
+        for (i, node) in search.nodes.iter().enumerate() {
+            if node.visit_count > 0 {
+                let q = node.q_value();
+                assert!(
+                    q >= -1.0 - 1e-6 && q <= 1.0 + 1e-6,
+                    "node {i}: Q-value {q} out of [-1, 1] range — possible virtual loss leak",
+                );
+            }
+        }
+
+        // Children visits + initial root-only visits should equal root visits.
+        let root = &search.nodes[0];
+        let children_visits: u32 = root.children.iter().map(|&i| search.nodes[i].visit_count).sum();
+        // The gap is from the first batch where root wasn't yet expanded —
+        // up to batch_size leaves may all land on the unexpanded root.
+        let gap = sims - children_visits;
+        assert!(
+            gap <= search.batch_size as u32,
+            "visit gap ({gap}) should be at most batch_size ({})",
+            search.batch_size,
+        );
     }
 }
