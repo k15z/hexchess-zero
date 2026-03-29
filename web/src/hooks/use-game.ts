@@ -240,6 +240,7 @@ export function useGame() {
     }
   }, [setState, scheduleAiMove]);
 
+  const scheduleSelfPlayMoveRef = useRef<() => void>(() => {});
   const scheduleSelfPlayMove = useCallback(() => {
     const s = stateRef.current;
     if (!s.selfPlayMode || !gameRef.current || gameRef.current.isGameOver()) return;
@@ -255,13 +256,16 @@ export function useGame() {
           lastMove: { from_q: m.from_q, from_r: m.from_r, to_q: m.to_q, to_r: m.to_r },
           ...snapshot(game),
         });
-        scheduleSelfPlayMove();
+        scheduleSelfPlayMoveRef.current();
       } catch (e) {
         console.error("Self-play error:", e);
         setState({ selfPlayMode: false });
       }
     }, stateRef.current.selfPlayDelay);
   }, [setState]);
+  useEffect(() => {
+    scheduleSelfPlayMoveRef.current = scheduleSelfPlayMove;
+  }, [scheduleSelfPlayMove]);
 
   const toggleSelfPlay = useCallback(() => {
     const s = stateRef.current;

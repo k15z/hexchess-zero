@@ -18,7 +18,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - run: cargo fmt --check
+      - run: cargo fmt --all --check
 
   rust-clippy:
     name: Rust Clippy
@@ -51,9 +51,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo install wasm-pack
       - run: wasm-pack build --target web bindings/wasm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wasm-pkg
+          path: bindings/wasm/pkg/
 
-  web-lint-build:
-    name: Web Lint & Build
+  web-lint:
+    name: Web Lint
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -67,6 +71,26 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm ci
       - run: npm run lint
+
+  web-build:
+    name: Web Build
+    needs: wasm-build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: actions/download-artifact@v4
+        with:
+          name: wasm-pkg
+          path: bindings/wasm/pkg/
+      - run: npm ci
       - run: npm run build
 
   python-bindings:
