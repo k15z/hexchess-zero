@@ -108,7 +108,7 @@ class ReplayBuffer(IterableDataset):
                    torch.tensor(buf_o[j], dtype=torch.float32))
 
 
-def train(config: Config | None = None) -> Path:
+def train(config: Config | None = None) -> tuple[Path, dict]:
     """
     Run the training loop.
 
@@ -153,6 +153,7 @@ def train(config: Config | None = None) -> Path:
     # Training loop
     model.train()
     total_batches = (dataset.total_positions + cfg.batch_size - 1) // cfg.batch_size
+    final_losses = {}
     for epoch in range(cfg.training_epochs):
         epoch_policy_loss = 0.0
         epoch_value_loss = 0.0
@@ -199,21 +200,36 @@ def train(config: Config | None = None) -> Path:
 
         elapsed = time.time() - t0
         if num_batches > 0:
+            avg_policy = epoch_policy_loss / num_batches
+            avg_value = epoch_value_loss / num_batches
+            avg_total = epoch_total_loss / num_batches
             print(
                 f"Epoch {epoch + 1}/{cfg.training_epochs} "
                 f"[{elapsed:.1f}s] "
-                f"policy_loss={epoch_policy_loss / num_batches:.4f} "
-                f"value_loss={epoch_value_loss / num_batches:.4f} "
-                f"total_loss={epoch_total_loss / num_batches:.4f}",
+                f"policy_loss={avg_policy:.4f} "
+                f"value_loss={avg_value:.4f} "
+                f"total_loss={avg_total:.4f}",
                 flush=True,
             )
+            final_losses = {
+                "policy_loss": round(avg_policy, 4),
+                "value_loss": round(avg_value, 4),
+                "total_loss": round(avg_total, 4),
+            }
 
     # Save checkpoint
     checkpoint_path = cfg.model_dir / "latest.pt"
     torch.save(model.state_dict(), checkpoint_path)
     print(f"Saved checkpoint to {checkpoint_path}")
 
-    return checkpoint_path
+    stats = {
+        "epochs": cfg.training_epochs,
+        "positions": dataset.total_positions,
+        "final_losses": final_losses,
+        "device": str(device),
+    }
+
+    return checkpoint_path, stats
 
 
 if __name__ == "__main__":
@@ -233,4 +249,4 @@ if __name__ == "__main__":
     if args.lr is not None:
         cfg.learning_rate = args.lr
 
-    train(cfg)
+    train(cfg)  # stats discarded in CLI mode

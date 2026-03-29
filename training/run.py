@@ -2,23 +2,25 @@ from __future__ import annotations
 """Main training orchestrator: self-play -> train -> export -> arena -> promote."""
 
 import argparse
+import json
 import shutil
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import Config, latest_generation
 
 
-def step_self_play(config: Config) -> Path:
-    """Run self-play and return path to the generated data."""
+def step_self_play(config: Config) -> tuple[Path, dict]:
+    """Run self-play and return (data path, stats)."""
     from .self_play import run_self_play
 
     print("\n--- Self-Play ---", flush=True)
     return run_self_play(config)
 
 
-def step_train(config: Config) -> Path:
-    """Train the network and return path to the checkpoint."""
+def step_train(config: Config) -> tuple[Path, dict]:
+    """Train the network and return (checkpoint path, stats)."""
     from .trainer import train
 
     print("\n--- Training ---", flush=True)
@@ -41,8 +43,8 @@ def step_export(config: Config) -> Path:
     return export_to_onnx(checkpoint, output, config)
 
 
-def step_arena(config: Config) -> bool:
-    """Run arena and return whether the new model was promoted."""
+def step_arena(config: Config) -> dict:
+    """Run arena and return results dict (including 'promoted' bool)."""
     from .arena import run_arena, promote_model
 
     print("\n--- Arena ---", flush=True)
@@ -50,7 +52,7 @@ def step_arena(config: Config) -> bool:
     results = run_arena(config)
     if results["promoted"]:
         promote_model(config)
-    return results["promoted"]
+    return results
 
 
 def run_full_loop(config: Config, num_generations: int = 10) -> None:
@@ -80,19 +82,22 @@ def run_full_loop(config: Config, num_generations: int = 10) -> None:
 
         print(f"\n====== Generation {gen} ======", flush=True)
         t0 = time.time()
+        gen_started = datetime.now(timezone.utc).isoformat()
 
-        step_self_play(config)
-        step_train(config)
+        _, self_play_stats = step_self_play(config)
+        _, train_stats = step_train(config)
         step_export(config)
 
         # Auto-promote on first generation (no previous best to compare against)
+        arena_results = None
         if not config.prev_best_model_path.exists():
             from .arena import promote_model
             print("No previous best model — auto-promoting.", flush=True)
             promote_model(config)
             promoted = True
         else:
-            promoted = step_arena(config)
+            arena_results = step_arena(config)
+            promoted = arena_results["promoted"]
             if not promoted:
                 # Carry forward previous best so the next generation has
                 # an unbroken chain to bootstrap from.
@@ -105,6 +110,27 @@ def run_full_loop(config: Config, num_generations: int = 10) -> None:
         total = time.time() - loop_t0
         status = "PROMOTED" if promoted else "kept"
         print(f"Generation {gen} done in {elapsed:.0f}s ({status}) | total {total:.0f}s", flush=True)
+
+        # Write per-generation metadata
+        metadata = {
+            "generation": gen,
+            "started_at": gen_started,
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "elapsed_seconds": round(elapsed, 1),
+            "promoted": promoted,
+            "self_play": self_play_stats,
+            "training": train_stats,
+        }
+        if arena_results is not None:
+            metadata["arena"] = {
+                "new_wins": arena_results["new_wins"],
+                "old_wins": arena_results["old_wins"],
+                "draws": arena_results["draws"],
+                "win_rate": arena_results["win_rate"],
+            }
+        metadata_path = config.generation_dir / "metadata.json"
+        metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
+        print(f"Wrote {metadata_path}", flush=True)
 
 
 def main() -> None:

@@ -11,7 +11,6 @@
 ## Training pipeline
 
 - Scale up network size (more residual blocks / filters) once baseline model quality stabilizes
-- Per-generation metadata.json (loss curves, win rates, game length stats)
 
 ## Web UI
 

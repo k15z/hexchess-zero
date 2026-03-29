@@ -128,7 +128,7 @@ def _flush_samples(samples: list[dict], data_dir: Path) -> Path:
     return save_path
 
 
-def run_self_play(config: Config | None = None) -> Path:
+def run_self_play(config: Config | None = None) -> tuple[Path, dict]:
     """
     Run a batch of self-play games and save training data.
 
@@ -207,7 +207,16 @@ def run_self_play(config: Config | None = None) -> Path:
     else:
         print(f"Saved {total_positions} positions across {len(saved_files)} files")
 
-    return cfg.data_dir
+    elapsed = time.time() - t0
+    stats = {
+        "games": cfg.num_self_play_games,
+        "total_positions": total_positions,
+        "avg_game_length": round(total_positions / max(cfg.num_self_play_games, 1), 1),
+        "outcomes": dict(sorted(outcome_counts.items())),
+        "elapsed_seconds": round(elapsed, 1),
+    }
+
+    return cfg.data_dir, stats
 
 
 if __name__ == "__main__":
@@ -227,4 +236,4 @@ if __name__ == "__main__":
     if args.workers is not None:
         cfg.num_self_play_workers = args.workers
 
-    run_self_play(cfg)
+    run_self_play(cfg)  # stats discarded in CLI mode
