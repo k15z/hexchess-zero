@@ -7,7 +7,6 @@ prune old data, repeat.
 """
 
 import json
-import os
 import signal
 import sys
 import time
@@ -20,19 +19,13 @@ import random
 
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, IterableDataset
 
-from .arena import play_arena_game, _arena_game_worker
+from .arena import _arena_game_worker
 from .config import AsyncConfig
 from .export import export_to_onnx
 from .model import build_model
-
-try:
-    import hexchess
-except ImportError:
-    hexchess = None
 
 _shutdown_requested = False
 
