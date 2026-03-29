@@ -161,6 +161,15 @@ impl Default for DirichletConfig {
 /// multiple paths from converging on the same leaf node.
 const VIRTUAL_LOSS: f64 = 3.0;
 
+/// Cumulative transposition table statistics.
+#[derive(Clone, Debug, Default)]
+pub struct TtStats {
+    pub hits: u64,
+    pub misses: u64,
+    pub clears: u64,
+    pub current_size: usize,
+}
+
 pub struct MctsSearch {
     nodes: Vec<MctsNode>,
     evaluator: Box<dyn Evaluator>,
@@ -178,6 +187,10 @@ pub struct MctsSearch {
     /// the table is cleared to prevent unbounded memory growth. Default: 100k
     /// entries (~1.6 GB with ~16KB policy vectors).
     tt_capacity: usize,
+    /// Cumulative TT statistics (hits, misses, clears).
+    tt_hits: u64,
+    tt_misses: u64,
+    tt_clears: u64,
 }
 
 impl MctsSearch {
@@ -190,6 +203,9 @@ impl MctsSearch {
             dirichlet: None,
             tt: HashMap::new(),
             tt_capacity: 100_000,
+            tt_hits: 0,
+            tt_misses: 0,
+            tt_clears: 0,
         }
     }
 
@@ -224,8 +240,19 @@ impl MctsSearch {
     fn tt_insert(&mut self, hash: u64, entry: (Vec<f32>, f32)) {
         if self.tt.len() >= self.tt_capacity {
             self.tt.clear();
+            self.tt_clears += 1;
         }
         self.tt.insert(hash, entry);
+    }
+
+    /// Return cumulative transposition table statistics.
+    pub fn tt_stats(&self) -> TtStats {
+        TtStats {
+            hits: self.tt_hits,
+            misses: self.tt_misses,
+            clears: self.tt_clears,
+            current_size: self.tt.len(),
+        }
     }
 
     /// Clear everything including the transposition table.
@@ -298,8 +325,10 @@ impl MctsSearch {
         } else {
             let hash = state.board.zobrist_hash;
             let (policy, value) = if let Some(cached) = self.tt.get(&hash) {
+                self.tt_hits += 1;
                 cached.clone()
             } else {
+                self.tt_misses += 1;
                 let result = self.evaluator.evaluate(state);
                 self.tt_insert(hash, result.clone());
                 result
@@ -374,6 +403,7 @@ impl MctsSearch {
                     });
                 } else if let Some(cached) = self.tt.get(&hash) {
                     // TT hit — expand immediately, no NN call needed.
+                    self.tt_hits += 1;
                     let (policy, value) = cached.clone();
                     self.expand(node_idx, state, &policy);
                     let val = value as f64;
@@ -386,6 +416,7 @@ impl MctsSearch {
                     });
                 } else {
                     // Needs NN evaluation — snapshot the state.
+                    self.tt_misses += 1;
                     let snapshot = state.clone();
                     self.apply_virtual_loss(&path);
                     leaves.push(LeafInfo {

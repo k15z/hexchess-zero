@@ -183,6 +183,14 @@ def run_worker(cfg: AsyncConfig) -> None:
                 current_version, path.name,
             )
 
+            tt = search.tt_stats()
+            hit_rate = tt["hits"] / max(tt["hits"] + tt["misses"], 1) * 100
+            logger.info(
+                "TT: {} entries, {:.0f}% hit rate ({} hits, {} misses, {} clears)",
+                tt["current_size"], hit_rate,
+                tt["hits"], tt["misses"], tt["clears"],
+            )
+
             _log_event(cfg, {
                 "event": "batch_complete",
                 "model_version": current_version,
@@ -191,6 +199,10 @@ def run_worker(cfg: AsyncConfig) -> None:
                 "elapsed_seconds": round(elapsed, 1),
                 "outcomes": outcome_counts,
                 "file": path.name,
+                "tt_hits": tt["hits"],
+                "tt_misses": tt["misses"],
+                "tt_clears": tt["clears"],
+                "tt_size": tt["current_size"],
             })
 
         # Check for model update

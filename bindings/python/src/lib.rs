@@ -235,6 +235,17 @@ impl PyMctsSearch {
 
         Ok(dict)
     }
+
+    /// Return transposition table statistics as a dict.
+    fn tt_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let stats = self.search.tt_stats();
+        let dict = PyDict::new(py);
+        dict.set_item("hits", stats.hits)?;
+        dict.set_item("misses", stats.misses)?;
+        dict.set_item("clears", stats.clears)?;
+        dict.set_item("current_size", stats.current_size)?;
+        Ok(dict)
+    }
 }
 
 // ---------------------------------------------------------------------------
