@@ -25,7 +25,7 @@ spec:
         - name: trainer
           image: ghcr.io/k15z/hexchess-zero/training:latest
           imagePullPolicy: Always
-          args: ["trainer", "--arena-workers", "3"]
+          args: ["trainer"]
           volumeMounts:
             - name: data
               mountPath: /app/.data

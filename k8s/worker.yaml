@@ -31,7 +31,7 @@ spec:
         - name: worker
           image: ghcr.io/k15z/hexchess-zero/training:latest
           imagePullPolicy: Always
-          args: ["worker", "--workers", "4"]
+          args: ["worker"]
           volumeMounts:
             - name: data
               mountPath: /app/.data
