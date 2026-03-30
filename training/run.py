@@ -129,11 +129,18 @@ def main() -> None:
     subparsers.add_parser("status", help="Show training cluster status")
     subparsers.add_parser("progress", help="Show training progress summary")
 
-    # --- Elo ranking ---
-    elo_parser = subparsers.add_parser("elo-ranking", help="Run Elo ranking vs baselines")
+    # --- Elo ranking (batch, one-shot) ---
+    elo_parser = subparsers.add_parser("elo-ranking", help="Run batch Elo ranking vs baselines")
     elo_parser.add_argument("--versions", type=int, default=10, help="Number of recent model versions to rank")
     elo_parser.add_argument("--games-per-side", type=int, default=3, help="Games per side per matchup")
     elo_parser.add_argument("--simulations", type=int, default=500, help="MCTS simulations per move")
+
+    # --- Elo service (continuous) ---
+    elo_svc_parser = subparsers.add_parser("elo-service", help="Run continuous Elo rating service")
+    elo_svc_parser.add_argument("--simulations", type=int, default=500, help="MCTS simulations per move")
+    elo_svc_parser.add_argument("--max-versions", type=int, default=20, help="Max model versions in pool")
+    elo_svc_parser.add_argument("--recompute-interval", type=int, default=10, help="Games between Elo recomputation")
+    elo_svc_parser.add_argument("--notify-interval", type=int, default=20, help="Games between Slack notifications")
 
     args = parser.parse_args()
 
@@ -156,6 +163,15 @@ def main() -> None:
             num_versions=args.versions,
             games_per_side=args.games_per_side,
             simulations=args.simulations,
+        )
+    elif args.command == "elo-service":
+        _configure_logging()
+        from .elo_service import run_elo_service
+        run_elo_service(
+            simulations=args.simulations,
+            max_versions=args.max_versions,
+            recompute_interval=args.recompute_interval,
+            notify_interval=args.notify_interval,
         )
 
 

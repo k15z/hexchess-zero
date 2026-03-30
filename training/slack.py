@@ -59,6 +59,26 @@ def notify_elo_ranking(ratings: dict[str, int | float], elapsed_seconds: float) 
     _post(text)
 
 
+def notify_elo_update(
+    ratings: dict[str, int | float],
+    total_games: int,
+    new_model: str | None = None,
+) -> None:
+    """Send periodic Elo update or new-model-ranked notification."""
+    if not SLACK_WEBHOOK_URL:
+        return
+
+    sorted_players = sorted(ratings.items(), key=lambda x: x[1], reverse=True)
+    lines = [f"{rank}. {name} ({elo:+d})" for rank, (name, elo) in enumerate(sorted_players, 1)]
+    table = "\n".join(lines)
+
+    header = "*Hexchess Elo Update*"
+    if new_model:
+        header = f"*Hexchess Elo: {new_model} ranked!*"
+
+    _post(f"{header}\n```\n{table}\n```\n({total_games} games played)")
+
+
 def _post(text: str) -> None:
     """Post a message to the configured Slack webhook."""
     payload = json.dumps({"text": text}).encode()

@@ -28,7 +28,8 @@ python -m training worker                 # run self-play worker loop
 python -m training trainer                # run continuous trainer loop
 python -m training status                 # show cluster status
 python -m training progress               # show training progress table
-python -m training elo-ranking            # run Elo ranking vs baselines
+python -m training elo-service             # run continuous Elo rating service
+python -m training elo-ranking            # run batch Elo ranking (one-shot)
 ```
 
 ## Architecture
@@ -59,7 +60,8 @@ Async distributed AlphaZero loop: workers generate self-play data continuously, 
 - **model.py** — `HexChessNet`: conv input → 6 residual blocks (128 filters) → policy head + WDL value head. Input `(19, 11, 11)`, policy output size = `num_move_indices()`, WDL output = 3 logits (Win/Draw/Loss).
 - **export.py** — PyTorch → ONNX. Softmax applied to policy logits at inference time in evaluator, not in the model.
 - **arena.py** — Plays individual arena games between two MCTS agents.
-- **elo_ranking.py** — Async Elo ranking: plays round-robin between baselines (Minimax-2, Minimax-3, Heuristic) and recent model versions. Runs as a k8s CronJob.
+- **elo_service.py** — Continuous Elo rating service (k8s Deployment). Uncertainty-based matchmaking: picks the least-played pair, plays one game, updates Elo. Persists state to `elo_state.json`. LRU-caches player objects to bound memory.
+- **elo_ranking.py** — Batch Elo ranking (one-shot): plays full round-robin between baselines and recent model versions. Kept for manual use.
 - **metrics.py** — Reads trainer logs and displays progress summary table.
 - **config.py** — All hyperparameters and derived paths (`AsyncConfig`).
 
@@ -83,7 +85,8 @@ Training artifacts are stored in `.data/` (gitignored), shared via NFS on k8s:
   models/          # best.onnx, best.pt, best.meta.json, v{N}.onnx snapshots
   training_data/   # version-tagged selfplay .npz files
   logs/            # trainer.jsonl, worker-*.jsonl
-  elo_rankings.jsonl  # Elo ranking history
+  elo_state.json      # Continuous Elo service state (pair results, ratings)
+  elo_rankings.jsonl  # Elo ranking history (appended by both batch and service)
 ```
 
 ## Workflow
