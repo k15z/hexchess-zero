@@ -26,7 +26,14 @@ spec:
             - name: elo-ranking
               image: ghcr.io/k15z/hexchess-zero/training:latest
               imagePullPolicy: Always
-              args: ["elo-ranking", "--gens", "10", "--games", "6"]
+              args: ["elo-ranking", "--versions", "10", "--games-per-side", "3"]
+              env:
+                - name: SLACK_WEBHOOK_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: slack-webhook
+                      key: webhook-url
+                      optional: true
               volumeMounts:
                 - name: data
                   mountPath: /app/.data

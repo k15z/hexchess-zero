@@ -62,14 +62,14 @@ def print_progress() -> None:
     # Also show Elo rankings if available
     elo_path = _data_root() / "elo_rankings.jsonl"
     if elo_path.exists():
+        from collections import deque
         with open(elo_path) as f:
-            lines = [l.strip() for l in f if l.strip()]
-        if lines:
-            latest = json.loads(lines[-1])
+            last_line = deque(f, maxlen=1)
+        if last_line:
+            latest = json.loads(last_line[0])
             ratings = latest.get("ratings", {})
             ts = latest.get("timestamp", "?")
             if ratings:
+                from .elo_ranking import format_elo_table
                 print(f"\nLatest Elo ranking ({ts}):")
-                sorted_players = sorted(ratings.items(), key=lambda x: x[1], reverse=True)
-                for rank, (name, elo) in enumerate(sorted_players, 1):
-                    print(f"  {rank}. {name:<20s} {elo:>+6d}")
+                print(format_elo_table(ratings))

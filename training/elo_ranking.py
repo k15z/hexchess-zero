@@ -6,9 +6,9 @@ minimax depth 2, minimax depth 3) and the N most recent model versions
 (from models/vN.onnx snapshots), then computes Elo ratings via MLE.
 
 Usage:
-    python -m training elo-ranking              # default: last 10 versions, 6 games/matchup
-    python -m training elo-ranking --gens 5     # last 5 versions
-    python -m training elo-ranking --games 10   # 10 games per matchup (5 per side)
+    python -m training elo-ranking                  # default: last 10 versions, 6 games/matchup
+    python -m training elo-ranking --versions 5     # last 5 versions
+    python -m training elo-ranking --games 10       # 10 games per matchup (5 per side)
 """
 
 from __future__ import annotations
@@ -16,9 +16,9 @@ from __future__ import annotations
 import json
 import math
 import time
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Protocol
 
 from .config import _data_root
 
@@ -32,34 +32,38 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class Player:
+class Player(Protocol):
     name: str
-    kind: str  # "minimax", "mcts_heuristic", "mcts_model"
-    # minimax
-    depth: int = 0
-    # mcts
-    simulations: int = 500
-    model_path: str | None = None
+
+    def pick_move(self, game) -> dict: ...
+
+
+class MinimaxPlayer:
+    def __init__(self, name: str, depth: int):
+        self.name = name
+        self.depth = depth
 
     def pick_move(self, game):
-        if self.kind == "minimax":
-            result = hexchess.minimax_search(game, self.depth)
-            return result["best_move"]
-        else:
-            search = hexchess.MctsSearch(
-                simulations=self.simulations,
-                model_path=self.model_path,
-            )
-            result = search.run(game, temperature=0.0)
-            return result["best_move"]
+        return hexchess.minimax_search(game, self.depth)["best_move"]
+
+
+class MctsPlayer:
+    def __init__(self, name: str, simulations: int, model_path: str | None = None):
+        self.name = name
+        self.search = hexchess.MctsSearch(
+            simulations=simulations,
+            model_path=model_path,
+        )
+
+    def pick_move(self, game):
+        return self.search.run(game, temperature=0.0)["best_move"]
 
 
 def _baselines(simulations: int = 500) -> list[Player]:
     return [
-        Player(name="Minimax-2", kind="minimax", depth=2),
-        Player(name="Minimax-3", kind="minimax", depth=3),
-        Player(name="Heuristic", kind="mcts_heuristic", simulations=simulations),
+        MinimaxPlayer(name="Minimax-2", depth=2),
+        MinimaxPlayer(name="Minimax-3", depth=3),
+        MctsPlayer(name="Heuristic", simulations=simulations),
     ]
 
 
@@ -69,7 +73,6 @@ def _model_players(num_versions: int, simulations: int = 500) -> list[Player]:
     if not models_dir.exists():
         return []
 
-    # Find all versioned snapshots
     versions = []
     for f in models_dir.glob("v*.onnx"):
         try:
@@ -79,13 +82,10 @@ def _model_players(num_versions: int, simulations: int = 500) -> list[Player]:
             continue
 
     versions.sort(key=lambda x: x[0])
-
-    # Take the most recent N
     selected = versions[-num_versions:]
     return [
-        Player(
+        MctsPlayer(
             name=f"v{v}",
-            kind="mcts_model",
             simulations=simulations,
             model_path=str(path),
         )
@@ -164,7 +164,6 @@ def compute_elo(
     if anchor in elo:
         elo[anchor] = anchor_elo
 
-    # Build win/loss/draw matrix
     scores: dict[tuple[str, str], tuple[float, int]] = {}
     for r in results:
         a, b = r["a"], r["b"]
@@ -180,7 +179,6 @@ def compute_elo(
         for p in players:
             if p == anchor:
                 continue
-            # Sum of expected and actual scores against all opponents
             actual_total = 0.0
             expected_total = 0.0
             games_total = 0
@@ -197,14 +195,10 @@ def compute_elo(
                 expected_total += expected_score
                 games_total += n_games
 
-            if games_total == 0:
+            if games_total == 0 or expected_total == 0:
                 continue
-            # Adjust: move Elo to reduce error
-            if expected_total > 0:
-                ratio = actual_total / expected_total
-                # Clamp to avoid explosion
-                ratio = max(0.1, min(10.0, ratio))
-                elo[p] += 400 * math.log10(ratio) * 0.5  # damped update
+            ratio = max(0.1, min(10.0, actual_total / expected_total))
+            elo[p] += 400 * math.log10(ratio) * 0.5  # damped update
 
     # Re-anchor
     if anchor in elo:
@@ -215,13 +209,22 @@ def compute_elo(
     return {p: round(elo[p]) for p in players}
 
 
+def format_elo_table(ratings: dict[str, int | float]) -> str:
+    """Format Elo ratings as a ranked table string."""
+    lines = []
+    sorted_players = sorted(ratings.items(), key=lambda x: x[1], reverse=True)
+    for rank, (name, elo) in enumerate(sorted_players, 1):
+        lines.append(f"  {rank}. {name:<20s} {elo:>+6d}")
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
 
 def run_elo_ranking(
-    num_gens: int = 10,
+    num_versions: int = 10,
     games_per_side: int = 3,
     simulations: int = 500,
 ) -> dict:
@@ -233,10 +236,10 @@ def run_elo_ranking(
         raise ImportError("hexchess Python bindings not available")
 
     baselines = _baselines(simulations)
-    models = _model_players(num_gens, simulations)
+    models = _model_players(num_versions, simulations)
 
     if not models:
-        print("No model generations found. Run training first.")
+        print("No model versions found. Run training first.")
         return {}
 
     all_players = baselines + models
@@ -249,7 +252,6 @@ def run_elo_ranking(
     t0 = time.time()
     all_results = []
 
-    # Play all matchups: each baseline vs each model, and models vs each other
     matchups = []
     for i in range(len(all_players)):
         for j in range(i + 1, len(all_players)):
@@ -269,19 +271,14 @@ def run_elo_ranking(
 
     elapsed = time.time() - t0
 
-    # Compute Elo ratings
     ratings = compute_elo(player_names, all_results)
 
-    # Print results
     print(f"\n{'='*50}")
     print("  ELO RANKINGS")
     print(f"{'='*50}")
-    sorted_players = sorted(ratings.items(), key=lambda x: x[1], reverse=True)
-    for rank, (name, elo) in enumerate(sorted_players, 1):
-        print(f"  {rank}. {name:<20s} {elo:>+6d}")
+    print(format_elo_table(ratings))
     print(f"\n  ({elapsed:.0f}s elapsed, {games_per_side * 2} games per matchup)")
 
-    # Save results
     output = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "elapsed_seconds": round(elapsed, 1),
@@ -290,6 +287,10 @@ def run_elo_ranking(
         "ratings": ratings,
         "matchups": all_results,
     }
+
+    # Notify Slack
+    from .slack import notify_elo_ranking
+    notify_elo_ranking(ratings, elapsed)
 
     results_path = _data_root() / "elo_rankings.jsonl"
     results_path.parent.mkdir(parents=True, exist_ok=True)

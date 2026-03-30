@@ -131,8 +131,8 @@ def main() -> None:
 
     # --- Elo ranking ---
     elo_parser = subparsers.add_parser("elo-ranking", help="Run Elo ranking vs baselines")
-    elo_parser.add_argument("--gens", type=int, default=10, help="Number of recent model versions to rank")
-    elo_parser.add_argument("--games", type=int, default=6, help="Games per matchup (half per side)")
+    elo_parser.add_argument("--versions", type=int, default=10, help="Number of recent model versions to rank")
+    elo_parser.add_argument("--games-per-side", type=int, default=3, help="Games per side per matchup")
     elo_parser.add_argument("--simulations", type=int, default=500, help="MCTS simulations per move")
 
     args = parser.parse_args()
@@ -153,8 +153,8 @@ def main() -> None:
     elif args.command == "elo-ranking":
         from .elo_ranking import run_elo_ranking
         run_elo_ranking(
-            num_gens=args.gens,
-            games_per_side=args.games // 2,
+            num_versions=args.versions,
+            games_per_side=args.games_per_side,
             simulations=args.simulations,
         )
 
