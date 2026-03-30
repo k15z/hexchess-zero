@@ -141,7 +141,7 @@ class PlayerCache:
 
     def __init__(self, simulations: int, max_size: int = 10):
         self.simulations = simulations
-        self.max_size = max_size
+        self.max_size = max(max_size, 4)  # must exceed baseline count (3)
         self._cache: OrderedDict[str, Player] = OrderedDict()
         self._baselines: dict[str, Player] = {}
 
@@ -439,10 +439,8 @@ def run_elo_service(
             time.sleep(60)
             continue
 
-        # 3. If new models appeared and we have ratings, notify
-        for new_model in new_models:
-            if state["ratings"]:
-                _notify_new_model(state, new_model, notify_interval)
+        # 3. Track newly discovered models (notify after first Elo recompute)
+        pending_notifications = new_models
 
         # 4. Select most uncertain pair
         a, b = _select_pair(state)
@@ -494,10 +492,16 @@ def run_elo_service(
             # Append to elo_rankings.jsonl for compatibility
             _append_rankings(state, simulations)
 
+            # Notify about newly ranked models (deferred from discovery)
+            for model_name in pending_notifications:
+                if model_name in state["ratings"]:
+                    _notify_new_model(state, model_name)
+            pending_notifications = []
+
         # 11. Maybe notify Slack
         games_since_slack = state["total_games"] - state["last_slack_game"]
         if games_since_slack >= notify_interval:
-            _notify_slack(state, notify_interval)
+            _notify_slack(state)
 
         # 12. Save state
         _save_state(state, state_path)
@@ -516,14 +520,14 @@ def _pair_game_count(state: dict, pair_key: str) -> int:
     return r["a_wins"] + r["b_wins"] + r["draws"]
 
 
-def _notify_slack(state: dict, notify_interval: int) -> None:
+def _notify_slack(state: dict) -> None:
     from .slack import notify_elo_update
     if state["ratings"]:
         notify_elo_update(state["ratings"], state["total_games"])
         state["last_slack_game"] = state["total_games"]
 
 
-def _notify_new_model(state: dict, model_name: str, notify_interval: int) -> None:
+def _notify_new_model(state: dict, model_name: str) -> None:
     from .slack import notify_elo_update
     notify_elo_update(state["ratings"], state["total_games"], new_model=model_name)
     state["last_slack_game"] = state["total_games"]
