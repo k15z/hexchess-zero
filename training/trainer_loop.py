@@ -329,7 +329,12 @@ def run_trainer(cfg: AsyncConfig) -> None:
             current_version = disk_version
 
         # Load data
-        dataset = SlidingWindowBuffer(cfg.training_data_dir, max_positions=cfg.replay_buffer_size)
+        def reload_buffer():
+            ds = SlidingWindowBuffer(cfg.training_data_dir, max_positions=cfg.replay_buffer_size)
+            dl = DataLoader(ds, batch_size=cfg.batch_size, num_workers=0)
+            return ds, dl
+
+        dataset, dataloader = reload_buffer()
         if dataset.total_positions == 0:
             logger.info("No valid training data found, waiting...")
             time.sleep(30)
@@ -337,8 +342,6 @@ def run_trainer(cfg: AsyncConfig) -> None:
 
         logger.info("Sliding window: {:,} positions from {} files",
                      dataset.total_positions, len(dataset.files))
-
-        dataloader = DataLoader(dataset, batch_size=cfg.batch_size, num_workers=0)
 
         # Step-based training
         model.train()
@@ -398,11 +401,17 @@ def run_trainer(cfg: AsyncConfig) -> None:
                         steps_per_sec, elapsed,
                     )
 
-            if not training_done:
+                # Periodic reload: pick up fresh worker data every N steps
+                if step % cfg.reload_interval == 0:
+                    dataset, dataloader = reload_buffer()
+                    logger.info("  Reloaded buffer: {:,} positions from {} files",
+                                dataset.total_positions, len(dataset.files))
+                    break  # restart the dataloader iteration
+            else:
                 # Dataset exhausted before reaching steps_per_cycle — reload
                 # with latest data (workers may have produced more)
-                dataset = SlidingWindowBuffer(cfg.training_data_dir, max_positions=cfg.replay_buffer_size)
-                dataloader = DataLoader(dataset, batch_size=cfg.batch_size, num_workers=0)
+                if not training_done:
+                    dataset, dataloader = reload_buffer()
 
         train_elapsed = time.time() - train_t0
         avg_policy = cycle_policy_loss / max(step, 1)
