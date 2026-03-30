@@ -58,8 +58,9 @@ class AsyncConfig(_BaseConfig):
 
     # --- Async-specific ---
     worker_batch_size: int = 5  # games per flush
-    steps_per_cycle: int = 2000  # training steps between arena evaluations
-    min_positions_to_train: int = 10_000  # wait for this much data before training
+    steps_per_cycle: int = 5000  # training steps between arena evaluations
+    reload_interval: int = 1000  # reload buffer from disk every N steps for fresh data
+    min_positions_to_train: int = 100_000  # wait for this much data before training
 
     # --- Paths ---
 
