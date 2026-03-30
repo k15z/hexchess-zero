@@ -23,11 +23,12 @@ wasm-pack build --target web bindings/wasm
 # Python bindings (local dev install)
 cd bindings/python && maturin develop
 
-# Training pipeline
-python -m training loop --generations 10  # full AlphaZero loop
-python -m training self-play              # just self-play step
-python -m training train                  # just training step
-python -m training loop --generation 5    # resume from specific generation
+# Training pipeline (async distributed)
+python -m training worker                 # run self-play worker loop
+python -m training trainer                # run continuous trainer loop
+python -m training status                 # show cluster status
+python -m training progress               # show training progress table
+python -m training elo-ranking            # run Elo ranking vs baselines
 ```
 
 ## Architecture
@@ -51,14 +52,16 @@ python -m training loop --generation 5    # resume from specific generation
 
 ### Training (`training/`)
 
-Full AlphaZero loop orchestrated by `run.py`: self-play → train → export → arena → promote. Each iteration is a **generation** with its own directory under `.data/genN/` containing `model/` and `data/`. Each generation bootstraps from the previous generation's best model. Auto-detects the latest generation on startup.
+Async distributed AlphaZero loop: workers generate self-play data continuously, trainer runs training cycles and promotes models via inline arena evaluation.
 
+- **worker.py** — Continuous self-play loop. Polls for model updates, plays games using MCTS + latest model, flushes `.npz` batches to shared storage.
+- **trainer_loop.py** — Continuous trainer loop. Trains on sliding window of recent data, exports candidate ONNX, runs inline arena, promotes if win rate > threshold. Saves versioned snapshots (`models/vN.onnx`) on promotion.
 - **model.py** — `HexChessNet`: conv input → 6 residual blocks (128 filters) → policy head + WDL value head. Input `(19, 11, 11)`, policy output size = `num_move_indices()`, WDL output = 3 logits (Win/Draw/Loss).
-- **self_play.py** — Multiprocess game generation via Python bindings. Temperature scheduling (high until move 60, low after). Flushes `.npz` files to disk in batches. Outcomes stored as WDL one-hot vectors.
-- **trainer.py** — `ReplayBuffer` streams `.npz` from disk (memory-bounded). Loss = cross-entropy(policy) + cross-entropy(WDL) + L2 reg.
 - **export.py** — PyTorch → ONNX. Softmax applied to policy logits at inference time in evaluator, not in the model.
-- **arena.py** — New model vs previous generation's best; promotes if win rate > 55%.
-- **config.py** — All hyperparameters, generation number, and derived paths.
+- **arena.py** — Plays individual arena games between two MCTS agents.
+- **elo_ranking.py** — Async Elo ranking: plays round-robin between baselines (Minimax-2, Minimax-3, Heuristic) and recent model versions. Runs as a k8s CronJob.
+- **metrics.py** — Reads trainer logs and displays progress summary table.
+- **config.py** — All hyperparameters and derived paths (`AsyncConfig`).
 
 ### Web (`web/`)
 
@@ -74,14 +77,13 @@ Vanilla JS + SVG. Loads WASM package, renders flat-topped hex board, supports hu
 
 ## Data Layout
 
-Training artifacts are stored in `.data/` (gitignored), organized by generation:
+Training artifacts are stored in `.data/` (gitignored), shared via NFS on k8s:
 ```
 .data/
-  gen1/
-    model/         # best.onnx, best.pt, latest.onnx, latest.pt
-    data/          # selfplay_*.npz files
-  gen2/            # bootstraps from gen1's best model
-    ...
+  models/          # best.onnx, best.pt, best.meta.json, v{N}.onnx snapshots
+  training_data/   # version-tagged selfplay .npz files
+  logs/            # trainer.jsonl, worker-*.jsonl
+  elo_rankings.jsonl  # Elo ranking history
 ```
 
 ## Workflow

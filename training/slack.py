@@ -42,6 +42,23 @@ def notify_training_cycle(
     _post(text)
 
 
+def notify_elo_ranking(ratings: dict[str, int | float], elapsed_seconds: float) -> None:
+    """Send a Slack message with Elo ranking results."""
+    if not SLACK_WEBHOOK_URL:
+        return
+
+    sorted_players = sorted(ratings.items(), key=lambda x: x[1], reverse=True)
+    lines = [f"{rank}. {name} ({elo:+d})" for rank, (name, elo) in enumerate(sorted_players, 1)]
+    table = "\n".join(lines)
+
+    text = (
+        f"*Hexchess Elo Ranking*\n"
+        f"```\n{table}\n```\n"
+        f"({elapsed_seconds:.0f}s elapsed)"
+    )
+    _post(text)
+
+
 def _post(text: str) -> None:
     """Post a message to the configured Slack webhook."""
     payload = json.dumps({"text": text}).encode()

@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .config import Config
+from .config import _BaseConfig
 
 try:
     import hexchess
@@ -44,9 +44,9 @@ class HexChessNet(nn.Module):
              wdl_logits: (batch, 3))
     """
 
-    def __init__(self, config: Config | None = None):
+    def __init__(self, config: _BaseConfig | None = None):
         super().__init__()
-        cfg = config or Config()
+        cfg = config or _BaseConfig()
         self.num_filters = cfg.num_filters
         self.board_h = cfg.board_height
         self.board_w = cfg.board_width
@@ -96,13 +96,13 @@ class HexChessNet(nn.Module):
         return p, v
 
 
-def build_model(config: Config | None = None) -> HexChessNet:
+def build_model(config: _BaseConfig | None = None) -> HexChessNet:
     """Convenience constructor."""
     return HexChessNet(config)
 
 
 if __name__ == "__main__":
-    cfg = Config()
+    cfg = _BaseConfig()
     model = build_model(cfg)
 
     # Print parameter count

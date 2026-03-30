@@ -1,6 +1,6 @@
-"""Hyperparameters and paths for the AlphaZero-style training pipeline."""
+"""Hyperparameters and paths for the training pipeline."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -13,30 +13,9 @@ def _data_root() -> Path:
     return _project_root() / ".data"
 
 
-def latest_generation() -> int:
-    """Find the highest existing generation number, or 0 if none exist.
-
-    Only counts generations that contain actual files (not empty dirs
-    created by ensure_dirs()).
-    """
-    root = _data_root()
-    if not root.exists():
-        return 0
-    gens = []
-    for d in root.iterdir():
-        if d.is_dir() and d.name.startswith("gen"):
-            try:
-                n = int(d.name[3:])
-            except ValueError:
-                continue
-            if any(d.rglob("*.*")):
-                gens.append(n)
-    return max(gens) if gens else 0
-
-
 @dataclass
 class _BaseConfig:
-    """Shared hyperparameters between synchronous and async training modes."""
+    """Shared hyperparameters for training and model architecture."""
 
     # --- MCTS ---
     num_simulations: int = 500
@@ -68,72 +47,11 @@ class _BaseConfig:
 
 
 @dataclass
-class Config(_BaseConfig):
-    # --- Generational training ---
-    num_self_play_games: int = 1000
-    training_epochs: int = 5
-    generation: int = 1
-
-    # --- Current generation paths ---
-
-    @property
-    def generation_dir(self) -> Path:
-        return _data_root() / f"gen{self.generation}"
-
-    @property
-    def model_dir(self) -> Path:
-        return self.generation_dir / "model"
-
-    @property
-    def data_dir(self) -> Path:
-        return self.generation_dir / "data"
-
-    @property
-    def best_model_path(self) -> Path:
-        return self.model_dir / "best.onnx"
-
-    @property
-    def best_checkpoint_path(self) -> Path:
-        return self.model_dir / "best.pt"
-
-    # --- Previous generation paths (for bootstrapping) ---
-    # At generation 1 these point to gen0 which won't exist — callers
-    # check .exists() and fall back to random/scratch initialization.
-
-    @property
-    def prev_generation_dir(self) -> Path:
-        return _data_root() / f"gen{self.generation - 1}"
-
-    @property
-    def prev_best_model_path(self) -> Path:
-        return self.prev_generation_dir / "model" / "best.onnx"
-
-    @property
-    def prev_best_checkpoint_path(self) -> Path:
-        return self.prev_generation_dir / "model" / "best.pt"
-
-    @property
-    def all_data_dirs(self) -> list[Path]:
-        """Return data dirs from gen 1 through current generation (most recent last)."""
-        dirs = []
-        for g in range(1, self.generation + 1):
-            d = _data_root() / f"gen{g}" / "data"
-            if d.exists():
-                dirs.append(d)
-        return dirs
-
-    def ensure_dirs(self) -> None:
-        """Create all necessary directories."""
-        self.model_dir.mkdir(parents=True, exist_ok=True)
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-
-
-@dataclass
 class AsyncConfig(_BaseConfig):
     """Configuration for the async distributed training pipeline.
 
-    Uses a flat directory structure instead of generational dirs:
-      .data/models/       — best.onnx, best.pt, best.meta.json
+    Uses a flat directory structure:
+      .data/models/       — best.onnx, best.pt, best.meta.json, v{N}.onnx snapshots
       .data/training_data/ — version-tagged .npz files
       .data/logs/          — append-only JSONL logs
     """
@@ -184,16 +102,10 @@ class AsyncConfig(_BaseConfig):
 
 
 if __name__ == "__main__":
-    cfg = Config()
+    cfg = AsyncConfig()
     print("Training pipeline configuration:")
     for k, v in cfg.__dict__.items():
         print(f"  {k}: {v}")
-    print(f"  generation_dir: {cfg.generation_dir}")
-    print(f"  model_dir: {cfg.model_dir}")
-    print(f"  data_dir: {cfg.data_dir}")
-
-    print("\nAsync configuration:")
-    acfg = AsyncConfig()
-    print(f"  models_dir: {acfg.models_dir}")
-    print(f"  training_data_dir: {acfg.training_data_dir}")
-    print(f"  best_model_path: {acfg.best_model_path}")
+    print(f"  models_dir: {cfg.models_dir}")
+    print(f"  training_data_dir: {cfg.training_data_dir}")
+    print(f"  best_model_path: {cfg.best_model_path}")

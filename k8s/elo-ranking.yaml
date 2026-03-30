@@ -1,0 +1,50 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: hexchess-elo-ranking
+  namespace: hexchess
+  labels:
+    app: hexchess
+    role: elo-ranking
+spec:
+  schedule: "0 */6 * * *"  # every 6 hours
+  concurrencyPolicy: Forbid  # skip if previous run still going
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 7200  # 2 hour timeout
+      template:
+        metadata:
+          labels:
+            app: hexchess
+            role: elo-ranking
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: elo-ranking
+              image: ghcr.io/k15z/hexchess-zero/training:latest
+              imagePullPolicy: Always
+              args: ["elo-ranking", "--versions", "10", "--games-per-side", "3"]
+              env:
+                - name: SLACK_WEBHOOK_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: slack-webhook
+                      key: webhook-url
+                      optional: true
+              volumeMounts:
+                - name: data
+                  mountPath: /app/.data
+              resources:
+                requests:
+                  memory: 4Gi
+                  cpu: "4"
+                limits:
+                  memory: 8Gi
+                  cpu: "6"
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: hexchess-data

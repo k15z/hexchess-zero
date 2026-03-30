@@ -430,6 +430,7 @@ def run_trainer(cfg: AsyncConfig) -> None:
             new_version = current_version + 1
             _atomic_copy(candidate_onnx, cfg.best_model_path)
             _atomic_copy(candidate_pt, cfg.best_checkpoint_path)
+            _atomic_copy(candidate_onnx, cfg.models_dir / f"v{new_version}.onnx")
             _atomic_write_json(cfg.best_meta_path, {
                 "version": new_version,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -466,6 +467,7 @@ def run_trainer(cfg: AsyncConfig) -> None:
             new_version = current_version + 1
             _atomic_copy(candidate_onnx, cfg.best_model_path)
             _atomic_copy(candidate_pt, cfg.best_checkpoint_path)
+            _atomic_copy(candidate_onnx, cfg.models_dir / f"v{new_version}.onnx")
             _atomic_write_json(cfg.best_meta_path, {
                 "version": new_version,
                 "timestamp": datetime.now(timezone.utc).isoformat(),

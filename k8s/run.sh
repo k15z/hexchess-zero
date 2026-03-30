@@ -13,12 +13,13 @@ usage() {
 Usage: $(basename "$0") <command>
 
 Commands:
-  deploy              Apply all k8s manifests (namespace, NFS PV/PVC, deployments)
+  deploy              Apply all k8s manifests (namespace, NFS PV/PVC, deployments, cronjobs)
   restart             Rolling restart to pick up new image
   stop                Scale deployments to 0
   start               Scale deployments back up
   status              Show pods and training status
-  logs [trainer|worker]  Tail logs (default: trainer)
+  logs [trainer|worker|elo]  Tail logs (default: trainer)
+  elo                 Trigger an Elo ranking run now (outside cron schedule)
   clean               Stop deployments and wipe all training data on NFS
 EOF
   exit 1
@@ -29,6 +30,7 @@ cmd_deploy() {
   kubectl apply -f "$SCRIPT_DIR/nfs-pv.yaml"
   kubectl apply -f "$SCRIPT_DIR/trainer.yaml"
   kubectl apply -f "$SCRIPT_DIR/worker.yaml"
+  kubectl apply -f "$SCRIPT_DIR/elo-ranking.yaml"
   echo "==> Done. Use '$(basename "$0") status' to check pods."
 }
 
@@ -82,11 +84,24 @@ cmd_logs() {
       # Follow the standalone worker deployment
       kubectl logs -f deployment/hexchess-worker -n "$NAMESPACE"
       ;;
+    elo)
+      # Show logs from the most recent elo-ranking job
+      kubectl logs -f "job/$(kubectl get jobs -n "$NAMESPACE" -l role=elo-ranking \
+        --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1].metadata.name}')" \
+        -n "$NAMESPACE"
+      ;;
     *)
-      echo "Unknown log target: $target (use 'trainer' or 'worker')"
+      echo "Unknown log target: $target (use 'trainer', 'worker', or 'elo')"
       exit 1
       ;;
   esac
+}
+
+cmd_elo() {
+  echo "==> Triggering Elo ranking job..."
+  kubectl create job --from=cronjob/hexchess-elo-ranking \
+    "hexchess-elo-$(date +%s)" -n "$NAMESPACE"
+  echo "==> Job created. Use '$(basename "$0") logs elo' to follow output."
 }
 
 cmd_clean() {
@@ -111,6 +126,7 @@ case "$1" in
   start)   cmd_start ;;
   status)  cmd_status ;;
   logs)    cmd_logs "${2:-trainer}" ;;
+  elo)     cmd_elo ;;
   clean)   cmd_clean ;;
   *)       usage ;;
 esac
