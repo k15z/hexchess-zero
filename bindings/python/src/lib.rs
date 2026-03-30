@@ -11,6 +11,7 @@ use hexchess_engine::inference::OnnxEvaluator;
 use hexchess_engine::mcts::{
     DirichletConfig, Evaluator, HeuristicEvaluator, MctsSearch as EngineSearch,
 };
+use hexchess_engine::minimax;
 
 use hexchess_engine::movegen;
 use hexchess_engine::serialization;
@@ -341,6 +342,21 @@ fn num_move_indices() -> usize {
 }
 
 // ---------------------------------------------------------------------------
+// Minimax search
+// ---------------------------------------------------------------------------
+
+/// Run alpha-beta minimax search. Returns dict {best_move, score, nodes}.
+#[pyfunction]
+fn minimax_search<'py>(py: Python<'py>, game: &mut PyGame, depth: u32) -> PyResult<Bound<'py, PyDict>> {
+    let result = minimax::search(&mut game.state, depth);
+    let dict = PyDict::new(py);
+    dict.set_item("best_move", move_to_pydict(py, &result.best_move)?)?;
+    dict.set_item("score", result.score)?;
+    dict.set_item("nodes", result.nodes)?;
+    Ok(dict)
+}
+
+// ---------------------------------------------------------------------------
 // Module definition
 // ---------------------------------------------------------------------------
 
@@ -353,6 +369,7 @@ fn hexchess(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(move_to_index, m)?)?;
     m.add_function(wrap_pyfunction!(index_to_move, m)?)?;
     m.add_function(wrap_pyfunction!(num_move_indices, m)?)?;
+    m.add_function(wrap_pyfunction!(minimax_search, m)?)?;
 
     // TENSOR_SHAPE constant
     let tensor_shape = (

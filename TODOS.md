@@ -20,6 +20,7 @@
 
 ## Training pipeline
 
+- **Minimax-supervised bootstrap** — If pure self-play is too slow to converge, generate training data from minimax d=3 self-play games. Use softmax over root move scores as policy targets, game outcome as WDL value target. Pretrain as generation 0, then switch to normal self-play loop. Fast to generate (~5s/game) and skips the random-network cold start phase.
 - Scale up network size (more residual blocks / filters) once baseline model quality stabilizes
 - **Bump shuffle buffer** — Current 10K is small relative to ~400K positions/gen. Lc0 uses 200K-2M. Consider 100K+ for better batch decorrelation.
 - **Continuous training** — Move from discrete generations to async self-play + continuous training (true AlphaZero style). Eliminates stale-model problem.
