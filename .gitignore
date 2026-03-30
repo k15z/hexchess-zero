@@ -36,6 +36,9 @@ web/dist/
 .claude/memory/
 .claude/worktrees/
 
+# K8s secrets
+k8s/secrets.yaml
+
 # Misc
 .env
 training_log.txt
