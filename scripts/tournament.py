@@ -3,7 +3,6 @@
 
 import sys
 import time
-import random
 from dataclasses import dataclass
 from typing import Optional
 
@@ -111,7 +110,6 @@ def run_matchup(player_a, player_b, games_per_side=5):
         )
 
     a_score = a_wins + draws * 0.5
-    b_score = b_wins + draws * 0.5
     a_rate = a_score / total * 100
 
     print(f"\n  Result: {player_a.name} {a_wins}W-{b_wins}L-{draws}D ({a_rate:.0f}%)")
