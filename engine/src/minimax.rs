@@ -47,10 +47,10 @@ pub fn search(state: &mut GameState, depth: u32) -> Option<MinimaxResult> {
 fn negamax(state: &mut GameState, depth: u32, mut alpha: i32, beta: i32, nodes: &mut u64) -> i32 {
     *nodes += 1;
 
-    // Check draw conditions before generating moves.
+    // Check terminal conditions before generating moves.
     match state.status() {
         GameStatus::Ongoing => {}
-        GameStatus::Checkmate(_) => unreachable!("status() only returns checkmate after movegen"),
+        GameStatus::Checkmate(_) => return -(10_000 + depth as i32),
         _ => return 0, // all draw types
     }
 
