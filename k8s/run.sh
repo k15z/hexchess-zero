@@ -30,7 +30,7 @@ cmd_deploy() {
   kubectl apply -f "$SCRIPT_DIR/nfs-pv.yaml"
   kubectl apply -f "$SCRIPT_DIR/trainer.yaml"
   kubectl apply -f "$SCRIPT_DIR/worker.yaml"
-  kubectl apply -f "$SCRIPT_DIR/elo-ranking.yaml"
+  kubectl apply -f "$SCRIPT_DIR/elo-service.yaml"
   echo "==> Done. Use '$(basename "$0") status' to check pods."
 }
 
@@ -46,7 +46,7 @@ cmd_restart() {
 cmd_stop() {
   echo "==> Scaling to 0..."
   kubectl scale deployment/hexchess-trainer deployment/hexchess-worker \
-    --replicas=0 -n "$NAMESPACE"
+    deployment/hexchess-elo-service --replicas=0 -n "$NAMESPACE"
   echo "==> Stopped."
 }
 
@@ -54,6 +54,7 @@ cmd_start() {
   echo "==> Scaling up..."
   kubectl scale deployment/hexchess-trainer --replicas=1 -n "$NAMESPACE"
   kubectl scale deployment/hexchess-worker --replicas=1 -n "$NAMESPACE"
+  kubectl scale deployment/hexchess-elo-service --replicas=1 -n "$NAMESPACE"
   echo "==> Started. Use '$(basename "$0") status' to check pods."
 }
 
@@ -85,10 +86,7 @@ cmd_logs() {
       kubectl logs -f deployment/hexchess-worker -n "$NAMESPACE"
       ;;
     elo)
-      # Show logs from the most recent elo-ranking job
-      kubectl logs -f "job/$(kubectl get jobs -n "$NAMESPACE" -l role=elo-ranking \
-        --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1].metadata.name}')" \
-        -n "$NAMESPACE"
+      kubectl logs -f deployment/hexchess-elo-service -n "$NAMESPACE"
       ;;
     *)
       echo "Unknown log target: $target (use 'trainer', 'worker', or 'elo')"
@@ -98,10 +96,9 @@ cmd_logs() {
 }
 
 cmd_elo() {
-  echo "==> Triggering Elo ranking job..."
-  kubectl create job --from=cronjob/hexchess-elo-ranking \
-    "hexchess-elo-$(date +%s)" -n "$NAMESPACE"
-  echo "==> Job created. Use '$(basename "$0") logs elo' to follow output."
+  echo "==> Restarting Elo service..."
+  kubectl rollout restart deployment/hexchess-elo-service -n "$NAMESPACE"
+  echo "==> Restarted. Use '$(basename "$0") logs elo' to follow output."
 }
 
 cmd_clean() {
