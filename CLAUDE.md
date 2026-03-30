@@ -84,6 +84,10 @@ Training artifacts are stored in `.data/` (gitignored), organized by generation:
     ...
 ```
 
+## Workflow
+
+- Always run `/review` on a PR **before** merging it. Address any correctness or performance issues before merge.
+
 ## Key Conventions
 
 - Coordinates are always axial `(q, r)` — never use doubled or offset coordinates

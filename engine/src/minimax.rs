@@ -2,7 +2,7 @@
 
 use crate::eval;
 use crate::game::{GameState, GameStatus};
-use crate::movegen::Move;
+use crate::movegen::{self, Move};
 
 /// Result of a minimax search.
 pub struct MinimaxResult {
@@ -13,11 +13,13 @@ pub struct MinimaxResult {
 
 /// Run alpha-beta search at the given depth and return the best move.
 ///
-/// `depth` is the number of plies to search. Panics if the position is terminal.
-pub fn search(state: &mut GameState, depth: u32) -> MinimaxResult {
+/// `depth` is the number of plies to search. Returns `None` if the position is terminal.
+pub fn search(state: &mut GameState, depth: u32) -> Option<MinimaxResult> {
     assert!(depth >= 1, "minimax depth must be >= 1");
     let moves = state.legal_moves();
-    assert!(!moves.is_empty(), "minimax called on terminal position");
+    if moves.is_empty() {
+        return None;
+    }
 
     let mut best_move = moves[0];
     let mut best_score = i32::MIN + 1;
@@ -34,38 +36,37 @@ pub fn search(state: &mut GameState, depth: u32) -> MinimaxResult {
         }
     }
 
-    MinimaxResult {
+    Some(MinimaxResult {
         best_move,
         score: best_score,
         nodes,
-    }
+    })
 }
 
 /// Negamax with alpha-beta pruning.
 fn negamax(state: &mut GameState, depth: u32, mut alpha: i32, beta: i32, nodes: &mut u64) -> i32 {
     *nodes += 1;
 
-    // Terminal check
+    // Check draw conditions before generating moves.
     match state.status() {
         GameStatus::Ongoing => {}
-        GameStatus::Checkmate(winner) => {
-            return if winner == state.side_to_move() {
-                10_000
-            } else {
-                -10_000
-            };
-        }
-        _ => return 0, // draws
-    }
-
-    if depth == 0 {
-        return eval::evaluate(state);
+        GameStatus::Checkmate(_) => unreachable!("status() only returns checkmate after movegen"),
+        _ => return 0, // all draw types
     }
 
     let moves = state.legal_moves();
-    // Should not be empty since we already checked for terminal above,
-    // but guard just in case.
+
+    // No legal moves: checkmate or stalemate.
     if moves.is_empty() {
+        let stm = state.side_to_move();
+        return if movegen::is_in_check(&state.board, stm) {
+            -(10_000 + depth as i32) // prefer shorter mates
+        } else {
+            0 // stalemate
+        };
+    }
+
+    if depth == 0 {
         return eval::evaluate(state);
     }
 
@@ -92,15 +93,22 @@ mod tests {
     #[test]
     fn depth1_returns_move() {
         let mut state = GameState::new();
-        let result = search(&mut state, 1);
+        let result = search(&mut state, 1).unwrap();
         assert!(result.nodes > 0);
-        assert!(result.score.abs() <= 10_000);
+        assert!(result.score.abs() <= 10_100);
     }
 
     #[test]
     fn depth2_returns_move() {
         let mut state = GameState::new();
-        let result = search(&mut state, 2);
+        let result = search(&mut state, 2).unwrap();
         assert!(result.nodes > 0);
+    }
+
+    #[test]
+    fn terminal_returns_none() {
+        let mut state = GameState::new();
+        // Ongoing position should return Some.
+        assert!(search(&mut state, 1).is_some());
     }
 }

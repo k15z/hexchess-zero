@@ -346,9 +346,11 @@ fn num_move_indices() -> usize {
 // ---------------------------------------------------------------------------
 
 /// Run alpha-beta minimax search. Returns dict {best_move, score, nodes}.
+/// Raises ValueError if the game is already over.
 #[pyfunction]
 fn minimax_search<'py>(py: Python<'py>, game: &mut PyGame, depth: u32) -> PyResult<Bound<'py, PyDict>> {
-    let result = minimax::search(&mut game.state, depth);
+    let result = minimax::search(&mut game.state, depth)
+        .ok_or_else(|| PyValueError::new_err("cannot search a terminal position"))?;
     let dict = PyDict::new(py);
     dict.set_item("best_move", move_to_pydict(py, &result.best_move)?)?;
     dict.set_item("score", result.score)?;
