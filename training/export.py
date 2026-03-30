@@ -6,14 +6,14 @@ from pathlib import Path
 import torch
 import onnx
 
-from .config import Config
+from .config import _BaseConfig
 from .model import HexChessNet, build_model
 
 
 def export_to_onnx(
     checkpoint_path: Path,
     output_path: Path,
-    config: Config | None = None,
+    config: _BaseConfig | None = None,
 ) -> Path:
     """
     Export a PyTorch model checkpoint to ONNX.
@@ -26,7 +26,7 @@ def export_to_onnx(
     Returns:
         The output_path on success.
     """
-    cfg = config or Config()
+    cfg = config or _BaseConfig()
 
     # Load the model
     model = build_model(cfg)
@@ -84,41 +84,11 @@ def verify_onnx(onnx_path: Path) -> None:
         import numpy as np
 
         session = ort.InferenceSession(str(onnx_path))
-        from .config import Config as _Cfg
-        _c = _Cfg()
-        dummy = np.random.randn(1, _c.board_channels, _c.board_height, _c.board_width).astype(np.float32)
+        cfg = _BaseConfig()
+        dummy = np.random.randn(1, cfg.board_channels, cfg.board_height, cfg.board_width).astype(np.float32)
         outputs = session.run(None, {"board": dummy})
         policy, value = outputs
         print(f"  Inference test: policy shape={policy.shape}, WDL shape={value.shape}")
         print(f"  WDL logits: {value[0]}")
     except ImportError:
         print("  (onnxruntime not installed, skipping inference test)")
-
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Export PyTorch model to ONNX")
-    parser.add_argument(
-        "--checkpoint",
-        type=str,
-        default=None,
-        help="Path to .pt checkpoint (default: .data/genN/model/latest.pt)",
-    )
-    parser.add_argument(
-        "--output",
-        type=str,
-        default=None,
-        help="Output .onnx path (default: .data/genN/model/latest.onnx)",
-    )
-    args = parser.parse_args()
-
-    cfg = Config()
-    checkpoint = Path(args.checkpoint) if args.checkpoint else cfg.model_dir / "latest.pt"
-    output = Path(args.output) if args.output else cfg.model_dir / "latest.onnx"
-
-    if not checkpoint.exists():
-        print(f"Checkpoint not found: {checkpoint}")
-        print("Train a model first with: python -m training.trainer")
-    else:
-        export_to_onnx(checkpoint, output, cfg)
