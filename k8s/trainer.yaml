@@ -26,6 +26,13 @@ spec:
           image: ghcr.io/k15z/hexchess-zero/training:latest
           imagePullPolicy: Always
           args: ["trainer"]
+          env:
+            - name: SLACK_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: slack-webhook
+                  key: webhook-url
+                  optional: true
           volumeMounts:
             - name: data
               mountPath: /app/.data

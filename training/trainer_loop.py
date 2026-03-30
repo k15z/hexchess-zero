@@ -25,6 +25,7 @@ from .arena import play_arena_game
 from .config import AsyncConfig
 from .export import export_to_onnx
 from .model import build_model
+from .slack import notify_training_cycle
 
 _shutdown_requested = False
 
@@ -449,6 +450,12 @@ def run_trainer(cfg: AsyncConfig) -> None:
                 "value_loss": round(avg_value, 4),
                 "elapsed_seconds": round(cycle_elapsed, 1),
             })
+            notify_training_cycle(
+                cycle=cycle, version=new_version, steps=step,
+                total_steps=total_steps_all_time, positions=dataset.total_positions,
+                policy_loss=avg_policy, value_loss=avg_value,
+                promoted=True, elapsed_seconds=cycle_elapsed,
+            )
             _prune_old_data(cfg)
             continue
 
@@ -490,6 +497,14 @@ def run_trainer(cfg: AsyncConfig) -> None:
             "value_loss": round(avg_value, 4),
             "elapsed_seconds": round(cycle_elapsed, 1),
         })
+        notify_training_cycle(
+            cycle=cycle, version=current_version, steps=step,
+            total_steps=total_steps_all_time, positions=dataset.total_positions,
+            policy_loss=avg_policy, value_loss=avg_value,
+            promoted=arena_results["promoted"],
+            win_rate=arena_results["win_rate"],
+            elapsed_seconds=cycle_elapsed,
+        )
 
         # Prune old data
         _prune_old_data(cfg)
