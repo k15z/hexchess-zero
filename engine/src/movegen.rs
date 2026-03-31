@@ -112,13 +112,6 @@ impl MoveList {
         // Safety: indices < self.len are always initialized via push().
         unsafe { self.moves[idx].assume_init_ref() }
     }
-
-    /// Swap two elements by index (for in-place move ordering).
-    #[inline]
-    pub fn swap(&mut self, a: usize, b: usize) {
-        debug_assert!(a < self.len && b < self.len);
-        self.moves.swap(a, b);
-    }
 }
 
 impl std::ops::Index<usize> for MoveList {
