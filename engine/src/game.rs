@@ -174,7 +174,7 @@ impl GameState {
     }
 
     /// Check whether the current position has appeared at least 3 times.
-    fn is_draw_by_repetition(&self) -> bool {
+    pub fn is_draw_by_repetition(&self) -> bool {
         let current = self.board.zobrist_hash;
         let count = self
             .position_history
@@ -185,7 +185,7 @@ impl GameState {
     }
 
     /// Basic insufficient-material check: K vs K, K+B vs K.
-    fn is_insufficient_material(&self) -> bool {
+    pub fn is_insufficient_material(&self) -> bool {
         let mut non_king_count = 0u8;
         let mut lone_kind = PieceKind::Pawn; // placeholder
 
