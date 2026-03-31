@@ -155,7 +155,7 @@ class ReplayBuffer(IterableDataset):
         total = 0
         for f in reversed(all_files):
             try:
-                with np.load(f) as data:
+                with np.load(f, mmap_mode="r") as data:
                     n = len(data["outcomes"])
             except (OSError, ValueError, KeyError):
                 continue
@@ -200,7 +200,7 @@ class ReplayBuffer(IterableDataset):
             # Pick a file uniformly at random
             [chosen] = random.choices(self.files, k=1)
             try:
-                data = np.load(chosen)
+                data = np.load(chosen, mmap_mode="r")
                 boards, policies, outcomes = data["boards"], data["policies"], data["outcomes"]
             except (OSError, ValueError, KeyError):
                 continue
@@ -239,7 +239,7 @@ def _count_positions(data_dir: Path) -> int:
         if ".tmp" in f.name:
             continue
         try:
-            with np.load(f) as data:
+            with np.load(f, mmap_mode="r") as data:
                 total += len(data["outcomes"])
         except (OSError, ValueError, KeyError):
             continue

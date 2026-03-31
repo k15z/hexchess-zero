@@ -67,7 +67,7 @@ def cmd_status(args) -> None:
         total_pos = 0
         for f in npz_files:
             try:
-                with np.load(f) as data:
+                with np.load(f, mmap_mode="r") as data:
                     total_pos += len(data["outcomes"])
             except (OSError, ValueError, KeyError):
                 continue
