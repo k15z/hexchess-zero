@@ -153,9 +153,13 @@ def run_worker(cfg: AsyncConfig) -> None:
         imitation_samples: list[dict] = []
         flush_every = cfg.worker_batch_size
         while model_path is None:
+            game_t0 = time.time()
             samples = _play_imitation_game(cfg)
+            game_elapsed = time.time() - game_t0
             imitation_samples.extend(samples)
             imitation_games += 1
+            logger.info("  imitation game {}: {} positions, {:.1f}s",
+                        imitation_games, len(samples), game_elapsed)
             if imitation_games % flush_every == 0 and imitation_samples:
                 path = _flush_imitation_samples(imitation_samples, cfg.training_data_dir)
                 logger.info("Imitation game {}: flushed {} positions to {}",
