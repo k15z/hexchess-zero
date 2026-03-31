@@ -190,6 +190,8 @@ class ReplayBuffer(IterableDataset):
             "versions": version_counts,
         }
 
+    SAMPLE_PER_FILE = 2048  # rows to sample from each .npz
+
     def __iter__(self):
         if not self.files:
             return
@@ -205,23 +207,32 @@ class ReplayBuffer(IterableDataset):
             except (OSError, ValueError, KeyError):
                 continue
 
-            buf_b.extend(boards)
-            buf_p.extend(policies)
-            buf_o.extend(outcomes)
+            # Sample a subset of rows to avoid loading entire file into RAM
+            n = len(outcomes)
+            k = min(n, self.SAMPLE_PER_FILE)
+            idx = np.random.choice(n, size=k, replace=False)
+            idx.sort()  # sequential access for mmap friendliness
+            buf_b.append(np.array(boards[idx]))
+            buf_p.append(np.array(policies[idx]))
+            buf_o.append(np.array(outcomes[idx]))
+
+            total = sum(len(b) for b in buf_b)
 
             # Drain shuffle buffer when large enough
-            while len(buf_b) >= self.SHUFFLE_BUFFER_SIZE:
-                perm = list(range(len(buf_b)))
-                random.shuffle(perm)
-                drain = len(buf_b) // 2
+            if total >= self.SHUFFLE_BUFFER_SIZE:
+                merged_b = np.concatenate(buf_b)
+                merged_p = np.concatenate(buf_p)
+                merged_o = np.concatenate(buf_o)
+                perm = np.random.permutation(len(merged_b))
+                drain = len(perm) // 2
                 for j in perm[:drain]:
-                    yield (torch.from_numpy(buf_b[j]),
-                           torch.from_numpy(buf_p[j]),
-                           torch.tensor(buf_o[j], dtype=torch.float32))
+                    yield (torch.from_numpy(merged_b[j].copy()),
+                           torch.from_numpy(merged_p[j].copy()),
+                           torch.tensor(merged_o[j], dtype=torch.float32))
                 keep = perm[drain:]
-                buf_b = [buf_b[j] for j in keep]
-                buf_p = [buf_p[j] for j in keep]
-                buf_o = [buf_o[j] for j in keep]
+                buf_b = [merged_b[keep]]
+                buf_p = [merged_p[keep]]
+                buf_o = [merged_o[keep]]
 
 
 # ---------------------------------------------------------------------------

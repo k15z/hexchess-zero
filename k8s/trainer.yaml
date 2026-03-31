@@ -41,7 +41,7 @@ spec:
               memory: 8Gi
               cpu: "5"
             limits:
-              memory: 13Gi
+              memory: 15Gi
       volumes:
         - name: data
           persistentVolumeClaim:
