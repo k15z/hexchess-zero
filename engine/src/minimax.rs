@@ -8,10 +8,19 @@
 //! - Quiescence search (captures only at horizon)
 //! - No redundant move generation (avoids double `status()` calls)
 
-use crate::board::{Color, NUM_CELLS};
+use crate::board::{Color, NUM_CELLS, PieceKind};
 use crate::eval;
 use crate::game::GameState;
 use crate::movegen::{self, Move, MoveList};
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const MATE_SCORE: i32 = 10_000;
+const MAX_PLY: usize = 128;
+const TT_SIZE: usize = 1 << 20; // ~1M entries
+const TT_MASK: usize = TT_SIZE - 1;
 
 // ---------------------------------------------------------------------------
 // Public result types
@@ -38,26 +47,54 @@ pub struct MinimaxAllResult {
 }
 
 // ---------------------------------------------------------------------------
+// Mate score adjustment for TT storage
+// ---------------------------------------------------------------------------
+
+/// Convert a score to TT-relative form. Mate scores are stored relative to
+/// the current node so they remain correct when probed at a different ply.
+#[inline]
+fn score_to_tt(score: i32, ply: usize) -> i32 {
+    if score >= MATE_SCORE - MAX_PLY as i32 {
+        score + ply as i32
+    } else if score <= -(MATE_SCORE - MAX_PLY as i32) {
+        score - ply as i32
+    } else {
+        score
+    }
+}
+
+/// Convert a TT-stored score back to a search-relative score at `ply`.
+#[inline]
+fn score_from_tt(score: i32, ply: usize) -> i32 {
+    if score >= MATE_SCORE - MAX_PLY as i32 {
+        score - ply as i32
+    } else if score <= -(MATE_SCORE - MAX_PLY as i32) {
+        score + ply as i32
+    } else {
+        score
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Transposition table
 // ---------------------------------------------------------------------------
 
-/// Bound type stored in a TT entry.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Bound {
     Exact,
-    Lower, // beta cutoff (score >= beta)
-    Upper, // failed low (score <= alpha)
+    Lower, // beta cutoff
+    Upper, // failed low
 }
 
-/// A single transposition table entry.
 #[derive(Clone, Copy)]
 struct TtEntry {
-    key: u64,   // full Zobrist key for collision detection
-    depth: u32, // search depth remaining when this was stored
-    score: i32,
+    key: u64,
+    depth: u32,
+    score: i32, // stored in TT-relative form (mate scores adjusted)
     bound: Bound,
-    best_from: u8, // cell index of best move (0..91), 255 = none
-    best_to: u8,   // cell index of best move destination
+    best_from: u8,  // cell index, 255 = none
+    best_to: u8,    // cell index
+    best_promo: u8, // 0=none, 1=queen, 2=rook, 3=bishop, 4=knight
 }
 
 impl TtEntry {
@@ -68,11 +105,21 @@ impl TtEntry {
         bound: Bound::Exact,
         best_from: 255,
         best_to: 255,
+        best_promo: 0,
     };
 }
 
-const TT_SIZE: usize = 1 << 20; // ~1M entries
-const TT_MASK: usize = TT_SIZE - 1;
+#[inline]
+fn promo_to_u8(p: Option<PieceKind>) -> u8 {
+    match p {
+        None => 0,
+        Some(PieceKind::Queen) => 1,
+        Some(PieceKind::Rook) => 2,
+        Some(PieceKind::Bishop) => 3,
+        Some(PieceKind::Knight) => 4,
+        _ => 0,
+    }
+}
 
 struct TranspositionTable {
     entries: Vec<TtEntry>,
@@ -95,16 +142,14 @@ impl TranspositionTable {
     fn store(&mut self, key: u64, depth: u32, score: i32, bound: Bound, best_move: Option<&Move>) {
         let idx = (key as usize) & TT_MASK;
         let existing = &self.entries[idx];
-        // Always-replace with depth-preferred: replace if new depth >= stored depth
-        // or if the slot is empty/collision.
         if existing.key != key || depth >= existing.depth {
-            let (bf, bt) = match best_move {
-                Some(mv) => {
-                    let fi = crate::board::coord_to_index(mv.from).unwrap_or(255) as u8;
-                    let ti = crate::board::coord_to_index(mv.to).unwrap_or(255) as u8;
-                    (fi, ti)
-                }
-                None => (255, 255),
+            let (bf, bt, bp) = match best_move {
+                Some(mv) => (
+                    crate::board::coord_to_index(mv.from).unwrap_or(255) as u8,
+                    crate::board::coord_to_index(mv.to).unwrap_or(255) as u8,
+                    promo_to_u8(mv.promotion),
+                ),
+                None => (255, 255, 0),
             };
             self.entries[idx] = TtEntry {
                 key,
@@ -113,6 +158,7 @@ impl TranspositionTable {
                 bound,
                 best_from: bf,
                 best_to: bt,
+                best_promo: bp,
             };
         }
     }
@@ -122,9 +168,6 @@ impl TranspositionTable {
 // Killer moves & history heuristic
 // ---------------------------------------------------------------------------
 
-const MAX_PLY: usize = 128;
-
-/// Two killer move slots per ply, stored as (from_idx, to_idx) pairs.
 struct Killers {
     slots: [[(u8, u8); 2]; MAX_PLY],
 }
@@ -141,10 +184,7 @@ impl Killers {
         if ply >= MAX_PLY {
             return;
         }
-        let fi = crate::board::coord_to_index(mv.from).unwrap_or(255) as u8;
-        let ti = crate::board::coord_to_index(mv.to).unwrap_or(255) as u8;
-        let pair = (fi, ti);
-        // Don't store duplicates; shift slot 0 to slot 1.
+        let pair = move_to_pair(mv);
         if self.slots[ply][0] != pair {
             self.slots[ply][1] = self.slots[ply][0];
             self.slots[ply][0] = pair;
@@ -156,14 +196,11 @@ impl Killers {
         if ply >= MAX_PLY {
             return false;
         }
-        let fi = crate::board::coord_to_index(mv.from).unwrap_or(255) as u8;
-        let ti = crate::board::coord_to_index(mv.to).unwrap_or(255) as u8;
-        let pair = (fi, ti);
+        let pair = move_to_pair(mv);
         self.slots[ply][0] == pair || self.slots[ply][1] == pair
     }
 }
 
-/// History heuristic: indexed by [color][from_cell][to_cell].
 struct History {
     table: [[[i32; NUM_CELLS]; NUM_CELLS]; 2],
 }
@@ -177,29 +214,41 @@ impl History {
 
     #[inline]
     fn update(&mut self, color: Color, mv: &Move, depth: u32) {
-        let ci = color as usize;
-        let fi = crate::board::coord_to_index(mv.from).unwrap_or(0);
-        let ti = crate::board::coord_to_index(mv.to).unwrap_or(0);
-        self.table[ci][fi][ti] += (depth * depth) as i32;
+        let (fi, ti) = move_indices(mv);
+        self.table[color as usize][fi][ti] += (depth * depth) as i32;
     }
 
     #[inline]
     fn score(&self, color: Color, mv: &Move) -> i32 {
-        let ci = color as usize;
-        let fi = crate::board::coord_to_index(mv.from).unwrap_or(0);
-        let ti = crate::board::coord_to_index(mv.to).unwrap_or(0);
-        self.table[ci][fi][ti]
+        let (fi, ti) = move_indices(mv);
+        self.table[color as usize][fi][ti]
     }
+}
+
+/// Convert move from/to to cell index pair for killer/history tables.
+#[inline]
+fn move_to_pair(mv: &Move) -> (u8, u8) {
+    (
+        crate::board::coord_to_index(mv.from).unwrap_or(255) as u8,
+        crate::board::coord_to_index(mv.to).unwrap_or(255) as u8,
+    )
+}
+
+/// Convert move from/to to cell index pair (usize) for history table.
+#[inline]
+fn move_indices(mv: &Move) -> (usize, usize) {
+    (
+        crate::board::coord_to_index(mv.from).unwrap_or(0),
+        crate::board::coord_to_index(mv.to).unwrap_or(0),
+    )
 }
 
 // ---------------------------------------------------------------------------
 // Move ordering
 // ---------------------------------------------------------------------------
 
-/// Piece values for MVV-LVA ordering (centipawns).
 #[inline]
-fn mvv_lva_piece_val(kind: crate::board::PieceKind) -> i32 {
-    use crate::board::PieceKind;
+fn mvv_lva_piece_val(kind: PieceKind) -> i32 {
     match kind {
         PieceKind::Pawn => 1,
         PieceKind::Knight => 3,
@@ -210,24 +259,27 @@ fn mvv_lva_piece_val(kind: crate::board::PieceKind) -> i32 {
     }
 }
 
+/// TT move hint for move ordering: (from_cell_idx, to_cell_idx, promotion).
+type TtHint = (u8, u8, u8);
+
+const NO_TT_HINT: TtHint = (255, 255, 0);
+
 /// Score a move for ordering. Higher is searched first.
-///
-/// Priority: TT best move > captures (MVV-LVA) > killers > history.
 #[inline]
+#[allow(clippy::too_many_arguments)]
 fn move_score(
     mv: &Move,
     board: &crate::board::Board,
-    tt_from: u8,
-    tt_to: u8,
+    tt_hint: TtHint,
     ply: usize,
     killers: &Killers,
     history: &History,
 ) -> i32 {
-    let fi = crate::board::coord_to_index(mv.from).unwrap_or(255) as u8;
-    let ti = crate::board::coord_to_index(mv.to).unwrap_or(255) as u8;
+    let (fi, ti) = move_to_pair(mv);
+    let (tt_from, tt_to, tt_promo) = tt_hint;
 
     // TT best move gets highest priority.
-    if fi == tt_from && ti == tt_to && tt_from != 255 {
+    if fi == tt_from && ti == tt_to && tt_from != 255 && promo_to_u8(mv.promotion) == tt_promo {
         return 1_000_000;
     }
 
@@ -241,9 +293,9 @@ fn move_score(
         return 100_000 + victim * 10 - attacker;
     }
 
-    // En passant is a capture too.
+    // En passant is a capture.
     if mv.is_en_passant {
-        return 100_000 + 10; // pawn x pawn
+        return 100_000 + 10;
     }
 
     // Promotions.
@@ -260,8 +312,7 @@ fn move_score(
     history.score(board.side_to_move, mv)
 }
 
-/// Selection-sort: find the best-scored move from `start_idx` onward, swap it to `start_idx`.
-/// This is better than full sort because alpha-beta often cuts off early.
+/// Selection-sort: pick the best-scored move from `start_idx` onward.
 #[inline]
 fn pick_move(moves: &mut MoveList, scores: &mut [i32], start_idx: usize) {
     let mut best_idx = start_idx;
@@ -302,11 +353,9 @@ impl SearchState {
 }
 
 // ---------------------------------------------------------------------------
-// Draw detection (avoids calling status() which re-generates moves)
+// Draw detection
 // ---------------------------------------------------------------------------
 
-/// Check draw conditions that don't require move generation.
-/// Returns true if the position is drawn by repetition, 50-move rule, or insufficient material.
 #[inline]
 fn is_draw(state: &GameState) -> bool {
     state.board.halfmove_clock >= 100
@@ -321,7 +370,6 @@ fn is_draw(state: &GameState) -> bool {
 fn quiescence(state: &mut GameState, mut alpha: i32, beta: i32, ss: &mut SearchState) -> i32 {
     ss.nodes += 1;
 
-    // Stand-pat: the side to move can choose not to capture.
     let stand_pat = eval::evaluate_board(&state.board);
     if stand_pat >= beta {
         return beta;
@@ -330,27 +378,43 @@ fn quiescence(state: &mut GameState, mut alpha: i32, beta: i32, ss: &mut SearchS
         alpha = stand_pat;
     }
 
-    let moves = movegen::generate_legal_moves(&state.board);
-    if moves.is_empty() {
-        // Terminal: checkmate or stalemate.
-        let stm = state.side_to_move();
-        return if movegen::is_in_check(&state.board, stm) {
-            -10_000
-        } else {
-            0
-        };
+    // When not in check, we can stand pat — no need to check for checkmate.
+    // Only generate moves and check for terminal when in check.
+    let in_check = movegen::is_in_check(&state.board, state.side_to_move());
+
+    if in_check {
+        let moves = movegen::generate_legal_moves(&state.board);
+        if moves.is_empty() {
+            return -(MATE_SCORE);
+        }
+        // In check: search all evasions (not just captures).
+        for mv in moves.iter() {
+            state.apply_move(*mv);
+            let score = -quiescence(state, -beta, -alpha, ss);
+            state.undo_move();
+
+            if score >= beta {
+                return beta;
+            }
+            if score > alpha {
+                alpha = score;
+            }
+        }
+        return alpha;
     }
 
-    // Only search captures and en passant (and promotions, which are usually good).
+    // Not in check: only search tactical moves (captures, en passant, promotions).
+    let moves = movegen::generate_legal_moves(&state.board);
+
     for mv in moves.iter() {
         let is_tactical = mv.captured.is_some() || mv.is_en_passant || mv.promotion.is_some();
         if !is_tactical {
             continue;
         }
 
-        // Delta pruning: skip captures that can't raise alpha even with the best outcome.
+        // Delta pruning: skip captures that can't raise alpha.
         if let Some(captured) = mv.captured {
-            let delta = eval::piece_value(captured.kind) + 200; // 200cp margin
+            let delta = eval::piece_value(captured.kind) + 200;
             if stand_pat + delta < alpha {
                 continue;
             }
@@ -385,38 +449,38 @@ fn negamax(
 ) -> i32 {
     ss.nodes += 1;
 
-    // Draw detection (cheap: no move generation).
+    // TT probe first (O(1)) — can short-circuit expensive draw checks.
+    let key = state.board.zobrist_hash;
+    let tt_hint = match ss.tt.probe(key) {
+        Some(entry) if entry.depth >= depth => {
+            let score = score_from_tt(entry.score, ply);
+            match entry.bound {
+                Bound::Exact => return score,
+                Bound::Lower if score >= beta => return score,
+                Bound::Upper if score <= alpha => return score,
+                _ => (entry.best_from, entry.best_to, entry.best_promo),
+            }
+        }
+        Some(entry) => (entry.best_from, entry.best_to, entry.best_promo),
+        None => NO_TT_HINT,
+    };
+
+    // Draw detection.
     if is_draw(state) {
         return 0;
     }
 
-    // TT probe.
-    let key = state.board.zobrist_hash;
-    let (tt_from, tt_to) = match ss.tt.probe(key) {
-        Some(entry) if entry.depth >= depth => match entry.bound {
-            Bound::Exact => return entry.score,
-            Bound::Lower if entry.score >= beta => return entry.score,
-            Bound::Upper if entry.score <= alpha => return entry.score,
-            _ => (entry.best_from, entry.best_to),
-        },
-        Some(entry) => (entry.best_from, entry.best_to),
-        None => (255, 255),
-    };
-
     let mut moves = movegen::generate_legal_moves(&state.board);
 
-    // Terminal: no legal moves.
     if moves.is_empty() {
         let stm = state.side_to_move();
-        let score = if movegen::is_in_check(&state.board, stm) {
-            -(10_000 + depth as i32) // prefer shorter mates
+        return if movegen::is_in_check(&state.board, stm) {
+            -(MATE_SCORE + depth as i32)
         } else {
-            0 // stalemate
+            0
         };
-        return score;
     }
 
-    // Leaf node: quiescence search.
     if depth == 0 {
         return quiescence(state, alpha, beta, ss);
     }
@@ -427,8 +491,7 @@ fn negamax(
         scores[i] = move_score(
             &moves[i],
             &state.board,
-            tt_from,
-            tt_to,
+            tt_hint,
             ply,
             &ss.killers,
             &ss.history,
@@ -457,7 +520,6 @@ fn negamax(
         }
 
         if alpha >= beta {
-            // Beta cutoff — update killers and history for quiet moves.
             if mv.captured.is_none() && !mv.is_en_passant {
                 ss.killers.store(ply, &mv);
                 ss.history.update(state.side_to_move(), &mv, depth);
@@ -466,7 +528,7 @@ fn negamax(
         }
     }
 
-    // Store in TT.
+    // Store in TT with ply-adjusted mate scores.
     let bound = if best_score >= beta {
         Bound::Lower
     } else if best_score <= orig_alpha {
@@ -474,17 +536,74 @@ fn negamax(
     } else {
         Bound::Exact
     };
-    ss.tt
-        .store(key, depth, best_score, bound, best_move.as_ref());
+    ss.tt.store(
+        key,
+        depth,
+        score_to_tt(best_score, ply),
+        bound,
+        best_move.as_ref(),
+    );
 
     best_score
+}
+
+// ---------------------------------------------------------------------------
+// Shared root search helper
+// ---------------------------------------------------------------------------
+
+/// Run one iteration of root search at the given depth. Returns (best_move, best_score).
+fn search_root(state: &mut GameState, d: u32, ss: &mut SearchState) -> (Move, i32) {
+    let key = state.board.zobrist_hash;
+    let tt_hint = match ss.tt.probe(key) {
+        Some(entry) => (entry.best_from, entry.best_to, entry.best_promo),
+        None => NO_TT_HINT,
+    };
+
+    let mut root_moves = movegen::generate_legal_moves(&state.board);
+    let mut root_scores = [0i32; 256];
+    for i in 0..root_moves.len() {
+        root_scores[i] = move_score(
+            &root_moves[i],
+            &state.board,
+            tt_hint,
+            0,
+            &ss.killers,
+            &ss.history,
+        );
+    }
+
+    let mut best_move = root_moves[0];
+    let mut best_score = i32::MIN + 1;
+    let mut alpha = i32::MIN + 1;
+
+    for i in 0..root_moves.len() {
+        pick_move(&mut root_moves, &mut root_scores, i);
+        let mv = root_moves[i];
+
+        state.apply_move(mv);
+        let score = -negamax(state, d - 1, i32::MIN + 1, -alpha, 1, ss);
+        state.undo_move();
+
+        if score > best_score {
+            best_score = score;
+            best_move = mv;
+        }
+        if score > alpha {
+            alpha = score;
+        }
+    }
+
+    ss.tt
+        .store(key, d, best_score, Bound::Exact, Some(&best_move));
+
+    (best_move, best_score)
 }
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Run iterative-deepening alpha-beta search up to the given depth and return the best move.
+/// Run iterative-deepening alpha-beta search up to the given depth.
 ///
 /// Returns `None` if the position is terminal (no legal moves).
 pub fn search(state: &mut GameState, depth: u32) -> Option<MinimaxResult> {
@@ -499,58 +618,10 @@ pub fn search(state: &mut GameState, depth: u32) -> Option<MinimaxResult> {
     let mut best_move = moves[0];
     let mut best_score = i32::MIN + 1;
 
-    // Iterative deepening: search depth 1, 2, ..., `depth`.
-    // Each iteration populates the TT, improving move ordering for the next.
     for d in 1..=depth {
-        let mut current_best_move = moves[0];
-        let mut current_best_score = i32::MIN + 1;
-        let mut alpha = i32::MIN + 1;
-
-        // Get TT hint for root move ordering.
-        let key = state.board.zobrist_hash;
-        let (tt_from, tt_to) = match ss.tt.probe(key) {
-            Some(entry) => (entry.best_from, entry.best_to),
-            None => (255, 255),
-        };
-
-        // Build a mutable copy of the move list for ordering at root.
-        let mut root_moves = movegen::generate_legal_moves(&state.board);
-        let mut root_scores = [0i32; 256];
-        for i in 0..root_moves.len() {
-            root_scores[i] = move_score(
-                &root_moves[i],
-                &state.board,
-                tt_from,
-                tt_to,
-                0,
-                &ss.killers,
-                &ss.history,
-            );
-        }
-
-        for i in 0..root_moves.len() {
-            pick_move(&mut root_moves, &mut root_scores, i);
-            let mv = root_moves[i];
-
-            state.apply_move(mv);
-            let score = -negamax(state, d - 1, i32::MIN + 1, -alpha, 1, &mut ss);
-            state.undo_move();
-
-            if score > current_best_score {
-                current_best_score = score;
-                current_best_move = mv;
-            }
-            if score > alpha {
-                alpha = score;
-            }
-        }
-
-        best_move = current_best_move;
-        best_score = current_best_score;
-
-        // Store root position in TT.
-        ss.tt
-            .store(key, d, best_score, Bound::Exact, Some(&best_move));
+        let (mv, score) = search_root(state, d, &mut ss);
+        best_move = mv;
+        best_score = score;
     }
 
     Some(MinimaxResult {
@@ -563,8 +634,7 @@ pub fn search(state: &mut GameState, depth: u32) -> Option<MinimaxResult> {
 
 /// Run alpha-beta search and return scores for **all** legal root moves.
 ///
-/// Unlike `search`, this uses a full window (no alpha tightening at the root)
-/// so every move gets an accurate score. Subtree pruning is unaffected.
+/// Uses a full window at the final depth so every move gets an accurate score.
 /// Returns `None` if the position is terminal.
 pub fn search_all_moves(state: &mut GameState, depth: u32) -> Option<MinimaxAllResult> {
     assert!(depth >= 1, "minimax depth must be >= 1");
@@ -575,42 +645,13 @@ pub fn search_all_moves(state: &mut GameState, depth: u32) -> Option<MinimaxAllR
 
     let mut ss = SearchState::new();
 
-    // Warm up TT with iterative deepening (but we only use the TT, not results).
+    // Warm up TT with iterative deepening at shallower depths.
     for d in 1..depth {
-        let mut alpha = i32::MIN + 1;
-        let mut root_moves = movegen::generate_legal_moves(&state.board);
-        let key = state.board.zobrist_hash;
-        let (tt_from, tt_to) = match ss.tt.probe(key) {
-            Some(entry) => (entry.best_from, entry.best_to),
-            None => (255, 255),
-        };
-        let mut root_scores = [0i32; 256];
-        for i in 0..root_moves.len() {
-            root_scores[i] = move_score(
-                &root_moves[i],
-                &state.board,
-                tt_from,
-                tt_to,
-                0,
-                &ss.killers,
-                &ss.history,
-            );
-        }
-        for i in 0..root_moves.len() {
-            pick_move(&mut root_moves, &mut root_scores, i);
-            let mv = root_moves[i];
-            state.apply_move(mv);
-            let score = -negamax(state, d - 1, i32::MIN + 1, -alpha, 1, &mut ss);
-            state.undo_move();
-            if score > alpha {
-                alpha = score;
-            }
-        }
+        search_root(state, d, &mut ss);
     }
 
     // Final depth: full window for every move to get accurate scores.
     let mut ranked = Vec::with_capacity(moves.len());
-
     for mv in &moves {
         state.apply_move(*mv);
         let score = -negamax(state, depth - 1, i32::MIN + 1, i32::MAX, 1, &mut ss);
@@ -657,7 +698,6 @@ mod tests {
     #[test]
     fn terminal_returns_none() {
         let mut state = GameState::new();
-        // Ongoing position should return Some.
         assert!(search(&mut state, 1).is_some());
     }
 
@@ -667,29 +707,23 @@ mod tests {
         let best = search(&mut state, 2).unwrap();
         let all = search_all_moves(&mut state, 2).unwrap();
 
-        // Best score from search_all_moves should match search.
         let top = all.moves.iter().max_by_key(|m| m.score).unwrap();
         assert_eq!(top.score, best.score);
 
-        // All legal moves should be present.
         let legal = state.legal_moves();
         assert_eq!(all.moves.len(), legal.len());
     }
 
     #[test]
     fn iterative_deepening_improves_node_count() {
-        // Deeper search should explore more nodes but TT should help prune.
         let mut state = GameState::new();
         let r2 = search(&mut state, 2).unwrap();
         let r3 = search(&mut state, 3).unwrap();
-        // Depth 3 should search more nodes than depth 2 alone would.
         assert!(r3.nodes > r2.nodes);
     }
 
     #[test]
     fn tt_reduces_nodes_on_repeated_search() {
-        // Two searches at the same depth: second should be similar (TT is per-search).
-        // This just tests that search is deterministic.
         let mut state = GameState::new();
         let r1 = search(&mut state, 3).unwrap();
         let r2 = search(&mut state, 3).unwrap();
@@ -698,7 +732,6 @@ mod tests {
 
     #[test]
     fn captures_scored_higher_than_quiet() {
-        // Verify MVV-LVA: a queen capture should score higher than a quiet pawn push.
         use crate::board::{Color, HexCoord, Piece, PieceKind};
         let capture_move = Move {
             from: HexCoord::new(0, 0),
@@ -721,8 +754,8 @@ mod tests {
         let killers = Killers::new();
         let history = History::new();
 
-        let cap_score = move_score(&capture_move, &board, 255, 255, 0, &killers, &history);
-        let quiet_score = move_score(&quiet_move, &board, 255, 255, 0, &killers, &history);
+        let cap_score = move_score(&capture_move, &board, NO_TT_HINT, 0, &killers, &history);
+        let quiet_score = move_score(&quiet_move, &board, NO_TT_HINT, 0, &killers, &history);
         assert!(
             cap_score > quiet_score,
             "capture score {} should be > quiet score {}",
@@ -736,17 +769,14 @@ mod tests {
         let mut state = GameState::new();
         let mut ss = SearchState::new();
         let score = quiescence(&mut state, i32::MIN + 1, i32::MAX, &mut ss);
-        // Starting position has no captures available at depth 0, so score is just material.
         assert!(score.abs() <= 10_100);
     }
 
     #[test]
     fn deeper_search_finds_better_or_equal_move() {
-        // At higher depth the score should be at least as informed.
         let mut state = GameState::new();
         let r1 = search(&mut state, 1).unwrap();
         let r2 = search(&mut state, 2).unwrap();
-        // Both should be valid scores — just ensure they don't crash.
         assert!(r1.score.abs() <= 11_000);
         assert!(r2.score.abs() <= 11_000);
     }
@@ -769,7 +799,28 @@ mod tests {
         assert_eq!(history.score(Color::White, &mv), 0);
         history.update(Color::White, &mv, 3);
         assert_eq!(history.score(Color::White, &mv), 9); // 3^2
-        // Different color should be independent.
         assert_eq!(history.score(Color::Black, &mv), 0);
+    }
+
+    #[test]
+    fn mate_score_tt_roundtrip() {
+        // Mate scores must survive TT storage at one ply and retrieval at another.
+        let mate_in_3 = -(MATE_SCORE + 3);
+        let stored = score_to_tt(mate_in_3, 5); // storing at ply 5
+        let retrieved = score_from_tt(stored, 5); // retrieving at ply 5
+        assert_eq!(retrieved, mate_in_3);
+
+        // Retrieved at a different ply should adjust correctly.
+        let retrieved_at_2 = score_from_tt(stored, 2);
+        // At ply 2, the mate is 3 plies further away than at ply 5.
+        assert_eq!(retrieved_at_2, mate_in_3 - 3);
+    }
+
+    #[test]
+    fn non_mate_score_tt_roundtrip() {
+        let score = 150;
+        let stored = score_to_tt(score, 7);
+        let retrieved = score_from_tt(stored, 3);
+        assert_eq!(retrieved, score); // non-mate scores are ply-independent
     }
 }
