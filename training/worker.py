@@ -164,11 +164,13 @@ def run_worker(cfg: AsyncConfig) -> None:
                            for _ in range(flush_every)]
                 batch_samples: list[dict] = []
                 batch_t0 = time.time()
-                for future in as_completed(futures):
+                for i, future in enumerate(as_completed(futures), 1):
                     samples = future.result()
                     batch_samples.extend(samples)
                     imitation_games += 1
                     imitation_positions += len(samples)
+                    logger.info("  [{}/{}] game {} complete: {} positions",
+                                i, flush_every, imitation_games, len(samples))
 
                 batch_elapsed = time.time() - batch_t0
                 path = _flush_imitation_samples(batch_samples, cfg.training_data_dir)

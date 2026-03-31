@@ -9,6 +9,7 @@ from __future__ import annotations
 import multiprocessing as mp
 import os
 import random
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -67,7 +68,7 @@ def _score_to_wdl(score: int) -> np.ndarray:
     return np.array([w / total, d / total, l / total], dtype=np.float32)
 
 
-def _play_imitation_game(cfg: AsyncConfig) -> list[dict]:
+def _play_imitation_game(cfg: AsyncConfig, log_interval: int = 50) -> list[dict]:
     """Play one game collecting imitation samples.
 
     Starts with random opening moves for diversity, then follows minimax
@@ -79,6 +80,7 @@ def _play_imitation_game(cfg: AsyncConfig) -> list[dict]:
 
     ply = 0
     max_ply = 300  # safety limit
+    game_t0 = time.time()
 
     while not game.is_game_over() and ply < max_ply:
         # Random opening phase
@@ -110,6 +112,16 @@ def _play_imitation_game(cfg: AsyncConfig) -> list[dict]:
         mv = best_entry["move"]
         game.apply_move(mv["from_q"], mv["from_r"], mv["to_q"], mv["to_r"], mv.get("promotion"))
         ply += 1
+
+        if ply % log_interval == 0:
+            elapsed = time.time() - game_t0
+            logger.info("    ply {}/{} | {} positions | {:.1f}s | score: {}",
+                        ply, max_ply, len(samples), elapsed, best_score)
+
+    elapsed = time.time() - game_t0
+    status = game.status() if game.is_game_over() else "max_ply"
+    logger.info("  game done: {} plies, {} positions, {:.1f}s | {}",
+                ply, len(samples), elapsed, status)
 
     return samples
 
