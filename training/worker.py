@@ -13,6 +13,7 @@ Runtime use all available cores for inference.
 import json
 import os
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -145,29 +146,41 @@ def run_worker(cfg: AsyncConfig) -> None:
 
     current_version, model_path = _read_model_version(cfg)
 
-    # Bootstrap: generate imitation data from minimax until a model appears
+    # Bootstrap: generate imitation data from minimax until a model appears.
+    # Unlike MCTS self-play (where ONNX Runtime uses all cores), minimax is
+    # single-threaded, so we parallelize across cores with a process pool.
     if model_path is None:
-        logger.info("No model found — generating minimax imitation data (depth {})",
-                     cfg.imitation_depth)
+        num_workers = max(1, os.cpu_count() or 1)
+        logger.info("No model found — generating minimax imitation data "
+                     "(depth {}, {} parallel workers)", cfg.imitation_depth, num_workers)
         imitation_games = 0
-        imitation_samples: list[dict] = []
-        flush_every = cfg.worker_batch_size
-        while model_path is None:
-            game_t0 = time.time()
-            samples = _play_imitation_game(cfg)
-            game_elapsed = time.time() - game_t0
-            imitation_samples.extend(samples)
-            imitation_games += 1
-            logger.info("  imitation game {}: {} positions, {:.1f}s",
-                        imitation_games, len(samples), game_elapsed)
-            if imitation_games % flush_every == 0 and imitation_samples:
-                path = _flush_imitation_samples(imitation_samples, cfg.training_data_dir)
-                logger.info("Imitation game {}: flushed {} positions to {}",
-                            imitation_games, len(imitation_samples), path.name)
-                imitation_samples = []
+        imitation_positions = 0
+        flush_every = cfg.worker_batch_size * num_workers
+
+        with ProcessPoolExecutor(max_workers=num_workers) as pool:
+            while model_path is None:
+                # Submit a batch of games in parallel
+                futures = [pool.submit(_play_imitation_game, cfg)
+                           for _ in range(flush_every)]
+                batch_samples: list[dict] = []
+                batch_t0 = time.time()
+                for future in as_completed(futures):
+                    samples = future.result()
+                    batch_samples.extend(samples)
+                    imitation_games += 1
+                    imitation_positions += len(samples)
+
+                batch_elapsed = time.time() - batch_t0
+                path = _flush_imitation_samples(batch_samples, cfg.training_data_dir)
+                logger.info(
+                    "Imitation batch: {} games, {} pos, {:.0f}s ({:.1f}s/game) | "
+                    "total: {} games, {} pos | {}",
+                    flush_every, len(batch_samples), batch_elapsed,
+                    batch_elapsed / flush_every, imitation_games,
+                    imitation_positions, path.name,
+                )
                 current_version, model_path = _read_model_version(cfg)
-        if imitation_samples:
-            _flush_imitation_samples(imitation_samples, cfg.training_data_dir)
+
         logger.info("Model appeared (v{}), switching to self-play", current_version)
 
     batch_size = cfg.worker_batch_size
