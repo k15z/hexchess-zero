@@ -31,6 +31,7 @@ cmd_deploy() {
   kubectl apply -f "$SCRIPT_DIR/trainer.yaml"
   kubectl apply -f "$SCRIPT_DIR/worker.yaml"
   kubectl apply -f "$SCRIPT_DIR/elo-service.yaml"
+  kubectl apply -f "$SCRIPT_DIR/dashboard.yaml"
   echo "==> Done. Use '$(basename "$0") status' to check pods."
 }
 

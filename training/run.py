@@ -120,6 +120,10 @@ def main() -> None:
     subparsers.add_parser("status", help="Show training cluster status")
     subparsers.add_parser("progress", help="Show training progress summary")
 
+    # --- Dashboard ---
+    dash_parser = subparsers.add_parser("dashboard", help="Run training dashboard web UI")
+    dash_parser.add_argument("--port", type=int, default=8080, help="HTTP port")
+
     # --- Elo service (continuous) ---
     elo_svc_parser = subparsers.add_parser("elo-service", help="Run continuous Elo rating service")
     elo_svc_parser.add_argument("--simulations", type=int, default=500, help="MCTS simulations per move")
@@ -142,6 +146,9 @@ def main() -> None:
     elif args.command == "progress":
         from .metrics import print_progress
         print_progress()
+    elif args.command == "dashboard":
+        from .dashboard import run_dashboard
+        run_dashboard(AsyncConfig(), port=args.port)
     elif args.command == "elo-service":
         _configure_logging()
         from .elo_service import run_elo_service

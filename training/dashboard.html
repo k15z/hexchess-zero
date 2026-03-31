@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hexchess training</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+    background: #0d1117; color: #c9d1d9;
+    font-size: 13px; line-height: 1.5;
+    max-width: 640px; margin: 0 auto;
+    padding: 8px;
+  }
+  h2 { font-size: 14px; color: #58a6ff; margin: 16px 0 6px 0; text-transform: uppercase; letter-spacing: 1px; }
+  .header {
+    position: sticky; top: 0; z-index: 10;
+    background: #0d1117; border-bottom: 1px solid #21262d;
+    padding: 8px 0; margin-bottom: 8px;
+  }
+  .header-row { display: flex; justify-content: space-between; align-items: center; }
+  .model-ver { font-size: 18px; font-weight: bold; color: #f0f6fc; }
+  .dots { display: flex; gap: 6px; align-items: center; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; }
+  .dot.ok { background: #3fb950; }
+  .dot.warn { background: #d29922; }
+  .dot.err { background: #f85149; }
+  .dot.unknown { background: #484f58; }
+  .dot-label { font-size: 10px; color: #8b949e; margin-right: 8px; }
+  .ts { font-size: 11px; color: #484f58; }
+  .section { margin-bottom: 12px; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; color: #8b949e; font-weight: normal; font-size: 11px; padding: 2px 6px; border-bottom: 1px solid #21262d; }
+  td { padding: 2px 6px; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr:hover { background: #161b22; }
+  .loss-good { color: #3fb950; }
+  .loss-mid { color: #d29922; }
+  .loss-bad { color: #f85149; }
+  .sparkline { font-size: 14px; letter-spacing: 1px; color: #58a6ff; }
+  .elo-bar { display: inline-block; height: 10px; background: #58a6ff; border-radius: 2px; min-width: 2px; }
+  .elo-neg .elo-bar { background: #f85149; }
+  .kv { display: flex; justify-content: space-between; padding: 1px 0; }
+  .kv .k { color: #8b949e; }
+  .kv .v { color: #c9d1d9; }
+  details { margin-bottom: 8px; }
+  summary { cursor: pointer; color: #58a6ff; font-size: 14px; padding: 4px 0; }
+  summary:hover { color: #79c0ff; }
+  .log-box {
+    background: #161b22; border: 1px solid #21262d; border-radius: 4px;
+    padding: 8px; overflow-x: auto; white-space: pre; font-size: 11px;
+    max-height: 400px; overflow-y: auto; color: #8b949e;
+  }
+  .log-tabs { display: flex; gap: 4px; margin-bottom: 6px; }
+  .log-tab {
+    padding: 4px 10px; background: #21262d; border: 1px solid #30363d;
+    border-radius: 4px; cursor: pointer; color: #8b949e; font-size: 12px;
+  }
+  .log-tab.active { background: #30363d; color: #f0f6fc; border-color: #58a6ff; }
+  .badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 11px; }
+  .badge-blue { background: #1f6feb33; color: #58a6ff; }
+  .badge-green { background: #23863633; color: #3fb950; }
+  .badge-amber { background: #9e6a0333; color: #d29922; }
+  .empty { color: #484f58; font-style: italic; }
+  .refresh-btn {
+    background: #21262d; border: 1px solid #30363d; color: #8b949e;
+    padding: 2px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; font-family: inherit;
+  }
+  .refresh-btn:hover { color: #f0f6fc; border-color: #58a6ff; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-row">
+    <span class="model-ver" id="model-ver">—</span>
+    <div class="dots" id="pod-dots"></div>
+  </div>
+  <div class="header-row">
+    <span class="ts" id="promoted-at"></span>
+    <span class="ts" id="last-refresh"></span>
+  </div>
+</div>
+
+<div class="section" id="training-section">
+  <h2>Training</h2>
+  <div id="training-content" class="empty">Loading...</div>
+</div>
+
+<div class="section" id="elo-section">
+  <h2>Elo Ratings</h2>
+  <div id="elo-content" class="empty">Loading...</div>
+</div>
+
+<details class="section">
+  <summary>Data Pipeline</summary>
+  <div id="data-content" class="empty">Loading...</div>
+</details>
+
+<details class="section" id="logs-section">
+  <summary>Pod Logs</summary>
+  <div class="log-tabs" id="log-tabs"></div>
+  <div id="log-content" class="log-box empty">Select a pod above</div>
+</details>
+
+<script>
+const REFRESH_MS = 30000;
+let currentLogTab = null;
+
+function ago(ts) {
+  if (!ts) return '';
+  const diff = (Date.now() - new Date(ts).getTime()) / 1000;
+  if (diff < 60) return Math.floor(diff) + 's ago';
+  if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+  return Math.floor(diff / 86400) + 'd ago';
+}
+
+function fmt(n, d) {
+  if (n == null) return '—';
+  return typeof n === 'number' ? n.toLocaleString(undefined, {maximumFractionDigits: d || 0}) : n;
+}
+
+function sparkline(values) {
+  if (!values.length) return '';
+  const blocks = ' ▁▂▃▄▅▆▇█';
+  const min = Math.min(...values), max = Math.max(...values);
+  const range = max - min || 1;
+  // For loss, lower is better — invert so taller = better (lower loss)
+  return values.map(v => {
+    const idx = Math.round((1 - (v - min) / range) * (blocks.length - 1));
+    return blocks[idx];
+  }).join('');
+}
+
+function lossClass(v) {
+  if (v == null) return '';
+  if (v < 3) return 'loss-good';
+  if (v < 5) return 'loss-mid';
+  return 'loss-bad';
+}
+
+function dotClass(status) {
+  if (!status) return 'unknown';
+  if (status === 'Running') return 'ok';
+  if (['ContainerCreating', 'Pending'].includes(status)) return 'warn';
+  return 'err';
+}
+
+function renderHeader(data) {
+  const m = data.model;
+  document.getElementById('model-ver').textContent = m.version ? `v${m.version}` : 'no model';
+  document.getElementById('promoted-at').textContent = m.promoted_at ? `promoted ${ago(m.promoted_at)}` : 'bootstrap pending';
+  document.getElementById('last-refresh').textContent = `updated ${ago(data.timestamp)}`;
+
+  const dots = document.getElementById('pod-dots');
+  dots.innerHTML = '';
+  const order = ['trainer', 'worker-0', 'worker-1', 'elo-service'];
+  for (const role of order) {
+    const status = data.pods[role];
+    const label = document.createElement('span');
+    label.className = 'dot-label';
+    label.textContent = role.replace('worker-', 'w').replace('elo-service', 'elo').replace('trainer', 'trn');
+    const dot = document.createElement('span');
+    dot.className = `dot ${dotClass(status)}`;
+    dot.title = `${role}: ${status || 'unknown'}`;
+    dots.appendChild(label);
+    dots.appendChild(dot);
+  }
+}
+
+function renderTraining(data) {
+  const t = data.training;
+  const el = document.getElementById('training-content');
+
+  if (!t.latest_cycle && !t.bootstrap) {
+    // Check if bootstrap is pending
+    el.className = 'empty';
+    el.textContent = 'No training cycles yet — bootstrap in progress';
+    return;
+  }
+
+  let html = '';
+
+  // Bootstrap info
+  if (t.bootstrap) {
+    const b = t.bootstrap;
+    html += `<div class="kv"><span class="k">bootstrap</span><span class="v">${fmt(b.steps)} steps over ${fmt(b.positions)} positions in ${fmt(b.elapsed_seconds/60, 1)}m</span></div>`;
+  }
+
+  // Loss sparkline
+  if (t.loss_history.length > 1) {
+    html += `<div class="kv"><span class="k">loss trend</span><span class="sparkline">${sparkline(t.loss_history)}</span></div>`;
+  }
+
+  // Cycles table
+  if (t.cycles && t.cycles.length) {
+    html += `<table><tr><th>cycle</th><th>ver</th><th>policy</th><th>value</th><th>total</th><th>positions</th><th>time</th></tr>`;
+    for (const c of t.cycles) {
+      const total = (c.policy_loss + c.value_loss).toFixed(4);
+      const cls = lossClass(+total);
+      html += `<tr>
+        <td class="num">${c.cycle}</td>
+        <td>v${c.version}</td>
+        <td class="num">${c.policy_loss.toFixed(4)}</td>
+        <td class="num">${c.value_loss.toFixed(4)}</td>
+        <td class="num ${cls}">${total}</td>
+        <td class="num">${fmt(c.positions)}</td>
+        <td class="num">${fmt(c.elapsed_seconds / 60, 1)}m</td>
+      </tr>`;
+    }
+    html += '</table>';
+  }
+
+  el.className = '';
+  el.innerHTML = html;
+}
+
+function renderElo(data) {
+  const e = data.elo;
+  const el = document.getElementById('elo-content');
+
+  if (!Object.keys(e.ratings).length) {
+    el.className = 'empty';
+    el.textContent = 'No Elo data yet';
+    return;
+  }
+
+  // Sort by rating descending
+  const sorted = Object.entries(e.ratings).sort((a, b) => b[1] - a[1]);
+  const maxR = Math.max(...sorted.map(s => Math.abs(s[1])), 1);
+
+  let html = `<div class="kv"><span class="k">games</span><span class="v">${fmt(e.total_games)}</span></div>`;
+  html += `<table><tr><th>#</th><th>player</th><th>elo</th><th></th></tr>`;
+
+  for (let i = 0; i < sorted.length; i++) {
+    const [name, rating] = sorted[i];
+    const barW = Math.max(2, Math.round(Math.abs(rating) / maxR * 120));
+    const neg = rating < 0 ? 'elo-neg' : '';
+    html += `<tr>
+      <td class="num">${i + 1}</td>
+      <td>${name}</td>
+      <td class="num">${rating > 0 ? '+' : ''}${rating}</td>
+      <td class="${neg}"><span class="elo-bar" style="width:${barW}px"></span></td>
+    </tr>`;
+  }
+  html += '</table>';
+
+  el.className = '';
+  el.innerHTML = html;
+}
+
+function renderData(data) {
+  const d = data.data;
+  const el = document.getElementById('data-content');
+
+  let html = '';
+
+  // Training files summary
+  const tf = d.training_files;
+  html += `<div class="kv"><span class="k">training data</span><span class="v">${fmt(tf.total_count)} files, ${fmt(tf.total_size_mb, 1)} MB</span></div>`;
+
+  if (Object.keys(tf.by_version).length) {
+    html += `<table><tr><th>source</th><th>files</th><th>size</th></tr>`;
+    for (const [ver, info] of Object.entries(tf.by_version)) {
+      html += `<tr><td>${ver}</td><td class="num">${info.count}</td><td class="num">${fmt(info.size_mb, 1)} MB</td></tr>`;
+    }
+    html += '</table>';
+  }
+
+  // Model snapshots
+  if (d.models.length) {
+    html += `<div style="margin-top:8px" class="kv"><span class="k">model snapshots</span><span class="v">${d.models.length} versions</span></div>`;
+  }
+
+  el.className = '';
+  el.innerHTML = html || '<span class="empty">No data yet</span>';
+}
+
+function renderLogTabs(data) {
+  const tabs = document.getElementById('log-tabs');
+  if (tabs.children.length) return; // already rendered
+  const roles = ['trainer', 'worker-0', 'worker-1', 'elo-service'];
+  for (const role of roles) {
+    const btn = document.createElement('button');
+    btn.className = 'log-tab';
+    btn.textContent = role;
+    btn.onclick = () => fetchLogs(role);
+    tabs.appendChild(btn);
+  }
+}
+
+async function fetchLogs(role) {
+  currentLogTab = role;
+  // Update tab styling
+  document.querySelectorAll('.log-tab').forEach(t => {
+    t.classList.toggle('active', t.textContent === role);
+  });
+  const el = document.getElementById('log-content');
+  el.textContent = 'Loading...';
+  try {
+    const resp = await fetch(`/api/logs/${role}`);
+    const data = await resp.json();
+    el.textContent = data.lines.join('\n');
+    el.scrollTop = el.scrollHeight;
+  } catch (e) {
+    el.textContent = `Error: ${e.message}`;
+  }
+}
+
+async function refresh() {
+  try {
+    const resp = await fetch('/api/status');
+    const data = await resp.json();
+    renderHeader(data);
+    renderTraining(data);
+    renderElo(data);
+    renderData(data);
+    renderLogTabs(data);
+  } catch (e) {
+    document.getElementById('last-refresh').textContent = `error: ${e.message}`;
+  }
+}
+
+refresh();
+setInterval(refresh, REFRESH_MS);
+</script>
+</body>
+</html>
