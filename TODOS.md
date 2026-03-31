@@ -13,7 +13,7 @@
 ## Training pipeline
 
 - **Surprise weighting for replay buffer sampling** — KataGo and Lc0 both upweight positions where the net's raw evaluation disagrees with the MCTS search result (policy KL divergence, value squared error). The intuition: these are positions where the net has the most to learn. KataGo stores per-position `targetWeight` in `.npz` files during self-play (`policySurpriseDataWeight`, `valueSurpriseDataWeight`). Lc0 calls it "diff-focus" (`diff_focus_q_weight`, `diff_focus_pol_scale`). Implementation: compute surprise weights in the worker (raw net output vs MCTS result), store as `sample_weights` in `.npz`, use in `ReplayBuffer` sampling.
-- **Training rate limiting** — KataGo uses a "train bucket" mechanism (`-max-train-bucket-per-new-data 4`) that limits how many training steps can be taken per new data row, preventing overfitting when self-play throughput is low relative to training speed. Implementation: track how many times each batch/file has been sampled, skip or deprioritize files that have been trained on more than N times. This naturally throttles the trainer to stay in sync with worker output.
+- **Training rate limiting** — KataGo-style credit system: each new position earns N training credits, each step consumes `batch_size` credits. When credits hit 0, the trainer sleeps until workers produce more data. Prevents overfitting when worker throughput is low. Recount positions on buffer reload (every `reload_interval` steps). Exempt bootstrap mode.
 - Scale up network size (more residual blocks / filters) once baseline model quality stabilizes
 
 ## Web UI
