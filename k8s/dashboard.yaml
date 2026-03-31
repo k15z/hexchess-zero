@@ -67,6 +67,16 @@ spec:
             limits:
               memory: 256Mi
               cpu: "200m"
+        - name: tunnel
+          image: cloudflare/cloudflared:latest
+          args: ["tunnel", "--url", "http://localhost:8080", "--no-autoupdate"]
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: "50m"
+            limits:
+              memory: 128Mi
+              cpu: "100m"
       volumes:
         - name: data
           persistentVolumeClaim:
