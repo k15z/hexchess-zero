@@ -1,5 +1,7 @@
 """Tests for TrainBucket rate limiter."""
 
+import pytest
+
 from training.trainer_loop import TrainBucket
 
 
@@ -9,6 +11,20 @@ def test_seed_on_first_update():
     bucket.update(1000)
     assert bucket.tokens == 4000.0
     assert bucket.has_budget()
+
+
+def test_seed_capped_by_max_seed():
+    """Initial seed is capped by max_seed to prevent runaway budget on restart."""
+    bucket = TrainBucket(ratio=4.0, max_seed=5000)
+    bucket.update(1_000_000)  # would be 4M without cap
+    assert bucket.tokens == 5000.0
+
+
+def test_seed_uncapped_when_small():
+    """max_seed doesn't inflate a small initial seed."""
+    bucket = TrainBucket(ratio=4.0, max_seed=50000)
+    bucket.update(100)  # 400, well under cap
+    assert bucket.tokens == 400.0
 
 
 def test_incremental_updates():
@@ -80,3 +96,23 @@ def test_no_negative_new_positions():
     bucket.update(1000)  # seed: 2000
     bucket.update(800)   # positions decreased — should add 0, not subtract
     assert bucket.tokens == 2000.0
+
+
+def test_zero_ratio_raises():
+    """ratio must be positive."""
+    with pytest.raises(ValueError):
+        TrainBucket(ratio=0)
+
+
+def test_negative_ratio_raises():
+    with pytest.raises(ValueError):
+        TrainBucket(ratio=-1.0)
+
+
+def test_incremental_not_capped_by_max_seed():
+    """max_seed only caps the initial seed, not subsequent refills."""
+    bucket = TrainBucket(ratio=4.0, max_seed=100)
+    bucket.update(50)  # seed: min(200, 100) = 100
+    assert bucket.tokens == 100.0
+    bucket.update(10050)  # 10000 new * 4.0 = 40000 added, no cap
+    assert bucket.tokens == 40100.0
