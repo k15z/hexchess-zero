@@ -65,6 +65,48 @@ def _atomic_copy(src: Path, dst: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Train bucket (rate limiter)
+# ---------------------------------------------------------------------------
+
+class TrainBucket:
+    """Token-bucket rate limiter that throttles training to match data inflow.
+
+    Each new data position adds ``ratio`` tokens to the bucket. Each training
+    step consumes 1 token.  When the bucket is empty the trainer should pause
+    and wait for workers to produce more data.
+
+    On first call to :meth:`update`, the bucket is seeded with the full
+    position count so the trainer can start immediately.
+    """
+
+    def __init__(self, ratio: float):
+        self.ratio = ratio
+        self._tokens: float = 0.0
+        self._prev_positions: int | None = None
+
+    def update(self, total_positions: int) -> None:
+        """Refresh the bucket with newly observed positions."""
+        if self._prev_positions is None:
+            # First observation — seed so training can begin right away.
+            self._tokens = total_positions * self.ratio
+        else:
+            new = max(0, total_positions - self._prev_positions)
+            self._tokens += new * self.ratio
+        self._prev_positions = total_positions
+
+    def consume(self, n: int = 1) -> None:
+        """Consume tokens for completed training steps."""
+        self._tokens -= n
+
+    @property
+    def tokens(self) -> float:
+        return self._tokens
+
+    def has_budget(self) -> bool:
+        return self._tokens > 0
+
+
+# ---------------------------------------------------------------------------
 # Replay buffer (self-play regime)
 # ---------------------------------------------------------------------------
 
@@ -365,6 +407,7 @@ def run_trainer(cfg: AsyncConfig) -> None:
 
     cycle = 0
     total_steps_all_time = 0
+    bucket = TrainBucket(cfg.max_train_steps_per_new_data)
 
     while not _shutdown_requested:
         cycle += 1
@@ -397,8 +440,25 @@ def run_trainer(cfg: AsyncConfig) -> None:
             time.sleep(30)
             continue
 
+        bucket.update(dataset.total_positions)
+
+        # Rate limit: wait for workers to produce enough data
+        if not bucket.has_budget():
+            logger.info("Train bucket empty ({:.0f} tokens), waiting for new data...",
+                        bucket.tokens)
+            while not bucket.has_budget() and not _shutdown_requested:
+                time.sleep(30)
+                dataset, dataloader = reload_buffer()
+                bucket.update(dataset.total_positions)
+                if not bucket.has_budget():
+                    logger.info("  Still waiting... bucket={:.0f} tokens, {:,} positions",
+                                bucket.tokens, dataset.total_positions)
+            if _shutdown_requested:
+                break
+
         buf_stats = dataset.stats()
         _log_buffer_stats("Replay buffer", buf_stats)
+        logger.info("Train bucket: {:.0f} tokens available", bucket.tokens)
 
         # Step-based training
         model.train()
@@ -410,9 +470,9 @@ def run_trainer(cfg: AsyncConfig) -> None:
 
         logger.info("Training for {} steps (batch_size={})...", cfg.steps_per_cycle, cfg.batch_size)
 
-        while step < cfg.steps_per_cycle and not _shutdown_requested:
+        while step < cfg.steps_per_cycle and not _shutdown_requested and bucket.has_budget():
             for boards, policies, outcomes in dataloader:
-                if _shutdown_requested or step >= cfg.steps_per_cycle:
+                if _shutdown_requested or step >= cfg.steps_per_cycle or not bucket.has_budget():
                     break
 
                 boards = boards.to(device)
@@ -441,6 +501,7 @@ def run_trainer(cfg: AsyncConfig) -> None:
                 cycle_value_loss += vl
                 step += 1
                 total_steps_all_time += 1
+                bucket.consume()
 
                 if step % log_interval == 0 or step == cfg.steps_per_cycle:
                     elapsed = time.time() - train_t0
@@ -454,10 +515,14 @@ def run_trainer(cfg: AsyncConfig) -> None:
                         steps_per_sec, elapsed,
                     )
 
-                # Periodic reload: pick up fresh worker data and recompute weights
+                # Periodic reload: pick up fresh worker data and refill bucket
                 if step % cfg.reload_interval == 0 and step < cfg.steps_per_cycle:
                     dataset, dataloader = reload_buffer()
+                    bucket.update(dataset.total_positions)
                     _log_buffer_stats("  Reloaded buffer", dataset.stats())
+                    logger.info("  Train bucket: {:.0f} tokens remaining", bucket.tokens)
+                    if not bucket.has_budget():
+                        logger.info("  Bucket exhausted mid-cycle, ending cycle early at step {}", step)
                     break  # restart with new dataloader
 
         train_elapsed = time.time() - train_t0
