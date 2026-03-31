@@ -353,17 +353,6 @@ impl SearchState {
 }
 
 // ---------------------------------------------------------------------------
-// Draw detection
-// ---------------------------------------------------------------------------
-
-#[inline]
-fn is_draw(state: &GameState) -> bool {
-    state.board.halfmove_clock >= 100
-        || state.is_draw_by_repetition()
-        || state.is_insufficient_material()
-}
-
-// ---------------------------------------------------------------------------
 // Quiescence search
 // ---------------------------------------------------------------------------
 
@@ -449,7 +438,6 @@ fn negamax(
 ) -> i32 {
     ss.nodes += 1;
 
-    // TT probe first (O(1)) — can short-circuit expensive draw checks.
     let key = state.board.zobrist_hash;
     let tt_hint = match ss.tt.probe(key) {
         Some(entry) if entry.depth >= depth => {
@@ -465,8 +453,7 @@ fn negamax(
         None => NO_TT_HINT,
     };
 
-    // Draw detection.
-    if is_draw(state) {
+    if state.is_draw() {
         return 0;
     }
 
@@ -485,7 +472,6 @@ fn negamax(
         return quiescence(state, alpha, beta, ss);
     }
 
-    // Score moves for ordering.
     let mut scores = [0i32; 256];
     for i in 0..moves.len() {
         scores[i] = move_score(
@@ -528,7 +514,6 @@ fn negamax(
         }
     }
 
-    // Store in TT with ply-adjusted mate scores.
     let bound = if best_score >= beta {
         Bound::Lower
     } else if best_score <= orig_alpha {
@@ -551,8 +536,9 @@ fn negamax(
 // Shared root search helper
 // ---------------------------------------------------------------------------
 
-/// Run one iteration of root search at the given depth. Returns (best_move, best_score).
-fn search_root(state: &mut GameState, d: u32, ss: &mut SearchState) -> (Move, i32) {
+/// Run one iteration of root search at the given depth.
+/// Returns `None` if there are no legal moves (terminal position).
+fn search_root(state: &mut GameState, d: u32, ss: &mut SearchState) -> Option<(Move, i32)> {
     let key = state.board.zobrist_hash;
     let tt_hint = match ss.tt.probe(key) {
         Some(entry) => (entry.best_from, entry.best_to, entry.best_promo),
@@ -560,6 +546,10 @@ fn search_root(state: &mut GameState, d: u32, ss: &mut SearchState) -> (Move, i3
     };
 
     let mut root_moves = movegen::generate_legal_moves(&state.board);
+    if root_moves.is_empty() {
+        return None;
+    }
+
     let mut root_scores = [0i32; 256];
     for i in 0..root_moves.len() {
         root_scores[i] = move_score(
@@ -596,7 +586,7 @@ fn search_root(state: &mut GameState, d: u32, ss: &mut SearchState) -> (Move, i3
     ss.tt
         .store(key, d, best_score, Bound::Exact, Some(&best_move));
 
-    (best_move, best_score)
+    Some((best_move, best_score))
 }
 
 // ---------------------------------------------------------------------------
@@ -609,23 +599,22 @@ fn search_root(state: &mut GameState, d: u32, ss: &mut SearchState) -> (Move, i3
 pub fn search(state: &mut GameState, depth: u32) -> Option<MinimaxResult> {
     assert!(depth >= 1, "minimax depth must be >= 1");
 
-    let moves = movegen::generate_legal_moves(&state.board);
-    if moves.is_empty() {
-        return None;
-    }
-
     let mut ss = SearchState::new();
-    let mut best_move = moves[0];
+    let mut best_move = None;
     let mut best_score = i32::MIN + 1;
 
     for d in 1..=depth {
-        let (mv, score) = search_root(state, d, &mut ss);
-        best_move = mv;
-        best_score = score;
+        match search_root(state, d, &mut ss) {
+            Some((mv, score)) => {
+                best_move = Some(mv);
+                best_score = score;
+            }
+            None => return None, // terminal position
+        }
     }
 
-    Some(MinimaxResult {
-        best_move,
+    best_move.map(|mv| MinimaxResult {
+        best_move: mv,
         score: best_score,
         nodes: ss.nodes,
         depth,
@@ -638,21 +627,20 @@ pub fn search(state: &mut GameState, depth: u32) -> Option<MinimaxResult> {
 /// Returns `None` if the position is terminal.
 pub fn search_all_moves(state: &mut GameState, depth: u32) -> Option<MinimaxAllResult> {
     assert!(depth >= 1, "minimax depth must be >= 1");
-    let moves = state.legal_moves();
+
+    let moves = movegen::generate_legal_moves(&state.board);
     if moves.is_empty() {
         return None;
     }
 
     let mut ss = SearchState::new();
 
-    // Warm up TT with iterative deepening at shallower depths.
     for d in 1..depth {
         search_root(state, d, &mut ss);
     }
 
-    // Final depth: full window for every move to get accurate scores.
     let mut ranked = Vec::with_capacity(moves.len());
-    for mv in &moves {
+    for mv in moves.iter() {
         state.apply_move(*mv);
         let score = -negamax(state, depth - 1, i32::MIN + 1, i32::MAX, 1, &mut ss);
         state.undo_move();

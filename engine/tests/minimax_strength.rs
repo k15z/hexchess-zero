@@ -12,6 +12,7 @@
 mod helpers;
 
 use helpers::naive_minimax::naive_search;
+use helpers::positions::play_n_moves;
 use hexchess_engine::board::{Board, Color, HexCoord, Piece, PieceKind};
 use hexchess_engine::game::{GameState, GameStatus};
 use hexchess_engine::minimax;
@@ -19,24 +20,6 @@ use hexchess_engine::minimax;
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn play_n_moves(n: usize) -> Option<GameState> {
-    let mut state = GameState::new();
-    for _ in 0..n {
-        if state.is_game_over() {
-            return None;
-        }
-        match minimax::search(&mut state, 1) {
-            Some(r) => state.apply_move(r.best_move),
-            None => return None,
-        }
-    }
-    if state.is_game_over() {
-        None
-    } else {
-        Some(state)
-    }
-}
 
 fn free_queen_position() -> GameState {
     let mut board = Board::empty();

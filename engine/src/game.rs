@@ -173,8 +173,17 @@ impl GameState {
         GameStatus::Ongoing
     }
 
+    /// Check draw conditions that don't require move generation.
+    /// Used by the minimax search to avoid calling `status()` (which generates
+    /// legal moves to detect checkmate/stalemate).
+    pub fn is_draw(&self) -> bool {
+        self.board.halfmove_clock >= 100
+            || self.is_draw_by_repetition()
+            || self.is_insufficient_material()
+    }
+
     /// Check whether the current position has appeared at least 3 times.
-    pub fn is_draw_by_repetition(&self) -> bool {
+    fn is_draw_by_repetition(&self) -> bool {
         let current = self.board.zobrist_hash;
         let count = self
             .position_history
@@ -185,7 +194,7 @@ impl GameState {
     }
 
     /// Basic insufficient-material check: K vs K, K+B vs K.
-    pub fn is_insufficient_material(&self) -> bool {
+    fn is_insufficient_material(&self) -> bool {
         let mut non_king_count = 0u8;
         let mut lone_kind = PieceKind::Pawn; // placeholder
 

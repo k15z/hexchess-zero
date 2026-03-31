@@ -4,6 +4,7 @@
 mod helpers;
 
 use helpers::naive_minimax::naive_search;
+use helpers::positions::play_n_moves;
 use hexchess_engine::game::GameState;
 use hexchess_engine::minimax;
 
@@ -42,26 +43,15 @@ fn depth4_node_comparison() {
     );
 }
 
-/// Test from a mid-game position (after 10 moves).
 #[test]
 fn midgame_node_comparison() {
-    let mut state = GameState::new();
-
-    // Play 10 moves to reach mid-game.
-    for _ in 0..10 {
-        if state.is_game_over() {
-            break;
+    let mut state = match play_n_moves(10) {
+        Some(s) => s,
+        None => {
+            println!("Game ended before mid-game, skipping");
+            return;
         }
-        match minimax::search(&mut state, 1) {
-            Some(r) => state.apply_move(r.best_move),
-            None => break,
-        }
-    }
-
-    if state.is_game_over() {
-        println!("Game ended before mid-game, skipping");
-        return;
-    }
+    };
 
     let t0 = std::time::Instant::now();
     let (_, old_score, old_nodes) = naive_search(&mut state, 3).unwrap();
