@@ -307,6 +307,11 @@ def run_trainer(cfg: AsyncConfig) -> None:
         # Wait for enough training data
         available = _count_available_positions(cfg.training_data_dir)
         if available < cfg.min_positions_to_train:
+            if not cfg.best_model_path.exists():
+                from .imitation import generate_imitation_data
+                logger.info("No model found. Generating minimax imitation data...")
+                generate_imitation_data(cfg)
+                continue
             logger.info("Waiting for data: ~{}/{} positions", available, cfg.min_positions_to_train)
             time.sleep(30)
             continue

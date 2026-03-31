@@ -125,6 +125,12 @@ def main() -> None:
     trainer_parser.add_argument("--batch-size", type=int, default=None, help="Training batch size")
     trainer_parser.add_argument("--arena-games", type=int, default=None, help="Arena games per evaluation")
 
+    # --- Imitation ---
+    imit_parser = subparsers.add_parser("imitation", help="Generate minimax imitation data")
+    imit_parser.add_argument("--depth", type=int, default=None, help="Minimax search depth")
+    imit_parser.add_argument("--num-games", type=int, default=None, help="Games to play")
+    imit_parser.add_argument("--random-plies", type=int, default=None, help="Random opening plies")
+
     # --- Status & progress ---
     subparsers.add_parser("status", help="Show training cluster status")
     subparsers.add_parser("progress", help="Show training progress summary")
@@ -150,6 +156,17 @@ def main() -> None:
 
     if args.command == "worker":
         cmd_worker(args)
+    elif args.command == "imitation":
+        _configure_logging()
+        from .imitation import generate_imitation_data
+        cfg = AsyncConfig()
+        if args.depth is not None:
+            cfg.imitation_depth = args.depth
+        if args.num_games is not None:
+            cfg.imitation_num_games = args.num_games
+        if args.random_plies is not None:
+            cfg.imitation_random_plies = args.random_plies
+        generate_imitation_data(cfg)
     elif args.command == "trainer":
         cmd_trainer(args)
     elif args.command == "status":
