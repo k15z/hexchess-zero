@@ -14,7 +14,6 @@ Two training regimes:
 """
 
 import json
-import math
 import random
 import signal
 import sys
@@ -70,11 +69,11 @@ def _atomic_copy(src: Path, dst: Path) -> None:
 # ---------------------------------------------------------------------------
 
 class ReplayBuffer(IterableDataset):
-    """Streams training data with recency-weighted sampling.
+    """Streams training data with uniform sampling from a sliding window.
 
     Selects the most recent .npz files up to max_positions, then samples
-    files with probability proportional to exp(-age / half_life). Positions
-    within each file pass through a shuffle buffer to decorrelate batches.
+    files uniformly at random. Positions within each file pass through a
+    shuffle buffer to decorrelate batches.
 
     The iterator is infinite — the training loop controls how many steps
     to consume before reloading.
@@ -82,13 +81,10 @@ class ReplayBuffer(IterableDataset):
 
     SHUFFLE_BUFFER_SIZE = 100_000
 
-    def __init__(self, data_dir: Path, max_positions: int = 5_000_000,
-                 half_life: float | None = 10800.0):
+    def __init__(self, data_dir: Path, max_positions: int = 5_000_000):
         self.data_dir = data_dir
         self.max_positions = max_positions
-        self.half_life = half_life
         self.files, self.total_positions = self._select_files()
-        self.weights = self._compute_weights()
 
     def _select_files(self) -> tuple[list[Path], int]:
         all_files = sorted(
@@ -115,38 +111,19 @@ class ReplayBuffer(IterableDataset):
         total = min(total, self.max_positions)
         return selected, total
 
-    def _compute_weights(self) -> list[float]:
-        if not self.files:
-            return []
-        self._mtimes = [f.stat().st_mtime for f in self.files]
-        if self.half_life is None:
-            return [1.0] * len(self.files)
-        newest = max(self._mtimes)
-        return [math.exp(-(newest - t) / self.half_life) for t in self._mtimes]
-
     def stats(self) -> dict:
         """Return buffer diagnostics for logging."""
         if not self.files:
             return {}
         now = time.time()
-        ages = sorted(now - t for t in self._mtimes)
+        mtimes = [f.stat().st_mtime for f in self.files]
+        ages = sorted(now - t for t in mtimes)
         # Parse version from filenames like sp_v5_... or im_v0_...
-        file_versions = []
+        version_counts: dict[str, int] = {}
         for f in self.files:
             parts = f.name.split("_")
-            file_versions.append(parts[1] if len(parts) >= 2 else "unknown")
-        version_counts: dict[str, int] = {}
-        for v in file_versions:
+            v = parts[1] if len(parts) >= 2 else "unknown"
             version_counts[v] = version_counts.get(v, 0) + 1
-        # Effective sampling weight per version
-        total_weight = sum(self.weights)
-        version_weight: dict[str, float] = {}
-        for v, w in zip(file_versions, self.weights):
-            version_weight[v] = version_weight.get(v, 0.0) + w
-        version_weight_pct = {
-            v: round(w / total_weight * 100, 1)
-            for v, w in sorted(version_weight.items())
-        }
         return {
             "files": len(self.files),
             "positions": self.total_positions,
@@ -154,7 +131,6 @@ class ReplayBuffer(IterableDataset):
             "newest_age_min": round(ages[0] / 60, 1),
             "median_age_min": round(ages[len(ages) // 2] / 60, 1),
             "versions": version_counts,
-            "weight_pct_by_version": version_weight_pct,
         }
 
     def __iter__(self):
@@ -164,8 +140,8 @@ class ReplayBuffer(IterableDataset):
         buf_b, buf_p, buf_o = [], [], []
 
         while True:
-            # Pick a file weighted by recency
-            [chosen] = random.choices(self.files, weights=self.weights, k=1)
+            # Pick a file uniformly at random
+            [chosen] = random.choices(self.files, k=1)
             try:
                 data = np.load(chosen)
                 boards, policies, outcomes = data["boards"], data["policies"], data["outcomes"]
@@ -244,8 +220,7 @@ def _run_bootstrap(cfg: AsyncConfig, model: torch.nn.Module,
     logger.info("=" * 60)
 
     dataset = ReplayBuffer(cfg.training_data_dir,
-                           max_positions=cfg.replay_buffer_size,
-                           half_life=None)
+                           max_positions=cfg.replay_buffer_size)
     dataloader = DataLoader(dataset, batch_size=cfg.batch_size, num_workers=0)
 
     model.train()
@@ -334,10 +309,10 @@ def _run_bootstrap(cfg: AsyncConfig, model: torch.nn.Module,
 
 def _log_buffer_stats(prefix: str, s: dict) -> None:
     logger.info(
-        "{}: {:,} pos, {} files | age: {:.0f}–{:.0f}min (median {:.0f}min) | weight: {}",
+        "{}: {:,} pos, {} files | age: {:.0f}–{:.0f}min (median {:.0f}min) | versions: {}",
         prefix, s.get("positions", 0), s.get("files", 0),
         s.get("newest_age_min", 0), s.get("oldest_age_min", 0),
-        s.get("median_age_min", 0), s.get("weight_pct_by_version", {}),
+        s.get("median_age_min", 0), s.get("versions", {}),
     )
 
 
@@ -365,8 +340,8 @@ def run_trainer(cfg: AsyncConfig) -> None:
         device = torch.device("mps")
     else:
         device = torch.device("cpu")
-    logger.info("Trainer starting on device: {} | half_life={:.0f}s buffer={:,} steps/cycle={}",
-                device, cfg.sample_half_life, cfg.replay_buffer_size, cfg.steps_per_cycle)
+    logger.info("Trainer starting on device: {} | buffer={:,} steps/cycle={}",
+                device, cfg.replay_buffer_size, cfg.steps_per_cycle)
 
     current_version = _read_model_version(cfg)
 
@@ -412,8 +387,7 @@ def run_trainer(cfg: AsyncConfig) -> None:
         # Load data
         def reload_buffer():
             ds = ReplayBuffer(cfg.training_data_dir,
-                              max_positions=cfg.replay_buffer_size,
-                              half_life=cfg.sample_half_life)
+                              max_positions=cfg.replay_buffer_size)
             dl = DataLoader(ds, batch_size=cfg.batch_size, num_workers=0)
             return ds, dl
 

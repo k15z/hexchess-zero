@@ -55,7 +55,7 @@ python -m training elo-service             # run continuous Elo rating service
 Async distributed AlphaZero loop: workers generate self-play data continuously, trainer promotes every model unconditionally after each cycle. Elo service tracks strength independently.
 
 - **worker.py** — Continuous self-play loop. Polls for model updates, plays games using MCTS + latest model, flushes `.npz` batches to shared storage.
-- **trainer_loop.py** — Continuous trainer loop. Samples from a recency-weighted replay buffer (5M positions, 3-hour half-life), trains for N steps, exports ONNX, promotes unconditionally. Buffer reloaded every 1K steps to pick up fresh worker data. Saves versioned snapshots (`models/vN.onnx`).
+- **trainer_loop.py** — Continuous trainer loop. Samples uniformly from a sliding-window replay buffer (5M positions), trains for N steps, exports ONNX, promotes unconditionally. Buffer reloaded every 1K steps to pick up fresh worker data. Saves versioned snapshots (`models/vN.onnx`).
 - **model.py** — `HexChessNet`: conv input → 6 residual blocks (128 filters) → policy head + WDL value head. Input `(19, 11, 11)`, policy output size = `num_move_indices()`, WDL output = 3 logits (Win/Draw/Loss).
 - **export.py** — PyTorch → ONNX. Softmax applied to policy logits at inference time in evaluator, not in the model.
 - **elo.py** — Shared Elo types: Player protocol, MinimaxPlayer, MctsPlayer, game play, MLE Elo computation.
