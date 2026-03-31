@@ -15,8 +15,6 @@ Two training regimes:
 
 import json
 import random
-import signal
-import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,14 +29,6 @@ from .config import AsyncConfig
 from .export import export_to_onnx
 from .model import build_model
 from .slack import notify_training_cycle
-
-_shutdown_requested = False
-
-
-def _handle_signal(signum, frame):
-    global _shutdown_requested
-    _shutdown_requested = True
-    logger.warning("Shutdown requested (signal {}), finishing current cycle...", signum)
 
 
 def _read_model_version(cfg: AsyncConfig) -> int:
@@ -271,16 +261,13 @@ def _run_bootstrap(cfg: AsyncConfig, model: torch.nn.Module,
                 cfg.min_positions_to_start)
 
     # Wait for enough data
-    while not _shutdown_requested:
+    while True:
         available = _count_positions(cfg.training_data_dir)
         if available >= cfg.min_positions_to_start:
             break
         logger.info("Waiting for data: {:,}/{:,} positions",
                     available, cfg.min_positions_to_start)
         time.sleep(30)
-
-    if _shutdown_requested:
-        return 0
 
     total_steps_target = cfg.bootstrap_steps
 
@@ -301,7 +288,7 @@ def _run_bootstrap(cfg: AsyncConfig, model: torch.nn.Module,
     t0 = time.time()
 
     for boards, policies, outcomes in dataloader:
-        if _shutdown_requested or total_steps >= total_steps_target:
+        if total_steps >= total_steps_target:
             break
 
         boards = boards.to(device)
@@ -337,11 +324,6 @@ def _run_bootstrap(cfg: AsyncConfig, model: torch.nn.Module,
                 avg_p, avg_v, avg_p + avg_v,
                 total_steps / elapsed, elapsed,
             )
-
-    if _shutdown_requested:
-        torch.save(model.state_dict(), cfg.candidate_checkpoint_path)
-        logger.info("Saved checkpoint before shutdown.")
-        return 0
 
     train_elapsed = time.time() - t0
     logger.info("Bootstrap training complete: {:,} steps in {:.0f}s", total_steps, train_elapsed)
@@ -400,9 +382,6 @@ def _log_event(cfg: AsyncConfig, event: dict) -> None:
 
 def run_trainer(cfg: AsyncConfig) -> None:
     """Run the continuous trainer loop."""
-    signal.signal(signal.SIGTERM, _handle_signal)
-    signal.signal(signal.SIGINT, _handle_signal)
-
     cfg.ensure_dirs()
 
     if torch.cuda.is_available():
@@ -431,8 +410,6 @@ def run_trainer(cfg: AsyncConfig) -> None:
     # Bootstrap: train on imitation data if no model exists yet
     if not cfg.best_model_path.exists():
         current_version = _run_bootstrap(cfg, model, optimizer, device)
-        if _shutdown_requested:
-            return
 
     cycle = 0
     total_steps_all_time = 0
@@ -440,7 +417,7 @@ def run_trainer(cfg: AsyncConfig) -> None:
                          max_seed=cfg.steps_per_cycle,
                          max_tokens=float(cfg.steps_per_cycle))
 
-    while not _shutdown_requested:
+    while True:
         cycle += 1
         cycle_t0 = time.time()
 
@@ -477,15 +454,13 @@ def run_trainer(cfg: AsyncConfig) -> None:
         if not bucket.has_budget():
             logger.info("Train bucket empty ({:.0f} tokens), waiting for new data...",
                         bucket.tokens)
-            while not bucket.has_budget() and not _shutdown_requested:
+            while not bucket.has_budget():
                 time.sleep(30)
                 dataset, dataloader = reload_buffer()
                 bucket.update(_count_positions(cfg.training_data_dir))
                 if not bucket.has_budget():
                     logger.info("  Still waiting... bucket={:.0f} tokens, {:,} cumulative positions",
                                 bucket.tokens, bucket._cumulative_positions)
-            if _shutdown_requested:
-                break
 
         buf_stats = dataset.stats()
         _log_buffer_stats("Replay buffer", buf_stats)
@@ -502,22 +477,20 @@ def run_trainer(cfg: AsyncConfig) -> None:
 
         logger.info("Training for {} steps (batch_size={})...", cfg.steps_per_cycle, cfg.batch_size)
 
-        while step < cfg.steps_per_cycle and not _shutdown_requested:
+        while step < cfg.steps_per_cycle:
             # Wait for budget if bucket is exhausted mid-cycle
             if not bucket.has_budget():
                 logger.info("  Bucket empty mid-cycle at step {}, waiting for new data...", step)
-                while not bucket.has_budget() and not _shutdown_requested:
+                while not bucket.has_budget():
                     time.sleep(30)
                     dataset, dataloader = reload_buffer()
                     bucket.update(_count_positions(cfg.training_data_dir))
                     if not bucket.has_budget():
                         logger.info("    Still waiting... bucket={:.0f} tokens, {:,} cumulative positions",
                                     bucket.tokens, bucket._cumulative_positions)
-                if _shutdown_requested:
-                    break
 
             for boards, policies, outcomes in dataloader:
-                if _shutdown_requested or step >= cfg.steps_per_cycle or not bucket.has_budget():
+                if step >= cfg.steps_per_cycle or not bucket.has_budget():
                     break
 
                 boards = boards.to(device)
@@ -577,11 +550,6 @@ def run_trainer(cfg: AsyncConfig) -> None:
             step, train_elapsed, avg_policy, avg_value,
         )
 
-        if _shutdown_requested:
-            torch.save(model.state_dict(), cfg.candidate_checkpoint_path)
-            logger.info("Saved checkpoint before shutdown.")
-            break
-
         # Export candidate
         logger.info("Exporting candidate ONNX model...")
         candidate_pt = cfg.candidate_checkpoint_path
@@ -624,6 +592,3 @@ def run_trainer(cfg: AsyncConfig) -> None:
             policy_loss=avg_policy, value_loss=avg_value,
             elapsed_seconds=cycle_elapsed,
         )
-
-    logger.info("Trainer shutdown.")
-    sys.exit(0)

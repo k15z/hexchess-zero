@@ -16,8 +16,6 @@ from __future__ import annotations
 import json
 import math
 import random
-import signal
-import sys
 import time
 from collections import OrderedDict
 from datetime import datetime, timezone
@@ -40,14 +38,6 @@ try:
     import hexchess
 except ImportError:
     hexchess = None
-
-_shutdown_requested = False
-
-
-def _handle_signal(signum, frame):
-    global _shutdown_requested
-    _shutdown_requested = True
-    logger.warning("Shutdown requested (signal {}), finishing current game...", signum)
 
 
 # ---------------------------------------------------------------------------
@@ -417,9 +407,6 @@ def run_elo_service(
     notify_interval: int = 20,
 ) -> None:
     """Run the continuous Elo rating service."""
-    signal.signal(signal.SIGTERM, _handle_signal)
-    signal.signal(signal.SIGINT, _handle_signal)
-
     state_path = _data_root() / "elo_state.json"
     logs_dir = _data_root() / "logs"
     models_dir = _data_root() / "models"
@@ -429,7 +416,7 @@ def run_elo_service(
 
     logger.info("Elo service starting ({} games in state)", state["total_games"])
 
-    while not _shutdown_requested:
+    while True:
         # 1. Sync player pool
         path_map, new_models = _sync_player_pool(state, models_dir, max_versions)
 
@@ -505,12 +492,6 @@ def run_elo_service(
 
         # 12. Save state
         _save_state(state, state_path)
-
-    # Graceful shutdown
-    _recompute_elo(state)
-    _save_state(state, state_path)
-    logger.info("Elo service shutdown. {} total games played.", state["total_games"])
-    sys.exit(0)
 
 
 def _pair_game_count(state: dict, pair_key: str) -> int:
