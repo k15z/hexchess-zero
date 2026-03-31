@@ -20,6 +20,7 @@ import numpy as np
 from loguru import logger
 
 from .config import AsyncConfig
+from .imitation import _play_imitation_game, _flush_samples as _flush_imitation_samples
 
 try:
     import hexchess
@@ -143,13 +144,35 @@ def run_worker(cfg: AsyncConfig) -> None:
     cfg.ensure_dirs()
 
     current_version, model_path = _read_model_version(cfg)
+
+    # Bootstrap: generate imitation data from minimax until a model appears
+    if model_path is None:
+        logger.info("No model found — generating minimax imitation data (depth {})",
+                     cfg.imitation_depth)
+        imitation_games = 0
+        imitation_samples: list[dict] = []
+        flush_every = cfg.worker_batch_size
+        while model_path is None:
+            samples = _play_imitation_game(cfg)
+            imitation_samples.extend(samples)
+            imitation_games += 1
+            if imitation_games % flush_every == 0 and imitation_samples:
+                path = _flush_imitation_samples(imitation_samples, cfg.training_data_dir)
+                logger.info("Imitation game {}: flushed {} positions to {}",
+                            imitation_games, len(imitation_samples), path.name)
+                imitation_samples = []
+                current_version, model_path = _read_model_version(cfg)
+        if imitation_samples:
+            _flush_imitation_samples(imitation_samples, cfg.training_data_dir)
+        logger.info("Model appeared (v{}), switching to self-play", current_version)
+
     batch_size = cfg.worker_batch_size
     total_games = 0
     total_positions = 0
 
-    logger.info("Worker starting: {} games/batch, {} sims/move",
+    logger.info("Worker starting self-play: {} games/batch, {} sims/move",
                 batch_size, cfg.num_simulations)
-    logger.info("Model version: v{} ({})", current_version, model_path or "random")
+    logger.info("Model version: v{} ({})", current_version, model_path)
 
     search = hexchess.MctsSearch(
         simulations=cfg.num_simulations,

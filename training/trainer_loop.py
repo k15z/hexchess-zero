@@ -293,18 +293,8 @@ def run_trainer(cfg: AsyncConfig) -> None:
     total_steps_all_time = 0
 
     while not _shutdown_requested:
-        # Bootstrap: generate imitation data if no model exists yet
-        if not cfg.best_model_path.exists():
-            has_any_data = any(
-                f for f in cfg.training_data_dir.glob("*.npz") if ".tmp" not in f.name
-            )
-            if not has_any_data:
-                from .imitation import generate_imitation_data
-                logger.info("No model found. Generating minimax imitation data...")
-                generate_imitation_data(cfg)
-                continue
-
         # Bootstrap gate: wait for minimum data before first cycle
+        # (workers generate imitation data when no model exists)
         available = _estimate_positions(cfg.training_data_dir)
         if available < cfg.min_positions_to_start:
             logger.info("Waiting for data: ~{:,}/{:,} positions",
