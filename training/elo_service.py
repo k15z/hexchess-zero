@@ -26,11 +26,11 @@ from pathlib import Path
 from loguru import logger
 
 from .config import _data_root
-from .elo_ranking import (
+from .elo import (
     MctsPlayer,
     MinimaxPlayer,
     Player,
-    _baselines,
+    baselines,
     compute_elo,
     format_elo_table,
     play_game,
@@ -148,7 +148,7 @@ class PlayerCache:
     def _init_baselines(self) -> None:
         if self._baselines:
             return
-        for p in _baselines(self.simulations):
+        for p in baselines(self.simulations):
             self._baselines[p.name] = p
             self._cache[p.name] = p
 

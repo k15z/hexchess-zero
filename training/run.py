@@ -41,14 +41,10 @@ def cmd_trainer(args) -> None:
     from .trainer_loop import run_trainer
 
     cfg = AsyncConfig()
-    if args.simulations is not None:
-        cfg.num_simulations = args.simulations
     if args.steps is not None:
         cfg.steps_per_cycle = args.steps
     if args.batch_size is not None:
         cfg.batch_size = args.batch_size
-    if args.arena_games is not None:
-        cfg.arena_games = args.arena_games
 
     run_trainer(cfg)
 
@@ -62,8 +58,6 @@ def cmd_status(args) -> None:
         meta = json.loads(cfg.best_meta_path.read_text())
         print(f"Model: v{meta.get('version', '?')} "
               f"(promoted {meta.get('timestamp', '?')})")
-        if "win_rate" in meta:
-            print(f"  Win rate: {meta['win_rate']:.0%}")
     else:
         print("Model: none (no best model yet)")
 
@@ -120,10 +114,8 @@ def main() -> None:
 
     # --- Trainer ---
     trainer_parser = subparsers.add_parser("trainer", help="Run continuous trainer loop")
-    trainer_parser.add_argument("--simulations", type=int, default=None, help="MCTS simulations for arena")
     trainer_parser.add_argument("--steps", type=int, default=None, help="Training steps per cycle")
     trainer_parser.add_argument("--batch-size", type=int, default=None, help="Training batch size")
-    trainer_parser.add_argument("--arena-games", type=int, default=None, help="Arena games per evaluation")
 
     # --- Imitation ---
     imit_parser = subparsers.add_parser("imitation", help="Generate minimax imitation data")
@@ -134,12 +126,6 @@ def main() -> None:
     # --- Status & progress ---
     subparsers.add_parser("status", help="Show training cluster status")
     subparsers.add_parser("progress", help="Show training progress summary")
-
-    # --- Elo ranking (batch, one-shot) ---
-    elo_parser = subparsers.add_parser("elo-ranking", help="Run batch Elo ranking vs baselines")
-    elo_parser.add_argument("--versions", type=int, default=10, help="Number of recent model versions to rank")
-    elo_parser.add_argument("--games-per-side", type=int, default=3, help="Games per side per matchup")
-    elo_parser.add_argument("--simulations", type=int, default=500, help="MCTS simulations per move")
 
     # --- Elo service (continuous) ---
     elo_svc_parser = subparsers.add_parser("elo-service", help="Run continuous Elo rating service")
@@ -174,13 +160,6 @@ def main() -> None:
     elif args.command == "progress":
         from .metrics import print_progress
         print_progress()
-    elif args.command == "elo-ranking":
-        from .elo_ranking import run_elo_ranking
-        run_elo_ranking(
-            num_versions=args.versions,
-            games_per_side=args.games_per_side,
-            simulations=args.simulations,
-        )
     elif args.command == "elo-service":
         _configure_logging()
         from .elo_service import run_elo_service

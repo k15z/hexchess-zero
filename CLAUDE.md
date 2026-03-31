@@ -29,7 +29,6 @@ python -m training trainer                # run continuous trainer loop
 python -m training status                 # show cluster status
 python -m training progress               # show training progress table
 python -m training elo-service             # run continuous Elo rating service
-python -m training elo-ranking            # run batch Elo ranking (one-shot)
 ```
 
 ## Architecture
@@ -53,15 +52,14 @@ python -m training elo-ranking            # run batch Elo ranking (one-shot)
 
 ### Training (`training/`)
 
-Async distributed AlphaZero loop: workers generate self-play data continuously, trainer runs training cycles and promotes models via inline arena evaluation.
+Async distributed AlphaZero loop: workers generate self-play data continuously, trainer promotes every model unconditionally after each cycle. Elo service tracks strength independently.
 
 - **worker.py** — Continuous self-play loop. Polls for model updates, plays games using MCTS + latest model, flushes `.npz` batches to shared storage.
-- **trainer_loop.py** — Continuous trainer loop. Trains on sliding window of recent data, exports candidate ONNX, runs inline arena, promotes if win rate > threshold. Saves versioned snapshots (`models/vN.onnx`) on promotion.
+- **trainer_loop.py** — Continuous trainer loop. Samples from a recency-weighted replay buffer (5M positions, 3-hour half-life), trains for N steps, exports ONNX, promotes unconditionally. Buffer reloaded every 1K steps to pick up fresh worker data. Saves versioned snapshots (`models/vN.onnx`).
 - **model.py** — `HexChessNet`: conv input → 6 residual blocks (128 filters) → policy head + WDL value head. Input `(19, 11, 11)`, policy output size = `num_move_indices()`, WDL output = 3 logits (Win/Draw/Loss).
 - **export.py** — PyTorch → ONNX. Softmax applied to policy logits at inference time in evaluator, not in the model.
-- **arena.py** — Plays individual arena games between two MCTS agents.
+- **elo.py** — Shared Elo types: Player protocol, MinimaxPlayer, MctsPlayer, game play, MLE Elo computation.
 - **elo_service.py** — Continuous Elo rating service (k8s Deployment). Uncertainty-based matchmaking: picks the least-played pair, plays one game, updates Elo. Persists state to `elo_state.json`. LRU-caches player objects to bound memory.
-- **elo_ranking.py** — Batch Elo ranking (one-shot): plays full round-robin between baselines and recent model versions. Kept for manual use.
 - **metrics.py** — Reads trainer logs and displays progress summary table.
 - **config.py** — All hyperparameters and derived paths (`AsyncConfig`).
 

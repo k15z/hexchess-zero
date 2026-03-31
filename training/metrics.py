@@ -36,7 +36,7 @@ def print_progress() -> None:
     # Header
     header = (
         f"{'Cycle':>6}  {'Version':>8}  {'Policy':>8}  {'Value':>8}  "
-        f"{'Total':>8}  {'Positions':>10}  {'Promoted':>9}  {'Time':>6}"
+        f"{'Total':>8}  {'Positions':>10}  {'Time':>6}"
     )
     print(header)
     print("-" * len(header))
@@ -48,13 +48,12 @@ def print_progress() -> None:
         vl = e.get("value_loss", "")
         tl = round(pl + vl, 4) if isinstance(pl, (int, float)) and isinstance(vl, (int, float)) else ""
         positions = e.get("positions", "")
-        promoted = "yes" if e.get("promoted") else "no"
         elapsed = e.get("elapsed_seconds", 0)
         minutes = f"{elapsed / 60:.1f}m"
 
         print(
             f"{cycle:>6}  {version:>8}  {pl:>8}  {vl:>8}  "
-            f"{tl:>8}  {positions:>10}  {promoted:>9}  {minutes:>6}"
+            f"{tl:>8}  {positions:>10}  {minutes:>6}"
         )
 
     print(f"\n{len(entries)} training cycle(s) logged to {log_path}")
@@ -70,6 +69,6 @@ def print_progress() -> None:
             ratings = latest.get("ratings", {})
             ts = latest.get("timestamp", "?")
             if ratings:
-                from .elo_ranking import format_elo_table
+                from .elo import format_elo_table
                 print(f"\nLatest Elo ranking ({ts}):")
                 print(format_elo_table(ratings))

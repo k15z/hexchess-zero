@@ -1,12 +1,14 @@
 from __future__ import annotations
 """Continuous trainer for async distributed training.
 
-Runs an infinite loop: collect recent training data from the sliding window,
-train for N steps, export candidate, run arena inline, promote or discard,
-prune old data, repeat.
+Runs continuously: sample from recency-weighted replay buffer, train for N
+steps, export and promote unconditionally, repeat. No generation gating —
+fresh worker data is picked up via periodic buffer reloads. Strength tracking
+is handled by the Elo service.
 """
 
 import json
+import math
 import signal
 import sys
 import time
@@ -21,7 +23,6 @@ import torch.optim as optim
 from loguru import logger
 from torch.utils.data import DataLoader, IterableDataset
 
-from .arena import play_arena_game
 from .config import AsyncConfig
 from .export import export_to_onnx
 from .model import build_model
@@ -59,18 +60,26 @@ def _atomic_copy(src: Path, dst: Path) -> None:
     tmp.rename(dst)
 
 
-class SlidingWindowBuffer(IterableDataset):
-    """Streams training data from the flat training_data/ directory.
+class ReplayBuffer(IterableDataset):
+    """Streams training data with recency-weighted sampling.
 
-    Selects the most recent .npz files up to max_positions.
+    Selects the most recent .npz files up to max_positions, then samples
+    files with probability proportional to exp(-age / half_life). Positions
+    within each file pass through a shuffle buffer to decorrelate batches.
+
+    The iterator is infinite — the training loop controls how many steps
+    to consume before reloading.
     """
 
-    SHUFFLE_BUFFER_SIZE = 10_000
+    SHUFFLE_BUFFER_SIZE = 100_000
 
-    def __init__(self, data_dir: Path, max_positions: int = 500_000):
+    def __init__(self, data_dir: Path, max_positions: int = 5_000_000,
+                 half_life: float = 10800.0):
         self.data_dir = data_dir
         self.max_positions = max_positions
+        self.half_life = half_life
         self.files, self.total_positions = self._select_files()
+        self.weights = self._compute_weights()
 
     def _select_files(self) -> tuple[list[Path], int]:
         all_files = sorted(
@@ -97,30 +106,66 @@ class SlidingWindowBuffer(IterableDataset):
         total = min(total, self.max_positions)
         return selected, total
 
+    def _compute_weights(self) -> list[float]:
+        if not self.files:
+            return []
+        self._mtimes = [f.stat().st_mtime for f in self.files]
+        newest = max(self._mtimes)
+        return [math.exp(-(newest - t) / self.half_life) for t in self._mtimes]
+
+    def stats(self) -> dict:
+        """Return buffer diagnostics for logging."""
+        if not self.files:
+            return {}
+        now = time.time()
+        ages = sorted(now - t for t in self._mtimes)
+        # Parse version from filenames like sp_v5_... or im_v0_...
+        file_versions = []
+        for f in self.files:
+            parts = f.name.split("_")
+            file_versions.append(parts[1] if len(parts) >= 2 else "unknown")
+        version_counts: dict[str, int] = {}
+        for v in file_versions:
+            version_counts[v] = version_counts.get(v, 0) + 1
+        # Effective sampling weight per version
+        total_weight = sum(self.weights)
+        version_weight: dict[str, float] = {}
+        for v, w in zip(file_versions, self.weights):
+            version_weight[v] = version_weight.get(v, 0.0) + w
+        version_weight_pct = {
+            v: round(w / total_weight * 100, 1)
+            for v, w in sorted(version_weight.items())
+        }
+        return {
+            "files": len(self.files),
+            "positions": self.total_positions,
+            "oldest_age_min": round(ages[-1] / 60, 1),
+            "newest_age_min": round(ages[0] / 60, 1),
+            "median_age_min": round(ages[len(ages) // 2] / 60, 1),
+            "versions": version_counts,
+            "weight_pct_by_version": version_weight_pct,
+        }
+
     def __iter__(self):
-        files = self.files.copy()
-        random.shuffle(files)
+        if not self.files:
+            return
 
         buf_b, buf_p, buf_o = [], [], []
-        positions_remaining = self.max_positions
 
-        for f in files:
+        while True:
+            # Pick a file weighted by recency
+            [chosen] = random.choices(self.files, weights=self.weights, k=1)
             try:
-                data = np.load(f)
+                data = np.load(chosen)
                 boards, policies, outcomes = data["boards"], data["policies"], data["outcomes"]
             except (OSError, ValueError, KeyError):
                 continue
-
-            if len(boards) > positions_remaining:
-                boards = boards[-positions_remaining:]
-                policies = policies[-positions_remaining:]
-                outcomes = outcomes[-positions_remaining:]
-            positions_remaining -= len(boards)
 
             buf_b.extend(boards)
             buf_p.extend(policies)
             buf_o.extend(outcomes)
 
+            # Drain shuffle buffer when large enough
             while len(buf_b) >= self.SHUFFLE_BUFFER_SIZE:
                 perm = list(range(len(buf_b)))
                 random.shuffle(perm)
@@ -134,24 +179,13 @@ class SlidingWindowBuffer(IterableDataset):
                 buf_p = [buf_p[j] for j in keep]
                 buf_o = [buf_o[j] for j in keep]
 
-            if positions_remaining <= 0:
-                break
-
-        # Flush remaining
-        perm = list(range(len(buf_b)))
-        random.shuffle(perm)
-        for j in perm:
-            yield (torch.from_numpy(buf_b[j]),
-                   torch.from_numpy(buf_p[j]),
-                   torch.tensor(buf_o[j], dtype=torch.float32))
 
 
-def _count_available_positions(data_dir: Path) -> int:
-    """Estimate positions available by counting .npz files and sampling size."""
+def _estimate_positions(data_dir: Path) -> int:
+    """Estimate total positions by sampling a few files."""
     npz_files = [f for f in data_dir.glob("*.npz") if ".tmp" not in f.name]
     if not npz_files:
         return 0
-    # Sample up to 3 files to estimate average positions per file
     sample = npz_files[-min(3, len(npz_files)):]
     total_sampled = 0
     for f in sample:
@@ -160,68 +194,13 @@ def _count_available_positions(data_dir: Path) -> int:
                 total_sampled += len(data["outcomes"])
         except (OSError, ValueError, KeyError):
             continue
-    if not sample:
+    if not total_sampled:
         return 0
-    avg_per_file = total_sampled / len(sample)
-    return int(avg_per_file * len(npz_files))
-
-
-def _run_arena_inline(cfg: AsyncConfig) -> dict:
-    """Run arena: candidate vs best, return results dict."""
-    new_path = str(cfg.candidate_model_path) if cfg.candidate_model_path.exists() else None
-    old_path = str(cfg.best_model_path) if cfg.best_model_path.exists() else None
-
-    logger.info("Arena: {} games, {} sims/move",
-                cfg.arena_games, cfg.arena_simulations)
-
-    new_wins = old_wins = draws = 0
-    t0 = time.time()
-    last_log_time = t0
-
-    for i in range(cfg.arena_games):
-        new_goes_first = i % 2 == 0
-        result = play_arena_game(
-            cfg.arena_simulations, new_goes_first, new_path, old_path,
-        )
-        game_num = i + 1
-
-        if result == "new":
-            new_wins += 1
-        elif result == "old":
-            old_wins += 1
-        else:
-            draws += 1
-
-        now = time.time()
-        total_decided = new_wins + old_wins
-        rate = new_wins / total_decided if total_decided > 0 else 0.5
-        is_last = game_num == cfg.arena_games
-        if game_num == 1 or is_last or (now - last_log_time) >= 15:
-            last_log_time = now
-            elapsed = now - t0
-            logger.info("  arena {}/{} (new={} old={} draw={} rate={:.0%}) {:.0f}s",
-                        game_num, cfg.arena_games, new_wins, old_wins, draws, rate, elapsed)
-
-    total_decided = new_wins + old_wins
-    win_rate = new_wins / total_decided if total_decided > 0 else 0.5
-    promoted = win_rate >= cfg.win_threshold
-
-    elapsed = time.time() - t0
-    verdict = "PROMOTED" if promoted else "kept current"
-    logger.info("Arena done: new={} old={} draw={} rate={:.0%} ({:.0f}s) -> {}",
-                new_wins, old_wins, draws, win_rate, elapsed, verdict)
-
-    return {
-        "new_wins": new_wins,
-        "old_wins": old_wins,
-        "draws": draws,
-        "win_rate": win_rate,
-        "promoted": promoted,
-    }
+    return int(total_sampled / len(sample) * len(npz_files))
 
 
 def _prune_old_data(cfg: AsyncConfig) -> int:
-    """Remove old .npz files beyond the sliding window and stale .tmp files."""
+    """Remove old .npz files beyond the replay buffer limit and stale .tmp files."""
     all_files = sorted(
         (f for f in cfg.training_data_dir.glob("*.npz") if ".tmp" not in f.name),
         key=lambda f: f.stat().st_mtime,
@@ -264,6 +243,15 @@ def _prune_old_data(cfg: AsyncConfig) -> int:
     return len(to_remove) + removed
 
 
+def _log_buffer_stats(prefix: str, s: dict) -> None:
+    logger.info(
+        "{}: {:,} pos, {} files | age: {:.0f}–{:.0f}min (median {:.0f}min) | weight: {}",
+        prefix, s.get("positions", 0), s.get("files", 0),
+        s.get("newest_age_min", 0), s.get("oldest_age_min", 0),
+        s.get("median_age_min", 0), s.get("weight_pct_by_version", {}),
+    )
+
+
 def _log_event(cfg: AsyncConfig, event: dict) -> None:
     log_path = cfg.logs_dir / "trainer.jsonl"
     event["timestamp"] = datetime.now(timezone.utc).isoformat()
@@ -284,7 +272,8 @@ def run_trainer(cfg: AsyncConfig) -> None:
         device = torch.device("mps")
     else:
         device = torch.device("cpu")
-    logger.info("Trainer starting on device: {}", device)
+    logger.info("Trainer starting on device: {} | half_life={:.0f}s buffer={:,} steps/cycle={}",
+                device, cfg.sample_half_life, cfg.replay_buffer_size, cfg.steps_per_cycle)
 
     current_version = _read_model_version(cfg)
 
@@ -304,15 +293,22 @@ def run_trainer(cfg: AsyncConfig) -> None:
     total_steps_all_time = 0
 
     while not _shutdown_requested:
-        # Wait for enough training data
-        available = _count_available_positions(cfg.training_data_dir)
-        if available < cfg.min_positions_to_train:
-            if not cfg.best_model_path.exists():
+        # Bootstrap: generate imitation data if no model exists yet
+        if not cfg.best_model_path.exists():
+            has_any_data = any(
+                f for f in cfg.training_data_dir.glob("*.npz") if ".tmp" not in f.name
+            )
+            if not has_any_data:
                 from .imitation import generate_imitation_data
                 logger.info("No model found. Generating minimax imitation data...")
                 generate_imitation_data(cfg)
                 continue
-            logger.info("Waiting for data: ~{}/{} positions", available, cfg.min_positions_to_train)
+
+        # Bootstrap gate: wait for minimum data before first cycle
+        available = _estimate_positions(cfg.training_data_dir)
+        if available < cfg.min_positions_to_start:
+            logger.info("Waiting for data: ~{:,}/{:,} positions",
+                        available, cfg.min_positions_to_start)
             time.sleep(30)
             continue
 
@@ -335,7 +331,9 @@ def run_trainer(cfg: AsyncConfig) -> None:
 
         # Load data
         def reload_buffer():
-            ds = SlidingWindowBuffer(cfg.training_data_dir, max_positions=cfg.replay_buffer_size)
+            ds = ReplayBuffer(cfg.training_data_dir,
+                              max_positions=cfg.replay_buffer_size,
+                              half_life=cfg.sample_half_life)
             dl = DataLoader(ds, batch_size=cfg.batch_size, num_workers=0)
             return ds, dl
 
@@ -345,8 +343,8 @@ def run_trainer(cfg: AsyncConfig) -> None:
             time.sleep(30)
             continue
 
-        logger.info("Sliding window: {:,} positions from {} files",
-                     dataset.total_positions, len(dataset.files))
+        buf_stats = dataset.stats()
+        _log_buffer_stats("Replay buffer", buf_stats)
 
         # Step-based training
         model.train()
@@ -358,13 +356,9 @@ def run_trainer(cfg: AsyncConfig) -> None:
 
         logger.info("Training for {} steps (batch_size={})...", cfg.steps_per_cycle, cfg.batch_size)
 
-        training_done = False
-        data_passes = 0
-        while not training_done and not _shutdown_requested:
-            data_passes += 1
+        while step < cfg.steps_per_cycle and not _shutdown_requested:
             for boards, policies, outcomes in dataloader:
                 if _shutdown_requested or step >= cfg.steps_per_cycle:
-                    training_done = True
                     break
 
                 boards = boards.to(device)
@@ -406,25 +400,18 @@ def run_trainer(cfg: AsyncConfig) -> None:
                         steps_per_sec, elapsed,
                     )
 
-                # Periodic reload: pick up fresh worker data every N steps
-                if step % cfg.reload_interval == 0:
+                # Periodic reload: pick up fresh worker data and recompute weights
+                if step % cfg.reload_interval == 0 and step < cfg.steps_per_cycle:
                     dataset, dataloader = reload_buffer()
-                    logger.info("  Reloaded buffer: {:,} positions from {} files",
-                                dataset.total_positions, len(dataset.files))
-                    break  # restart the dataloader iteration
-            else:
-                # Dataset exhausted before reaching steps_per_cycle — reload
-                # with latest data (workers may have produced more)
-                if not training_done:
-                    dataset, dataloader = reload_buffer()
+                    _log_buffer_stats("  Reloaded buffer", dataset.stats())
+                    break  # restart with new dataloader
 
         train_elapsed = time.time() - train_t0
         avg_policy = cycle_policy_loss / max(step, 1)
         avg_value = cycle_value_loss / max(step, 1)
         logger.info(
-            "Training complete: {} steps in {:.0f}s ({} data pass{}) | policy={:.4f} value={:.4f}",
-            step, train_elapsed, data_passes, "es" if data_passes > 1 else "",
-            avg_policy, avg_value,
+            "Training complete: {} steps in {:.0f}s | policy={:.4f} value={:.4f}",
+            step, train_elapsed, avg_policy, avg_value,
         )
 
         if _shutdown_requested:
@@ -439,90 +426,40 @@ def run_trainer(cfg: AsyncConfig) -> None:
         torch.save(model.state_dict(), candidate_pt)
         export_to_onnx(candidate_pt, candidate_onnx, cfg)
 
-        # First model ever — auto-promote
-        if not cfg.best_model_path.exists():
-            new_version = current_version + 1
-            _atomic_copy(candidate_onnx, cfg.best_model_path)
-            _atomic_copy(candidate_pt, cfg.best_checkpoint_path)
-            _atomic_copy(candidate_onnx, cfg.models_dir / f"v{new_version}.onnx")
-            _atomic_write_json(cfg.best_meta_path, {
-                "version": new_version,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "auto_promoted": True,
-            })
-            current_version = new_version
-            cycle_elapsed = time.time() - cycle_t0
-            logger.info("Auto-promoted first model as v{} (cycle took {:.0f}s)",
-                        new_version, cycle_elapsed)
-
-            _log_event(cfg, {
-                "event": "promotion",
-                "version": new_version,
-                "auto": True,
-                "steps": step,
-                "total_steps": total_steps_all_time,
-                "policy_loss": round(avg_policy, 4),
-                "value_loss": round(avg_value, 4),
-                "elapsed_seconds": round(cycle_elapsed, 1),
-            })
-            notify_training_cycle(
-                cycle=cycle, version=new_version, steps=step,
-                total_steps=total_steps_all_time, positions=dataset.total_positions,
-                policy_loss=avg_policy, value_loss=avg_value,
-                promoted=True, elapsed_seconds=cycle_elapsed,
-            )
-            _prune_old_data(cfg)
-            continue
-
-        # Arena evaluation
-        arena_results = _run_arena_inline(cfg)
-
-        if arena_results["promoted"]:
-            new_version = current_version + 1
-            _atomic_copy(candidate_onnx, cfg.best_model_path)
-            _atomic_copy(candidate_pt, cfg.best_checkpoint_path)
-            _atomic_copy(candidate_onnx, cfg.models_dir / f"v{new_version}.onnx")
-            _atomic_write_json(cfg.best_meta_path, {
-                "version": new_version,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "win_rate": arena_results["win_rate"],
-            })
-            current_version = new_version
-            logger.info("Promoted to v{} (win rate: {:.0%})", new_version, arena_results["win_rate"])
-        else:
-            # Reload the best checkpoint since our candidate didn't win
-            logger.warning("Not promoted (win rate: {:.0%}). Reverting to v{}.",
-                           arena_results["win_rate"], current_version)
-            model.load_state_dict(torch.load(cfg.best_checkpoint_path, map_location=device, weights_only=True))
-            optimizer = optim.Adam(model.parameters(), lr=cfg.learning_rate, weight_decay=cfg.l2_regularization)
+        # Always promote — Elo service handles strength tracking
+        new_version = current_version + 1
+        _atomic_copy(candidate_onnx, cfg.best_model_path)
+        _atomic_copy(candidate_pt, cfg.best_checkpoint_path)
+        _atomic_copy(candidate_onnx, cfg.models_dir / f"v{new_version}.onnx")
+        _atomic_write_json(cfg.best_meta_path, {
+            "version": new_version,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+        current_version = new_version
 
         cycle_elapsed = time.time() - cycle_t0
-        logger.info("Cycle {} done in {:.0f}s | total steps: {:,}",
-                     cycle, cycle_elapsed, total_steps_all_time)
+        logger.info("Promoted to v{} (cycle {} done in {:.0f}s | total steps: {:,})",
+                     new_version, cycle, cycle_elapsed, total_steps_all_time)
 
         _log_event(cfg, {
             "event": "cycle_complete",
             "cycle": cycle,
-            "version": current_version,
-            "promoted": arena_results["promoted"],
-            "win_rate": arena_results["win_rate"],
+            "version": new_version,
             "steps": step,
             "total_steps": total_steps_all_time,
             "positions": dataset.total_positions,
             "policy_loss": round(avg_policy, 4),
             "value_loss": round(avg_value, 4),
             "elapsed_seconds": round(cycle_elapsed, 1),
+            "initial_buffer_stats": buf_stats,
         })
         notify_training_cycle(
-            cycle=cycle, version=current_version, steps=step,
+            cycle=cycle, version=new_version, steps=step,
             total_steps=total_steps_all_time, positions=dataset.total_positions,
             policy_loss=avg_policy, value_loss=avg_value,
-            promoted=arena_results["promoted"],
-            win_rate=arena_results["win_rate"],
             elapsed_seconds=cycle_elapsed,
         )
 
-        # Prune old data
         _prune_old_data(cfg)
 
     logger.info("Trainer shutdown.")
