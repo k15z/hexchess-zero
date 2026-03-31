@@ -239,7 +239,11 @@ class ReplayBuffer(IterableDataset):
 # ---------------------------------------------------------------------------
 
 def _count_positions(data_dir: Path) -> int:
-    """Count total positions across all .npz files."""
+    """Count total positions across all .npz files.
+
+    # TODO: This opens every .npz on disk. If file count becomes a bottleneck,
+    # switch to a counter file that workers atomically increment on each flush.
+    """
     total = 0
     for f in data_dir.glob("*.npz"):
         if ".tmp" in f.name:
@@ -507,8 +511,8 @@ def run_trainer(cfg: AsyncConfig) -> None:
                     dataset, dataloader = reload_buffer()
                     bucket.update(_count_positions(cfg.training_data_dir))
                     if not bucket.has_budget():
-                        logger.info("    Still waiting... bucket={:.0f} tokens, {:,} positions",
-                                    bucket.tokens, dataset.total_positions)
+                        logger.info("    Still waiting... bucket={:.0f} tokens, {:,} cumulative positions",
+                                    bucket.tokens, bucket._cumulative_positions)
                 if _shutdown_requested:
                     break
 

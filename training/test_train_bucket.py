@@ -142,3 +142,27 @@ def test_max_tokens_after_consume():
     bucket.update(200)  # capped to 100
     bucket.consume(80)  # down to 20, no re-capping
     assert bucket.tokens == 20.0
+
+
+def test_production_config():
+    """Simulate the actual production config: ratio=4, max_seed=5000, max_tokens=5000."""
+    bucket = TrainBucket(ratio=4.0, max_seed=5000, max_tokens=5000.0)
+
+    # Trainer starts with 2M existing positions — seed capped to 5000
+    bucket.update(2_000_000)
+    assert bucket.tokens == 5000.0
+
+    # Train a full cycle
+    bucket.consume(5000)
+    assert bucket.tokens == 0.0
+    assert not bucket.has_budget()
+
+    # Workers produce 2000 new positions -> 8000 tokens, capped to 5000
+    bucket.update(2_002_000)
+    assert bucket.tokens == 5000.0
+
+    # Train half a cycle, then workers add a small batch
+    bucket.consume(3000)
+    assert bucket.tokens == 2000.0
+    bucket.update(2_002_500)  # 500 new -> +2000, total 4000, under cap
+    assert bucket.tokens == 4000.0
