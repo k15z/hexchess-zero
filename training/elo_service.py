@@ -207,7 +207,7 @@ def _sync_player_pool(
     Returns (path_map, new_models) where path_map maps player name to model
     path (None for non-model players) and new_models lists newly discovered versions.
     """
-    baseline_names = {"Minimax-2", "Minimax-3", "Heuristic"}
+    baseline_names = {"Minimax-2", "Minimax-3", "Minimax-4", "Heuristic"}
     versions = _discover_versions(models_dir)
     all_version_names = {f"v{v}" for v, _ in versions}
     version_paths = {f"v{v}": str(p) for v, p in versions}
@@ -262,10 +262,20 @@ def _sync_player_pool(
 # ---------------------------------------------------------------------------
 
 
-def _select_pair(state: dict) -> tuple[str, str]:
+def _is_lopsided(result: dict, min_games: int = 30, threshold: float = 0.85) -> bool:
+    """Return True if one side dominates decisively."""
+    games = result["a_wins"] + result["b_wins"] + result["draws"]
+    if games < min_games:
+        return False
+    winner_wins = max(result["a_wins"], result["b_wins"])
+    return winner_wins / games >= threshold
+
+
+def _select_pair(state: dict) -> tuple[str, str] | None:
     """Pick the pair with highest uncertainty (fewest games played).
 
-    Returns (a, b) in canonical order.
+    Skips lopsided pairs where the outcome is already clear.
+    Returns (a, b) in canonical order, or None if all pairs are resolved.
     """
     players = state["active_players"]
     if len(players) < 2:
@@ -282,10 +292,17 @@ def _select_pair(state: dict) -> tuple[str, str]:
                 games = 0
             else:
                 games = result["a_wins"] + result["b_wins"] + result["draws"]
+                if _is_lopsided(result):
+                    logger.debug("Skipping lopsided pair: {}", key)
+                    continue
 
             # Uncertainty: inf for unplayed, 1/sqrt(n) otherwise
             uncertainty = float("inf") if games == 0 else 1.0 / math.sqrt(games)
             candidates.append((uncertainty, key))
+
+    # If all pairs are lopsided, signal caller to wait
+    if not candidates:
+        return None
 
     # Pick highest uncertainty, break ties randomly
     max_uncertainty = max(u for u, _ in candidates)
@@ -429,8 +446,13 @@ def run_elo_service(
         # 3. Track newly discovered models (notify after first Elo recompute)
         pending_notifications = new_models
 
-        # 4. Select most uncertain pair
-        a, b = _select_pair(state)
+        # 4. Select most uncertain pair (None if all resolved)
+        pair = _select_pair(state)
+        if pair is None:
+            logger.info("All pairs resolved, waiting for new models...")
+            time.sleep(60)
+            continue
+        a, b = pair
         pair_key = _pair_key(a, b)
 
         # 5. Assign colors

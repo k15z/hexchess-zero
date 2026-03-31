@@ -47,6 +47,7 @@ def baselines(simulations: int = 500) -> list[Player]:
     return [
         MinimaxPlayer(name="Minimax-2", depth=2),
         MinimaxPlayer(name="Minimax-3", depth=3),
+        MinimaxPlayer(name="Minimax-4", depth=4),
         MctsPlayer(name="Heuristic", simulations=simulations),
     ]
 
@@ -86,7 +87,7 @@ def compute_elo(
     players: list[str],
     results: list[dict],
     anchor: str = "Minimax-2",
-    anchor_elo: float = 0.0,
+    anchor_elo: float = 1500.0,
     iterations: int = 100,
 ) -> dict[str, float]:
     """Compute Elo ratings from pairwise results via iterative MLE.
