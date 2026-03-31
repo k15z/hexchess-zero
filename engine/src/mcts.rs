@@ -85,11 +85,7 @@ struct MctsNode {
 }
 
 impl MctsNode {
-    fn new(
-        action: Option<Move>,
-        action_index: Option<usize>,
-        prior: f32,
-    ) -> Self {
+    fn new(action: Option<Move>, action_index: Option<usize>, prior: f32) -> Self {
         Self {
             action,
             action_index,

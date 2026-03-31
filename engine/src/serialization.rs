@@ -310,7 +310,6 @@ fn promotion_ordinal(p: Option<PieceKind>) -> u8 {
     }
 }
 
-
 static MOVE_INDEX: LazyLock<MoveIndex> = LazyLock::new(|| {
     let entries = build_move_table();
     let mut reverse = std::collections::HashMap::with_capacity(entries.len());
