@@ -216,7 +216,10 @@ def run_worker(cfg: AsyncConfig) -> None:
         # Check for model update
         new_version, new_model_path = _read_model_version(cfg)
         if new_version > current_version:
-            logger.info("Model updated: v{} -> v{}", current_version, new_version)
+            versions_behind = new_version - current_version
+            logger.info("Model updated: v{} -> v{} ({} version{} behind)",
+                        current_version, new_version,
+                        versions_behind, "s" if versions_behind > 1 else "")
             current_version = new_version
             model_path = new_model_path
             search = hexchess.MctsSearch(

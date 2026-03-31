@@ -31,7 +31,7 @@ class _BaseConfig:
     batch_size: int = 256
     learning_rate: float = 0.001
     l2_regularization: float = 1e-4
-    replay_buffer_size: int = 500_000
+    replay_buffer_size: int = 5_000_000
 
     # --- Network architecture ---
     num_residual_blocks: int = 6
@@ -40,10 +40,6 @@ class _BaseConfig:
     board_height: int = 11
     board_width: int = 11
 
-    # --- Arena ---
-    arena_games: int = 50
-    win_threshold: float = 0.60
-    arena_simulations: int = 500
 
 
 @dataclass
@@ -58,13 +54,14 @@ class AsyncConfig(_BaseConfig):
 
     # --- Async-specific ---
     worker_batch_size: int = 5  # games per flush
-    steps_per_cycle: int = 5000  # training steps between arena evaluations
+    steps_per_cycle: int = 5000  # training steps per cycle
     reload_interval: int = 1000  # reload buffer from disk every N steps for fresh data
-    min_positions_to_train: int = 100_000  # wait for this much data before training
+    min_positions_to_start: int = 100_000  # bootstrap gate: min data before first cycle
+    sample_half_life: float = 10800.0  # recency weighting half-life in seconds (3 hours)
 
     # --- Imitation bootstrap ---
     imitation_depth: int = 3  # minimax search depth for imitation targets
-    imitation_num_games: int = 2000  # games to play for position diversity
+    imitation_num_games: int = 5000  # games to play for position diversity
     imitation_random_plies: int = 8  # random opening moves per game for diversity
     imitation_temperature: float = 200.0  # softmax temperature for centipawn scores → policy
 
