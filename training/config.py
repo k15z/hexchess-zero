@@ -62,6 +62,12 @@ class AsyncConfig(_BaseConfig):
     reload_interval: int = 1000  # reload buffer from disk every N steps for fresh data
     min_positions_to_train: int = 100_000  # wait for this much data before training
 
+    # --- Imitation bootstrap ---
+    imitation_depth: int = 3  # minimax search depth for imitation targets
+    imitation_num_games: int = 2000  # games to play for position diversity
+    imitation_random_plies: int = 8  # random opening moves per game for diversity
+    imitation_temperature: float = 200.0  # softmax temperature for centipawn scores → policy
+
     # --- Paths ---
 
     @property

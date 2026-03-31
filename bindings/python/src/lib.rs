@@ -362,6 +362,31 @@ fn minimax_search<'py>(
     Ok(dict)
 }
 
+/// Run minimax and return scores for ALL legal moves.
+/// Returns dict {moves: [{move: {...}, score: int}, ...], nodes: int}.
+#[pyfunction]
+fn minimax_search_all<'py>(
+    py: Python<'py>,
+    game: &mut PyGame,
+    depth: u32,
+) -> PyResult<Bound<'py, PyDict>> {
+    let result = minimax::search_all_moves(&mut game.state, depth)
+        .ok_or_else(|| PyValueError::new_err("cannot search a terminal position"))?;
+
+    let moves_list = PyList::empty(py);
+    for ranked in &result.moves {
+        let entry = PyDict::new(py);
+        entry.set_item("move", move_to_pydict(py, &ranked.mv)?)?;
+        entry.set_item("score", ranked.score)?;
+        moves_list.append(entry)?;
+    }
+
+    let dict = PyDict::new(py);
+    dict.set_item("moves", moves_list)?;
+    dict.set_item("nodes", result.nodes)?;
+    Ok(dict)
+}
+
 // ---------------------------------------------------------------------------
 // Module definition
 // ---------------------------------------------------------------------------
@@ -376,6 +401,7 @@ fn hexchess(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(index_to_move, m)?)?;
     m.add_function(wrap_pyfunction!(num_move_indices, m)?)?;
     m.add_function(wrap_pyfunction!(minimax_search, m)?)?;
+    m.add_function(wrap_pyfunction!(minimax_search_all, m)?)?;
 
     // TENSOR_SHAPE constant
     let tensor_shape = (

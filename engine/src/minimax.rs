@@ -11,6 +11,18 @@ pub struct MinimaxResult {
     pub nodes: u64,
 }
 
+/// A move paired with its minimax score.
+pub struct RankedMove {
+    pub mv: Move,
+    pub score: i32,
+}
+
+/// Result of `search_all_moves`: scores for every legal root move.
+pub struct MinimaxAllResult {
+    pub moves: Vec<RankedMove>,
+    pub nodes: u64,
+}
+
 /// Run alpha-beta search at the given depth and return the best move.
 ///
 /// `depth` is the number of plies to search. Returns `None` if the position is terminal.
@@ -39,6 +51,34 @@ pub fn search(state: &mut GameState, depth: u32) -> Option<MinimaxResult> {
     Some(MinimaxResult {
         best_move,
         score: best_score,
+        nodes,
+    })
+}
+
+/// Run alpha-beta search and return scores for **all** legal root moves.
+///
+/// Unlike `search`, this uses a full window (no alpha tightening at the root)
+/// so every move gets an accurate score. Subtree pruning is unaffected.
+/// Returns `None` if the position is terminal.
+pub fn search_all_moves(state: &mut GameState, depth: u32) -> Option<MinimaxAllResult> {
+    assert!(depth >= 1, "minimax depth must be >= 1");
+    let moves = state.legal_moves();
+    if moves.is_empty() {
+        return None;
+    }
+
+    let mut ranked = Vec::with_capacity(moves.len());
+    let mut nodes = 0u64;
+
+    for mv in &moves {
+        state.apply_move(*mv);
+        let score = -negamax(state, depth - 1, i32::MIN + 1, i32::MAX, &mut nodes);
+        state.undo_move();
+        ranked.push(RankedMove { mv: *mv, score });
+    }
+
+    Some(MinimaxAllResult {
+        moves: ranked,
         nodes,
     })
 }
@@ -110,5 +150,20 @@ mod tests {
         let mut state = GameState::new();
         // Ongoing position should return Some.
         assert!(search(&mut state, 1).is_some());
+    }
+
+    #[test]
+    fn search_all_moves_best_matches_search() {
+        let mut state = GameState::new();
+        let best = search(&mut state, 2).unwrap();
+        let all = search_all_moves(&mut state, 2).unwrap();
+
+        // Best score from search_all_moves should match search.
+        let top = all.moves.iter().max_by_key(|m| m.score).unwrap();
+        assert_eq!(top.score, best.score);
+
+        // All legal moves should be present.
+        let legal = state.legal_moves();
+        assert_eq!(all.moves.len(), legal.len());
     }
 }
