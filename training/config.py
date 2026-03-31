@@ -56,7 +56,7 @@ class AsyncConfig(_BaseConfig):
     worker_batch_size: int = 5  # games per flush
     steps_per_cycle: int = 5000  # training steps per cycle
     reload_interval: int = 1000  # reload buffer from disk every N steps for fresh data
-    min_positions_to_start: int = 100_000  # bootstrap gate: min data before first cycle
+    min_positions_to_start: int = 1_000_000  # bootstrap gate: #15 found ~850k needed to beat heuristic
     sample_half_life: float = 10800.0  # recency weighting half-life in seconds (3 hours)
 
     # --- Imitation bootstrap ---
