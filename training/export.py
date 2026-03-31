@@ -7,7 +7,7 @@ import torch
 import onnx
 
 from .config import _BaseConfig
-from .model import HexChessNet, build_model
+from .model import build_model
 
 
 def export_to_onnx(

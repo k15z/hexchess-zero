@@ -72,9 +72,6 @@ struct MctsNode {
     action: Option<Move>,
     /// Index of action in the policy vector.
     action_index: Option<usize>,
-    /// Parent node index in the arena (retained for tree reuse in future).
-    #[allow(dead_code)]
-    parent: Option<usize>,
     /// Children node indices in the arena.
     children: Vec<usize>,
     /// Number of times this node was visited.
@@ -91,13 +88,11 @@ impl MctsNode {
     fn new(
         action: Option<Move>,
         action_index: Option<usize>,
-        parent: Option<usize>,
         prior: f32,
     ) -> Self {
         Self {
             action,
             action_index,
-            parent,
             children: Vec::new(),
             visit_count: 0,
             value_sum: 0.0,
@@ -280,7 +275,7 @@ impl MctsSearch {
         self.reset();
 
         // Create root node.
-        let root = MctsNode::new(None, None, None, 1.0);
+        let root = MctsNode::new(None, None, 1.0);
         self.nodes.push(root);
 
         let mut working_state = state.clone();
@@ -574,7 +569,7 @@ impl MctsSearch {
             } else {
                 Some(mv_idx)
             };
-            let child = MctsNode::new(Some(mv), action_index, Some(node_idx), prior);
+            let child = MctsNode::new(Some(mv), action_index, prior);
             let child_idx = self.nodes.len();
             self.nodes.push(child);
             self.nodes[node_idx].children.push(child_idx);

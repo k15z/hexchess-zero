@@ -7,7 +7,6 @@ of training progress over time.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from .config import _data_root
 

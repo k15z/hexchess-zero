@@ -310,17 +310,6 @@ fn promotion_ordinal(p: Option<PieceKind>) -> u8 {
     }
 }
 
-#[allow(dead_code)]
-fn ordinal_to_promotion(o: u8) -> Option<PieceKind> {
-    match o {
-        0 => None,
-        1 => Some(PieceKind::Queen),
-        2 => Some(PieceKind::Rook),
-        3 => Some(PieceKind::Bishop),
-        4 => Some(PieceKind::Knight),
-        _ => unreachable!(),
-    }
-}
 
 static MOVE_INDEX: LazyLock<MoveIndex> = LazyLock::new(|| {
     let entries = build_move_table();
