@@ -63,6 +63,7 @@ class AsyncConfig(_BaseConfig):
     imitation_depth: int = 3  # minimax search depth for imitation targets
     imitation_random_plies: int = 8  # random opening moves per game for diversity
     imitation_temperature: float = 200.0  # softmax temperature for centipawn scores → policy
+    bootstrap_steps: int = 50_000  # training steps for imitation bootstrap (before self-play)
 
     # --- Paths ---
 

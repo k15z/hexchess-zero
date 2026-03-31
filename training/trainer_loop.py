@@ -1,21 +1,26 @@
 from __future__ import annotations
 """Continuous trainer for async distributed training.
 
-Runs continuously: sample from recency-weighted replay buffer, train for N
-steps, export and promote unconditionally, repeat. No generation gating —
-fresh worker data is picked up via periodic buffer reloads. Strength tracking
-is handled by the Elo service.
+Two training regimes:
+
+1. **Bootstrap** (`_run_bootstrap`): Runs when no model exists yet. Waits for
+   workers to generate enough imitation data, then trains for multiple epochs
+   over the full static dataset. Promotes v1 once.
+
+2. **Self-play loop** (`run_trainer` main loop): Runs continuously after
+   bootstrap. Samples from a recency-weighted replay buffer, trains for N
+   steps per cycle, exports and promotes unconditionally, repeat. Workers
+   pick up new models and generate progressively stronger data.
 """
 
 import json
 import math
+import random
 import signal
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-
-import random
 
 import numpy as np
 import torch
@@ -60,6 +65,10 @@ def _atomic_copy(src: Path, dst: Path) -> None:
     tmp.rename(dst)
 
 
+# ---------------------------------------------------------------------------
+# Replay buffer (self-play regime)
+# ---------------------------------------------------------------------------
+
 class ReplayBuffer(IterableDataset):
     """Streams training data with recency-weighted sampling.
 
@@ -74,7 +83,7 @@ class ReplayBuffer(IterableDataset):
     SHUFFLE_BUFFER_SIZE = 100_000
 
     def __init__(self, data_dir: Path, max_positions: int = 5_000_000,
-                 half_life: float = 10800.0):
+                 half_life: float | None = 10800.0):
         self.data_dir = data_dir
         self.max_positions = max_positions
         self.half_life = half_life
@@ -110,6 +119,8 @@ class ReplayBuffer(IterableDataset):
         if not self.files:
             return []
         self._mtimes = [f.stat().st_mtime for f in self.files]
+        if self.half_life is None:
+            return [1.0] * len(self.files)
         newest = max(self._mtimes)
         return [math.exp(-(newest - t) / self.half_life) for t in self._mtimes]
 
@@ -180,68 +191,146 @@ class ReplayBuffer(IterableDataset):
                 buf_o = [buf_o[j] for j in keep]
 
 
+# ---------------------------------------------------------------------------
+# Bootstrap data loading
+# ---------------------------------------------------------------------------
 
-def _estimate_positions(data_dir: Path) -> int:
-    """Estimate total positions by sampling a few files."""
-    npz_files = [f for f in data_dir.glob("*.npz") if ".tmp" not in f.name]
-    if not npz_files:
-        return 0
-    sample = npz_files[-min(3, len(npz_files)):]
-    total_sampled = 0
-    for f in sample:
+def _count_positions(data_dir: Path) -> int:
+    """Count total positions across all .npz files."""
+    total = 0
+    for f in data_dir.glob("*.npz"):
+        if ".tmp" in f.name:
+            continue
         try:
             with np.load(f) as data:
-                total_sampled += len(data["outcomes"])
-        except (OSError, ValueError, KeyError):
-            continue
-    if not total_sampled:
-        return 0
-    return int(total_sampled / len(sample) * len(npz_files))
-
-
-def _prune_old_data(cfg: AsyncConfig) -> int:
-    """Remove old .npz files beyond the replay buffer limit and stale .tmp files."""
-    all_files = sorted(
-        (f for f in cfg.training_data_dir.glob("*.npz") if ".tmp" not in f.name),
-        key=lambda f: f.stat().st_mtime,
-    )
-
-    # Clean up orphaned .tmp.npz files older than 1 hour
-    now = time.time()
-    removed = 0
-    for f in cfg.training_data_dir.glob("*.tmp.npz"):
-        try:
-            if now - f.stat().st_mtime > 3600:
-                f.unlink(missing_ok=True)
-                removed += 1
-        except OSError:
-            continue
-    if removed:
-        logger.info("Cleaned up {} orphaned .tmp.npz files", removed)
-
-    if not all_files:
-        return removed
-
-    total = 0
-    keep_from = len(all_files)
-    for i in range(len(all_files) - 1, -1, -1):
-        try:
-            with np.load(all_files[i]) as data:
                 total += len(data["outcomes"])
         except (OSError, ValueError, KeyError):
             continue
-        if total >= cfg.replay_buffer_size:
-            keep_from = i
+    return total
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap training (imitation regime)
+# ---------------------------------------------------------------------------
+
+def _run_bootstrap(cfg: AsyncConfig, model: torch.nn.Module,
+                   optimizer: optim.Optimizer, device: torch.device) -> int:
+    """Train on imitation data for many steps. Returns new model version.
+
+    Runs bootstrap_steps steps with uniform sampling (no recency bias)
+    over all available imitation data.
+    """
+    logger.info("Bootstrap mode: waiting for {:,} imitation positions...",
+                cfg.min_positions_to_start)
+
+    # Wait for enough data
+    while not _shutdown_requested:
+        available = _count_positions(cfg.training_data_dir)
+        if available >= cfg.min_positions_to_start:
+            break
+        logger.info("Waiting for data: {:,}/{:,} positions",
+                    available, cfg.min_positions_to_start)
+        time.sleep(30)
+
+    if _shutdown_requested:
+        return 0
+
+    total_steps_target = cfg.bootstrap_steps
+
+    logger.info("")
+    logger.info("=" * 60)
+    logger.info("Bootstrap training: {:,} steps over {:,} positions",
+                total_steps_target, available)
+    logger.info("=" * 60)
+
+    dataset = ReplayBuffer(cfg.training_data_dir,
+                           max_positions=cfg.replay_buffer_size,
+                           half_life=None)
+    dataloader = DataLoader(dataset, batch_size=cfg.batch_size, num_workers=0)
+
+    model.train()
+    total_steps = 0
+    cumulative_policy_loss = 0.0
+    cumulative_value_loss = 0.0
+    t0 = time.time()
+
+    for boards, policies, outcomes in dataloader:
+        if _shutdown_requested or total_steps >= total_steps_target:
             break
 
-    to_remove = all_files[:keep_from]
-    for f in to_remove:
-        f.unlink(missing_ok=True)
+        boards = boards.to(device)
+        policies = policies.to(device)
+        outcomes = outcomes.to(device)
 
-    if to_remove:
-        logger.info("Pruned {} old data files", len(to_remove))
-    return len(to_remove) + removed
+        pred_policy, pred_wdl = model(boards)
 
+        log_probs = torch.log_softmax(pred_policy, dim=1)
+        policy_loss = -torch.sum(policies * log_probs, dim=1).mean()
+
+        log_probs_v = torch.log_softmax(pred_wdl, dim=1)
+        value_loss = -torch.sum(outcomes * log_probs_v, dim=1).mean()
+
+        total_loss = policy_loss + value_loss
+
+        optimizer.zero_grad()
+        total_loss.backward()
+        optimizer.step()
+
+        cumulative_policy_loss += policy_loss.item()
+        cumulative_value_loss += value_loss.item()
+        total_steps += 1
+
+        if total_steps % 100 == 0:
+            elapsed = time.time() - t0
+            avg_p = cumulative_policy_loss / total_steps
+            avg_v = cumulative_value_loss / total_steps
+            logger.info(
+                "  step {:>5}/{:,} | loss: policy={:.4f} value={:.4f} "
+                "total={:.4f} | {:.1f} steps/s | {:.0f}s elapsed",
+                total_steps, total_steps_target,
+                avg_p, avg_v, avg_p + avg_v,
+                total_steps / elapsed, elapsed,
+            )
+
+    if _shutdown_requested:
+        torch.save(model.state_dict(), cfg.candidate_checkpoint_path)
+        logger.info("Saved checkpoint before shutdown.")
+        return 0
+
+    train_elapsed = time.time() - t0
+    logger.info("Bootstrap training complete: {:,} steps in {:.0f}s", total_steps, train_elapsed)
+
+    # Export and promote v1
+    logger.info("Exporting bootstrap model...")
+    torch.save(model.state_dict(), cfg.candidate_checkpoint_path)
+    export_to_onnx(cfg.candidate_checkpoint_path, cfg.candidate_model_path, cfg)
+
+    new_version = 1
+    _atomic_copy(cfg.candidate_model_path, cfg.best_model_path)
+    _atomic_copy(cfg.candidate_checkpoint_path, cfg.best_checkpoint_path)
+    _atomic_copy(cfg.candidate_model_path, cfg.models_dir / f"v{new_version}.onnx")
+    _atomic_write_json(cfg.best_meta_path, {
+        "version": new_version,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+
+    logger.info("Promoted bootstrap model to v{} ({:,} steps, {:.0f}s)",
+                new_version, total_steps, train_elapsed)
+
+    _log_event(cfg, {
+        "event": "bootstrap_complete",
+        "version": new_version,
+        "steps": total_steps,
+        "positions": available,
+        "elapsed_seconds": round(train_elapsed, 1),
+    })
+
+    return new_version
+
+
+# ---------------------------------------------------------------------------
+# Logging helpers
+# ---------------------------------------------------------------------------
 
 def _log_buffer_stats(prefix: str, s: dict) -> None:
     logger.info(
@@ -258,6 +347,10 @@ def _log_event(cfg: AsyncConfig, event: dict) -> None:
     with open(log_path, "a") as f:
         f.write(json.dumps(event) + "\n")
 
+
+# ---------------------------------------------------------------------------
+# Main trainer loop (self-play regime)
+# ---------------------------------------------------------------------------
 
 def run_trainer(cfg: AsyncConfig) -> None:
     """Run the continuous trainer loop."""
@@ -289,25 +382,22 @@ def run_trainer(cfg: AsyncConfig) -> None:
         weight_decay=cfg.l2_regularization,
     )
 
+    # Bootstrap: train on imitation data if no model exists yet
+    if not cfg.best_model_path.exists():
+        current_version = _run_bootstrap(cfg, model, optimizer, device)
+        if _shutdown_requested:
+            return
+
     cycle = 0
     total_steps_all_time = 0
 
     while not _shutdown_requested:
-        # Bootstrap gate: wait for minimum data before first cycle
-        # (workers generate imitation data when no model exists)
-        available = _estimate_positions(cfg.training_data_dir)
-        if available < cfg.min_positions_to_start:
-            logger.info("Waiting for data: ~{:,}/{:,} positions",
-                        available, cfg.min_positions_to_start)
-            time.sleep(30)
-            continue
-
         cycle += 1
         cycle_t0 = time.time()
+
         logger.info("")
         logger.info("=" * 60)
-        logger.info("Training cycle {} | model v{} | ~{:,} positions available",
-                     cycle, current_version, available)
+        logger.info("Training cycle {} | model v{}", cycle, current_version)
         logger.info("=" * 60)
 
         # Check if model was promoted externally (shouldn't happen with single
@@ -449,8 +539,6 @@ def run_trainer(cfg: AsyncConfig) -> None:
             policy_loss=avg_policy, value_loss=avg_value,
             elapsed_seconds=cycle_elapsed,
         )
-
-        _prune_old_data(cfg)
 
     logger.info("Trainer shutdown.")
     sys.exit(0)
