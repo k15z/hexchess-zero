@@ -79,11 +79,13 @@ class TrainBucket:
     position count so the trainer can start immediately.
     """
 
-    def __init__(self, ratio: float, max_seed: int | None = None):
+    def __init__(self, ratio: float, max_seed: int | None = None,
+                 max_tokens: float | None = None):
         if ratio <= 0:
             raise ValueError(f"ratio must be positive, got {ratio}")
         self.ratio = ratio
         self._max_seed = max_seed
+        self._max_tokens = max_tokens
         self._tokens: float = 0.0
         self._prev_positions: int | None = None
         self._cumulative_positions: int = 0
@@ -112,6 +114,8 @@ class TrainBucket:
             self._tokens += added
             self._last_new = new
             self._last_added = added
+        if self._max_tokens is not None:
+            self._tokens = min(self._tokens, self._max_tokens)
         self._prev_positions = total_positions
         self._cumulative_positions = total_positions
 
@@ -429,7 +433,8 @@ def run_trainer(cfg: AsyncConfig) -> None:
     cycle = 0
     total_steps_all_time = 0
     bucket = TrainBucket(cfg.max_train_steps_per_new_data,
-                         max_seed=cfg.steps_per_cycle)
+                         max_seed=cfg.steps_per_cycle,
+                         max_tokens=float(cfg.steps_per_cycle))
 
     while not _shutdown_requested:
         cycle += 1

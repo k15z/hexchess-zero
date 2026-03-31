@@ -116,3 +116,29 @@ def test_incremental_not_capped_by_max_seed():
     assert bucket.tokens == 100.0
     bucket.update(10050)  # 10000 new * 4.0 = 40000 added, no cap
     assert bucket.tokens == 40100.0
+
+
+def test_max_tokens_caps_accumulation():
+    """Tokens cannot exceed max_tokens, preventing unbounded surplus."""
+    bucket = TrainBucket(ratio=4.0, max_tokens=1000.0)
+    bucket.update(500)  # would be 2000, capped to 1000
+    assert bucket.tokens == 1000.0
+
+    bucket.consume(500)  # down to 500
+    bucket.update(1000)  # 500 new * 4.0 = 2000 added -> 2500, capped to 1000
+    assert bucket.tokens == 1000.0
+
+
+def test_max_tokens_does_not_inflate():
+    """max_tokens is a ceiling, not a floor."""
+    bucket = TrainBucket(ratio=1.0, max_tokens=1000.0)
+    bucket.update(50)  # 50 tokens, well under cap
+    assert bucket.tokens == 50.0
+
+
+def test_max_tokens_after_consume():
+    """Cap only applies at update time, not after consume."""
+    bucket = TrainBucket(ratio=1.0, max_tokens=100.0)
+    bucket.update(200)  # capped to 100
+    bucket.consume(80)  # down to 20, no re-capping
+    assert bucket.tokens == 20.0
