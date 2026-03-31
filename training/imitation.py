@@ -6,8 +6,6 @@ can consume them without modification.
 
 from __future__ import annotations
 
-import multiprocessing as mp
-import os
 import random
 import time
 from datetime import datetime, timezone
@@ -144,49 +142,3 @@ def _flush_samples(samples: list[dict], data_dir: Path) -> Path:
     return save_path
 
 
-def _play_imitation_game_wrapper(args: tuple) -> list[dict]:
-    """Wrapper for multiprocessing (top-level picklable function)."""
-    cfg_dict, game_idx = args
-    cfg = AsyncConfig(**cfg_dict)
-    return _play_imitation_game(cfg)
-
-
-def generate_imitation_data(cfg: AsyncConfig) -> None:
-    """Generate imitation training data from minimax and save as NPZ files."""
-    cfg.ensure_dirs()
-
-    num_workers = max(1, os.cpu_count() - 2)
-    logger.info(
-        "Generating imitation data: {} games, depth {}, {} random plies, {} workers",
-        cfg.imitation_num_games, cfg.imitation_depth, cfg.imitation_random_plies,
-        num_workers,
-    )
-
-    # Serialize config fields for pickling across processes
-    cfg_dict = {f.name: getattr(cfg, f.name)
-                for f in cfg.__dataclass_fields__.values()}
-    tasks = [(cfg_dict, i) for i in range(cfg.imitation_num_games)]
-
-    all_samples: list[dict] = []
-    flush_every = 50  # flush every N games
-    games_done = 0
-
-    with mp.Pool(num_workers) as pool:
-        for samples in pool.imap_unordered(_play_imitation_game_wrapper, tasks):
-            all_samples.extend(samples)
-            games_done += 1
-
-            if games_done % flush_every == 0 and all_samples:
-                path = _flush_samples(all_samples, cfg.training_data_dir)
-                logger.info(
-                    "Game {}/{}: flushed {} positions to {}",
-                    games_done, cfg.imitation_num_games, len(all_samples), path.name,
-                )
-                all_samples = []
-
-    # Flush remaining
-    if all_samples:
-        path = _flush_samples(all_samples, cfg.training_data_dir)
-        logger.info("Final flush: {} positions to {}", len(all_samples), path.name)
-
-    logger.info("Imitation data generation complete.")
