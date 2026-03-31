@@ -470,7 +470,20 @@ def run_trainer(cfg: AsyncConfig) -> None:
 
         logger.info("Training for {} steps (batch_size={})...", cfg.steps_per_cycle, cfg.batch_size)
 
-        while step < cfg.steps_per_cycle and not _shutdown_requested and bucket.has_budget():
+        while step < cfg.steps_per_cycle and not _shutdown_requested:
+            # Wait for budget if bucket is exhausted mid-cycle
+            if not bucket.has_budget():
+                logger.info("  Bucket empty mid-cycle at step {}, waiting for new data...", step)
+                while not bucket.has_budget() and not _shutdown_requested:
+                    time.sleep(30)
+                    dataset, dataloader = reload_buffer()
+                    bucket.update(dataset.total_positions)
+                    if not bucket.has_budget():
+                        logger.info("    Still waiting... bucket={:.0f} tokens, {:,} positions",
+                                    bucket.tokens, dataset.total_positions)
+                if _shutdown_requested:
+                    break
+
             for boards, policies, outcomes in dataloader:
                 if _shutdown_requested or step >= cfg.steps_per_cycle or not bucket.has_budget():
                     break
@@ -521,8 +534,6 @@ def run_trainer(cfg: AsyncConfig) -> None:
                     bucket.update(dataset.total_positions)
                     _log_buffer_stats("  Reloaded buffer", dataset.stats())
                     logger.info("  Train bucket: {:.0f} tokens remaining", bucket.tokens)
-                    if not bucket.has_budget():
-                        logger.info("  Bucket exhausted mid-cycle, ending cycle early at step {}", step)
                     break  # restart with new dataloader
 
         train_elapsed = time.time() - train_t0
