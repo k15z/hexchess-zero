@@ -56,7 +56,7 @@ class AsyncConfig(_BaseConfig):
     worker_batch_size: int = 5  # games per flush
     steps_per_cycle: int = 5000  # training steps per cycle
     reload_interval: int = 1000  # reload buffer from disk every N steps for fresh data
-    max_train_steps_per_new_data: float = 4.0  # token-bucket ratio: max training steps per new data row
+    max_train_steps_per_new_data: float = 4.0  # target passes per data point (KataGo-style bucket)
     min_positions_to_start: int = 1_000_000  # bootstrap gate: #15 found ~850k needed to beat heuristic
 
     # --- Imitation bootstrap ---

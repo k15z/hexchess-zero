@@ -89,10 +89,13 @@ def compute_elo(
     anchor: str = "Minimax-2",
     anchor_elo: float = 1500.0,
     iterations: int = 100,
+    prior_games: float = 4.0,
 ) -> dict[str, float]:
     """Compute Elo ratings from pairwise results via iterative MLE.
 
     Anchors one player at a fixed rating to set the scale.
+    Uses a Bayesian prior that adds ``prior_games`` virtual draws against
+    a 1500-rated opponent to stabilize estimates with few games.
     """
     elo = {p: 1500.0 for p in players}
     if anchor in elo:
@@ -108,6 +111,8 @@ def compute_elo(
         b_score = r["b_wins"] + r["draws"] * 0.5
         scores[(a, b)] = (a_score, total)
         scores[(b, a)] = (b_score, total)
+
+    prior_elo = 1500.0
 
     for _ in range(iterations):
         for p in players:
@@ -128,6 +133,12 @@ def compute_elo(
                 actual_total += actual
                 expected_total += expected_score
                 games_total += n_games
+
+            # Bayesian prior: virtual draws against a 1500-rated opponent
+            actual_total += prior_games * 0.5
+            expected_prior = prior_games / (1 + 10 ** ((prior_elo - elo[p]) / 400))
+            expected_total += expected_prior
+            games_total += prior_games
 
             if games_total == 0 or expected_total == 0:
                 continue

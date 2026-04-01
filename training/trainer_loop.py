@@ -61,19 +61,22 @@ def _atomic_copy(src: Path, dst: Path) -> None:
 class TrainBucket:
     """Token-bucket rate limiter that throttles training to match data inflow.
 
-    Each new data position adds ``ratio`` tokens to the bucket. Each training
-    step consumes 1 token.  When the bucket is empty the trainer should pause
-    and wait for workers to produce more data.
+    KataGo-style: each new data position adds ``target_passes`` tokens.
+    Each training step consumes ``batch_size`` tokens (since one step
+    processes a full batch of samples).  This ensures each data point is
+    seen ~target_passes times on average over its buffer lifetime.
 
-    On first call to :meth:`update`, the bucket is seeded with the full
-    position count so the trainer can start immediately.
+    On first call to :meth:`update`, the bucket is seeded with enough
+    tokens for one cycle so the trainer can start immediately.
     """
 
-    def __init__(self, ratio: float, max_seed: int | None = None,
+    def __init__(self, target_passes: float, batch_size: int,
+                 max_seed: float | None = None,
                  max_tokens: float | None = None):
-        if ratio <= 0:
-            raise ValueError(f"ratio must be positive, got {ratio}")
-        self.ratio = ratio
+        if target_passes <= 0:
+            raise ValueError(f"target_passes must be positive, got {target_passes}")
+        self.target_passes = target_passes
+        self.batch_size = batch_size
         self._max_seed = max_seed
         self._max_tokens = max_tokens
         self._tokens: float = 0.0
@@ -92,7 +95,7 @@ class TrainBucket:
         if self._prev_positions is None:
             # First observation — seed so training can begin right away,
             # but cap so a restart doesn't grant unlimited budget.
-            tokens = total_positions * self.ratio
+            tokens = total_positions * self.target_passes
             if self._max_seed is not None:
                 tokens = min(tokens, self._max_seed)
             self._tokens = tokens
@@ -100,7 +103,7 @@ class TrainBucket:
             self._last_added = tokens
         else:
             new = max(0, total_positions - self._prev_positions)
-            added = new * self.ratio
+            added = new * self.target_passes
             self._tokens += added
             self._last_new = new
             self._last_added = added
@@ -109,9 +112,9 @@ class TrainBucket:
         self._prev_positions = total_positions
         self._cumulative_positions = total_positions
 
-    def consume(self, n: int = 1) -> None:
-        """Consume tokens for completed training steps."""
-        self._tokens -= n
+    def consume(self) -> None:
+        """Consume tokens for one training step (= one batch)."""
+        self._tokens -= self.batch_size
 
     @property
     def tokens(self) -> float:
@@ -425,8 +428,9 @@ def run_trainer(cfg: AsyncConfig) -> None:
     cycle = 0
     total_steps_all_time = 0
     bucket = TrainBucket(cfg.max_train_steps_per_new_data,
-                         max_seed=cfg.steps_per_cycle,
-                         max_tokens=float(cfg.steps_per_cycle))
+                         batch_size=cfg.batch_size,
+                         max_seed=cfg.steps_per_cycle * cfg.batch_size,
+                         max_tokens=float(cfg.steps_per_cycle * cfg.batch_size))
 
     while True:
         cycle += 1
