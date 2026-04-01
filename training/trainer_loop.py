@@ -141,14 +141,16 @@ class ReplayBuffer(IterableDataset):
 
     SHUFFLE_BUFFER_SIZE = 100_000
 
-    def __init__(self, data_dir: Path, max_positions: int = 5_000_000):
+    def __init__(self, data_dir: Path, max_positions: int = 5_000_000,
+                 glob_pattern: str = "sp_*.npz"):
         self.data_dir = data_dir
         self.max_positions = max_positions
+        self._glob_pattern = glob_pattern
         self.files, self.total_positions = self._select_files()
 
     def _select_files(self) -> tuple[list[Path], int]:
         all_files = sorted(
-            (f for f in self.data_dir.glob("*.npz") if ".tmp" not in f.name),
+            (f for f in self.data_dir.glob(self._glob_pattern) if ".tmp" not in f.name),
             key=lambda f: f.stat().st_mtime,
         )
         if not all_files:
@@ -242,14 +244,14 @@ class ReplayBuffer(IterableDataset):
 # Bootstrap data loading
 # ---------------------------------------------------------------------------
 
-def _count_positions(data_dir: Path) -> int:
-    """Count total positions across all .npz files.
+def _count_positions(data_dir: Path, glob_pattern: str = "sp_*.npz") -> int:
+    """Count total positions across matching .npz files.
 
     # TODO: This opens every .npz on disk. If file count becomes a bottleneck,
     # switch to a counter file that workers atomically increment on each flush.
     """
     total = 0
-    for f in data_dir.glob("*.npz"):
+    for f in data_dir.glob(glob_pattern):
         if ".tmp" in f.name:
             continue
         try:
@@ -276,7 +278,7 @@ def _run_bootstrap(cfg: AsyncConfig, model: torch.nn.Module,
 
     # Wait for enough data
     while True:
-        available = _count_positions(cfg.training_data_dir)
+        available = _count_positions(cfg.training_data_dir, glob_pattern="im_*.npz")
         if available >= cfg.min_positions_to_start:
             break
         logger.info("Waiting for data: {:,}/{:,} positions",
@@ -293,7 +295,8 @@ def _run_bootstrap(cfg: AsyncConfig, model: torch.nn.Module,
 
     def reload_buffer():
         ds = ReplayBuffer(cfg.training_data_dir,
-                          max_positions=cfg.replay_buffer_size)
+                          max_positions=cfg.replay_buffer_size,
+                          glob_pattern="im_*.npz")
         dl = DataLoader(ds, batch_size=cfg.batch_size, num_workers=0)
         return ds, dl
 
