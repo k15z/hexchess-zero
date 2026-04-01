@@ -287,13 +287,22 @@ def _run_bootstrap(cfg: AsyncConfig, model: torch.nn.Module,
 
     logger.info("")
     logger.info("=" * 60)
-    logger.info("Bootstrap training: {:,} steps over {:,} positions",
-                total_steps_target, available)
+    logger.info("Bootstrap training: {:,} steps over {:,} positions (lr={:.4f})",
+                total_steps_target, available, cfg.bootstrap_learning_rate)
     logger.info("=" * 60)
 
-    dataset = ReplayBuffer(cfg.training_data_dir,
-                           max_positions=cfg.replay_buffer_size)
-    dataloader = DataLoader(dataset, batch_size=cfg.batch_size, num_workers=0)
+    def reload_buffer():
+        ds = ReplayBuffer(cfg.training_data_dir,
+                          max_positions=cfg.replay_buffer_size)
+        dl = DataLoader(ds, batch_size=cfg.batch_size, num_workers=0)
+        return ds, dl
+
+    dataset, dataloader = reload_buffer()
+
+    # Use higher LR for bootstrap (clean supervised signal), then
+    # self-play loop will use cfg.learning_rate (10x lower)
+    for pg in optimizer.param_groups:
+        pg['lr'] = cfg.bootstrap_learning_rate
 
     model.train()
     total_steps = 0
@@ -301,43 +310,50 @@ def _run_bootstrap(cfg: AsyncConfig, model: torch.nn.Module,
     cumulative_value_loss = 0.0
     t0 = time.time()
 
-    for boards, policies, outcomes in dataloader:
-        if total_steps >= total_steps_target:
-            break
+    while total_steps < total_steps_target:
+        for boards, policies, outcomes in dataloader:
+            if total_steps >= total_steps_target:
+                break
 
-        boards = boards.to(device)
-        policies = policies.to(device)
-        outcomes = outcomes.to(device)
+            boards = boards.to(device)
+            policies = policies.to(device)
+            outcomes = outcomes.to(device)
 
-        pred_policy, pred_wdl = model(boards)
+            pred_policy, pred_wdl = model(boards)
 
-        log_probs = torch.log_softmax(pred_policy, dim=1)
-        policy_loss = -torch.sum(policies * log_probs, dim=1).mean()
+            log_probs = torch.log_softmax(pred_policy, dim=1)
+            policy_loss = -torch.sum(policies * log_probs, dim=1).mean()
 
-        log_probs_v = torch.log_softmax(pred_wdl, dim=1)
-        value_loss = -torch.sum(outcomes * log_probs_v, dim=1).mean()
+            log_probs_v = torch.log_softmax(pred_wdl, dim=1)
+            value_loss = -torch.sum(outcomes * log_probs_v, dim=1).mean()
 
-        total_loss = policy_loss + value_loss
+            total_loss = policy_loss + value_loss
 
-        optimizer.zero_grad()
-        total_loss.backward()
-        optimizer.step()
+            optimizer.zero_grad()
+            total_loss.backward()
+            optimizer.step()
 
-        cumulative_policy_loss += policy_loss.item()
-        cumulative_value_loss += value_loss.item()
-        total_steps += 1
+            cumulative_policy_loss += policy_loss.item()
+            cumulative_value_loss += value_loss.item()
+            total_steps += 1
 
-        if total_steps % 100 == 0:
-            elapsed = time.time() - t0
-            avg_p = cumulative_policy_loss / total_steps
-            avg_v = cumulative_value_loss / total_steps
-            logger.info(
-                "  step {:>5}/{:,} | loss: policy={:.4f} value={:.4f} "
-                "total={:.4f} | {:.1f} steps/s | {:.0f}s elapsed",
-                total_steps, total_steps_target,
-                avg_p, avg_v, avg_p + avg_v,
-                total_steps / elapsed, elapsed,
-            )
+            if total_steps % 100 == 0:
+                elapsed = time.time() - t0
+                avg_p = cumulative_policy_loss / total_steps
+                avg_v = cumulative_value_loss / total_steps
+                logger.info(
+                    "  step {:>5}/{:,} | loss: policy={:.4f} value={:.4f} "
+                    "total={:.4f} | {:.1f} steps/s | {:.0f}s elapsed",
+                    total_steps, total_steps_target,
+                    avg_p, avg_v, avg_p + avg_v,
+                    total_steps / elapsed, elapsed,
+                )
+
+            # Periodic reload: pick up fresh imitation data from workers
+            if total_steps % cfg.reload_interval == 0 and total_steps < total_steps_target:
+                dataset, dataloader = reload_buffer()
+                _log_buffer_stats("  Reloaded buffer", dataset.stats())
+                break  # restart with new dataloader
 
     train_elapsed = time.time() - t0
     logger.info("Bootstrap training complete: {:,} steps in {:.0f}s", total_steps, train_elapsed)
@@ -415,15 +431,21 @@ def run_trainer(cfg: AsyncConfig) -> None:
         logger.info("Loading checkpoint: {}", cfg.best_checkpoint_path)
         model.load_state_dict(torch.load(cfg.best_checkpoint_path, map_location=device, weights_only=True))
 
-    optimizer = optim.Adam(
+    optimizer = optim.SGD(
         model.parameters(),
         lr=cfg.learning_rate,
+        momentum=cfg.momentum,
         weight_decay=cfg.l2_regularization,
     )
 
     # Bootstrap: train on imitation data if no model exists yet
     if not cfg.best_model_path.exists():
         current_version = _run_bootstrap(cfg, model, optimizer, device)
+        # Fresh optimizer for self-play: reset momentum buffer and drop LR
+        optimizer = optim.SGD(
+            model.parameters(), lr=cfg.learning_rate,
+            momentum=cfg.momentum, weight_decay=cfg.l2_regularization,
+        )
 
     cycle = 0
     total_steps_all_time = 0
@@ -447,7 +469,7 @@ def run_trainer(cfg: AsyncConfig) -> None:
         if disk_version > current_version and cfg.best_checkpoint_path.exists():
             logger.info("Model updated externally: v{} -> v{}, reloading", current_version, disk_version)
             model.load_state_dict(torch.load(cfg.best_checkpoint_path, map_location=device, weights_only=True))
-            optimizer = optim.Adam(model.parameters(), lr=cfg.learning_rate, weight_decay=cfg.l2_regularization)
+            optimizer = optim.SGD(model.parameters(), lr=cfg.learning_rate, momentum=cfg.momentum, weight_decay=cfg.l2_regularization)
             current_version = disk_version
 
         # Load data
