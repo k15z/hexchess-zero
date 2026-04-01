@@ -30,6 +30,7 @@ class _BaseConfig:
     # --- Training ---
     batch_size: int = 256
     learning_rate: float = 0.001
+    momentum: float = 0.9
     l2_regularization: float = 1e-4
     replay_buffer_size: int = 5_000_000
 
@@ -67,6 +68,7 @@ class AsyncConfig(_BaseConfig):
     imitation_random_plies: int = 8  # random opening moves per game for diversity
     imitation_temperature: float = 200.0  # softmax temperature for centipawn scores → policy
     bootstrap_steps: int = 50_000  # training steps for imitation bootstrap (before self-play)
+    bootstrap_learning_rate: float = 0.01  # higher LR for clean supervised signal (10x self-play LR)
 
     # --- Paths ---
 
