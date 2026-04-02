@@ -1,5 +1,5 @@
 # Stage 1: Build Rust PyO3 bindings
-FROM python:3.11-slim AS builder
+FROM python:3.13-slim AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl build-essential pkg-config libssl-dev \
@@ -15,25 +15,21 @@ COPY Cargo.toml Cargo.lock ./
 COPY engine/ engine/
 COPY bindings/ bindings/
 
-# Build the Python extension
 RUN cd bindings/python && maturin build --release -o /build/wheels
 
 # Stage 2: Runtime
-FROM python:3.11-slim
+FROM python:3.13-slim
 
 WORKDIR /app
 
-# Install Python deps
-COPY training/requirements.txt requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt \
+COPY pyproject.toml ./
+COPY training/ training/
+
+RUN pip install --no-cache-dir . \
     --index-url https://download.pytorch.org/whl/cpu \
     --extra-index-url https://pypi.org/simple
 
-# Install the hexchess wheel from stage 1
 COPY --from=builder /build/wheels/*.whl /tmp/
 RUN pip install /tmp/*.whl && rm /tmp/*.whl
-
-# Copy training code
-COPY training/ training/
 
 ENTRYPOINT ["python", "-m", "training"]
