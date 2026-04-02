@@ -1,27 +1,27 @@
 from __future__ import annotations
 """Continuous self-play worker for async distributed training.
 
-Runs an infinite loop: fetch the latest model, play a game, accumulate
-samples, flush to disk periodically. Polls best.meta.json between
-batches to pick up newly promoted models.
+Runs an infinite loop: fetch the latest model from S3, play games,
+flush training data to S3, repeat. Polls for newly promoted models
+between batches.
 
-Concurrency is handled at the k8s level (multiple replicas), not via
-multiprocessing. Each replica runs a single process and lets ONNX
-Runtime use all available cores for inference.
+Concurrency: each worker process lets ONNX Runtime use all cores.
+For imitation (minimax), parallelizes across cores via ProcessPoolExecutor.
 """
 
 import json
 import os
+import platform
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
 from datetime import datetime, timezone
-from pathlib import Path
 
 import numpy as np
 from loguru import logger
 
+from . import storage
 from .config import AsyncConfig
-from .imitation import _play_imitation_game, _flush_samples as _flush_imitation_samples
+from .imitation import play_imitation_game
 
 try:
     import hexchess
@@ -29,22 +29,33 @@ except ImportError:
     hexchess = None
 
 
+def _worker_name() -> str:
+    return os.environ.get("WORKER_NAME", platform.node())
+
+
 def _read_model_version(cfg: AsyncConfig) -> tuple[int, str | None]:
-    """Read the current best model version and path.
+    """Read the current model version from S3.
 
-    Returns (version, model_path). version=0 and model_path=None if no model exists yet.
+    Returns (version, local_model_path). version=0 and path=None if no model
+    exists. Only downloads the ONNX model if the version has changed.
     """
-    if cfg.best_meta_path.exists():
-        try:
-            meta = json.loads(cfg.best_meta_path.read_text())
-            version = meta.get("version", 0)
-        except (json.JSONDecodeError, OSError):
-            version = 0
-    else:
-        version = 0
+    try:
+        meta = storage.get_json(storage.LATEST_META)
+        version = meta.get("version", 0)
+    except KeyError:
+        return 0, None
 
-    model_path = str(cfg.best_model_path) if cfg.best_model_path.exists() else None
-    return version, model_path
+    local_path = cfg.model_cache_dir / "latest.onnx"
+    local_meta = cfg.model_cache_dir / "latest.meta.json"
+
+    if local_meta.exists() and local_path.exists():
+        cached = json.loads(local_meta.read_text())
+        if cached.get("version") == version:
+            return version, str(local_path)
+
+    storage.get_file(storage.LATEST_ONNX, local_path)
+    local_meta.write_text(json.dumps(meta))
+    return version, str(local_path)
 
 
 def _play_one_game(
@@ -86,102 +97,98 @@ def _play_one_game(
         )
         move_number += 1
 
-    # Determine game outcome as WDL targets [win, draw, loss]
     status = game.status()
     if status == "checkmate_white":
-        wdl_white = [1.0, 0.0, 0.0]  # white won
+        wdl_white = [1.0, 0.0, 0.0]
     elif status == "checkmate_black":
-        wdl_white = [0.0, 0.0, 1.0]  # white lost
+        wdl_white = [0.0, 0.0, 1.0]
     else:
-        wdl_white = [0.0, 1.0, 0.0]  # draw
+        wdl_white = [0.0, 1.0, 0.0]
 
-    # Fill in WDL outcome from each side's perspective
     for sample in samples:
         if sample["side"] == "white":
             sample["outcome"] = np.array(wdl_white, dtype=np.float32)
         else:
-            # Flip W and L for black's perspective
             sample["outcome"] = np.array([wdl_white[2], wdl_white[1], wdl_white[0]], dtype=np.float32)
         del sample["side"]
 
     return status, samples
 
 
-def _flush_samples(samples: list[dict], data_dir: Path, model_version: int) -> Path:
-    """Write samples to a version-tagged .npz file."""
-    boards = np.stack([s["board"] for s in samples])
-    policies = np.stack([s["policy"] for s in samples])
-    outcomes = np.array([s["outcome"] for s in samples], dtype=np.float32)
-
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-    suffix = np.random.default_rng().integers(0, 0xFFFF_FFFF)
-    basename = f"sp_v{model_version}_{ts}_{suffix:08x}"
-
-    # np.savez_compressed auto-appends .npz to the path.
-    # Write to a temp name then rename for atomicity on NFS.
-    tmp_path = data_dir / (basename + ".tmp")
-    np.savez_compressed(tmp_path, boards=boards, policies=policies, outcomes=outcomes)
-    # Actual file on disk is basename.tmp.npz — rename to final
-    save_path = data_dir / (basename + ".npz")
-    (data_dir / (basename + ".tmp.npz")).rename(save_path)
-
-    return save_path
-
-
-def _log_event(cfg: AsyncConfig, event: dict) -> None:
-    """Append a JSON event to the worker log file."""
-    hostname = os.environ.get("HOSTNAME", os.environ.get("POD_NAME", "local"))
-    log_path = cfg.logs_dir / f"worker-{hostname}.jsonl"
-    event["timestamp"] = datetime.now(timezone.utc).isoformat()
-    with open(log_path, "a") as f:
-        f.write(json.dumps(event) + "\n")
+def _write_heartbeat(cfg: AsyncConfig, version: int, total_games: int,
+                     total_positions: int) -> None:
+    storage.put_json(f"{storage.HEARTBEATS_PREFIX}{_worker_name()}.json", {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "model_version": version,
+        "total_games": total_games,
+        "total_positions": total_positions,
+    })
 
 
 def run_worker(cfg: AsyncConfig) -> None:
     """Run the continuous self-play worker loop."""
     if hexchess is None:
-        raise ImportError("hexchess bindings not available. Run `maturin develop` in bindings/python/")
+        raise ImportError("hexchess bindings not available")
 
-    cfg.ensure_dirs()
+    cfg.ensure_cache_dirs()
 
     current_version, model_path = _read_model_version(cfg)
 
     # Bootstrap: generate imitation data from minimax until a model appears.
-    # Unlike MCTS self-play (where ONNX Runtime uses all cores), minimax is
-    # single-threaded, so we parallelize across cores with a process pool.
+    # Minimax is single-threaded, so we parallelize across cores. Games are
+    # flushed every worker_batch_size completions to keep file sizes consistent
+    # with self-play and avoid holding data in memory waiting for stragglers.
     if model_path is None:
         num_workers = max(1, os.cpu_count() or 1)
         logger.info("No model found — generating minimax imitation data "
                      "(depth {}, {} parallel workers)", cfg.imitation_depth, num_workers)
         imitation_games = 0
         imitation_positions = 0
-        flush_every = cfg.worker_batch_size * num_workers
+        batch_size = cfg.worker_batch_size
+        pending_samples: list[dict] = []
+        pending_games = 0
+        batch_t0 = time.time()
 
         with ProcessPoolExecutor(max_workers=num_workers) as pool:
+            # Keep num_workers * 2 games in flight so the pool stays busy
+            futures = {pool.submit(play_imitation_game, cfg) for _ in range(num_workers * 2)}
+
             while model_path is None:
-                # Submit a batch of games in parallel
-                futures = [pool.submit(_play_imitation_game, cfg)
-                           for _ in range(flush_every)]
-                batch_samples: list[dict] = []
-                batch_t0 = time.time()
-                for i, future in enumerate(as_completed(futures), 1):
+                done, futures = wait(futures, return_when=FIRST_COMPLETED)
+                for future in done:
                     samples = future.result()
-                    batch_samples.extend(samples)
+                    pending_samples.extend(samples)
+                    pending_games += 1
                     imitation_games += 1
                     imitation_positions += len(samples)
-                    logger.info("  [{}/{}] game {} complete: {} positions",
-                                i, flush_every, imitation_games, len(samples))
+                    logger.info("  game {} complete: {} positions",
+                                imitation_games, len(samples))
 
-                batch_elapsed = time.time() - batch_t0
-                path = _flush_imitation_samples(batch_samples, cfg.training_data_dir)
-                logger.info(
-                    "Imitation batch: {} games, {} pos, {:.0f}s ({:.1f}s/game) | "
-                    "total: {} games, {} pos | {}",
-                    flush_every, len(batch_samples), batch_elapsed,
-                    batch_elapsed / flush_every, imitation_games,
-                    imitation_positions, path.name,
-                )
-                current_version, model_path = _read_model_version(cfg)
+                    futures.add(pool.submit(play_imitation_game, cfg))
+
+                    if pending_games >= batch_size:
+                        batch_elapsed = time.time() - batch_t0
+                        key = storage.flush_samples(
+                            pending_samples, storage.IMITATION_PREFIX)
+                        logger.info(
+                            "Imitation batch: {} games, {} pos, {:.0f}s ({:.1f}s/game) | "
+                            "total: {} games, {} pos | {}",
+                            pending_games, len(pending_samples), batch_elapsed,
+                            batch_elapsed / pending_games, imitation_games,
+                            imitation_positions, key,
+                        )
+                        _write_heartbeat(cfg, 0, imitation_games, imitation_positions)
+                        pending_samples = []
+                        pending_games = 0
+                        batch_t0 = time.time()
+
+                        current_version, model_path = _read_model_version(cfg)
+
+            for f in futures:
+                f.cancel()
+
+        if pending_samples:
+            storage.flush_samples(pending_samples, storage.IMITATION_PREFIX)
 
         logger.info("Model appeared (v{}), switching to self-play", current_version)
 
@@ -201,7 +208,6 @@ def run_worker(cfg: AsyncConfig) -> None:
     while True:
         batch_t0 = time.time()
         pending_samples: list[dict] = []
-        outcome_counts: dict[str, int] = {}
         batch_games = 0
 
         for gi in range(batch_size):
@@ -209,7 +215,6 @@ def run_worker(cfg: AsyncConfig) -> None:
             status, game_samples = _play_one_game(search, cfg)
             game_elapsed = time.time() - game_t0
             pending_samples.extend(game_samples)
-            outcome_counts[status] = outcome_counts.get(status, 0) + 1
             batch_games += 1
             logger.info(
                 "  game {}/{}: {} moves, {:.1f}s ({:.2f}s/move) | {}",
@@ -219,7 +224,10 @@ def run_worker(cfg: AsyncConfig) -> None:
             )
 
         if pending_samples:
-            path = _flush_samples(pending_samples, cfg.training_data_dir, current_version)
+            key = storage.flush_samples(
+                pending_samples,
+                f"{storage.SELFPLAY_PREFIX}v{current_version}/",
+            )
             total_games += batch_games
             total_positions += len(pending_samples)
             elapsed = time.time() - batch_t0
@@ -230,7 +238,7 @@ def run_worker(cfg: AsyncConfig) -> None:
                 batch_games, len(pending_samples),
                 elapsed, elapsed / max(batch_games, 1),
                 total_games, total_positions,
-                current_version, path.name,
+                current_version, key,
             )
 
             tt = search.tt_stats()
@@ -241,27 +249,11 @@ def run_worker(cfg: AsyncConfig) -> None:
                 tt["hits"], tt["misses"], tt["clears"],
             )
 
-            _log_event(cfg, {
-                "event": "batch_complete",
-                "model_version": current_version,
-                "games": batch_games,
-                "positions": len(pending_samples),
-                "elapsed_seconds": round(elapsed, 1),
-                "outcomes": outcome_counts,
-                "file": path.name,
-                "tt_hits": tt["hits"],
-                "tt_misses": tt["misses"],
-                "tt_clears": tt["clears"],
-                "tt_size": tt["current_size"],
-            })
+            _write_heartbeat(cfg, current_version, total_games, total_positions)
 
-        # Check for model update
         new_version, new_model_path = _read_model_version(cfg)
         if new_version > current_version:
-            versions_behind = new_version - current_version
-            logger.info("Model updated: v{} -> v{} ({} version{} behind)",
-                        current_version, new_version,
-                        versions_behind, "s" if versions_behind > 1 else "")
+            logger.info("Model updated: v{} -> v{}", current_version, new_version)
             current_version = new_version
             model_path = new_model_path
             search = hexchess.MctsSearch(

@@ -41,4 +41,5 @@ k8s/secrets.yaml
 
 # Misc
 .env
+.cache/
 training_log.txt
