@@ -231,17 +231,21 @@ function renderElo(data) {
   const sorted = Object.entries(e.ratings).sort((a, b) => b[1] - a[1]);
   const maxR = Math.max(...sorted.map(s => Math.abs(s[1])), 1);
 
+  const ps = e.player_stats || {};
   let html = `<div class="kv"><span class="k">games</span><span class="v">${fmt(e.total_games)}</span></div>`;
-  html += `<table><tr><th>#</th><th>player</th><th>elo</th><th></th></tr>`;
+  html += `<table><tr><th>#</th><th>player</th><th>elo</th><th>s/move</th><th></th></tr>`;
 
   for (let i = 0; i < sorted.length; i++) {
     const [name, rating] = sorted[i];
     const barW = Math.max(2, Math.round(Math.abs(rating) / maxR * 120));
     const neg = rating < 0 ? 'elo-neg' : '';
+    const st = ps[name];
+    const avgMove = st && st.total_moves > 0 ? (st.total_time / st.total_moves).toFixed(2) : '—';
     html += `<tr>
       <td class="num">${i + 1}</td>
       <td>${name}</td>
       <td class="num">${rating > 0 ? '+' : ''}${rating}</td>
+      <td class="num">${avgMove}</td>
       <td class="${neg}"><span class="elo-bar" style="width:${barW}px"></span></td>
     </tr>`;
   }

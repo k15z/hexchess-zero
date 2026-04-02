@@ -213,6 +213,7 @@ def collect_status(cfg: AsyncConfig) -> dict:
             "ratings": elo_state.get("ratings", {}) if elo_state else {},
             "total_games": elo_state.get("total_games", 0) if elo_state else 0,
             "active_players": elo_state.get("active_players", []) if elo_state else [],
+            "player_stats": elo_state.get("player_stats", {}) if elo_state else {},
             "history": elo_history,
         },
         "data": {

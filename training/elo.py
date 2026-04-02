@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import time
 from typing import Protocol
 
 try:
@@ -57,14 +58,28 @@ def baselines(simulations: int = 500) -> list[Player]:
 # ---------------------------------------------------------------------------
 
 
-def play_game(white: Player, black: Player, max_moves: int = 300) -> str:
-    """Play one game. Returns 'white', 'black', or 'draw'."""
+def play_game(white: Player, black: Player, max_moves: int = 300) -> dict:
+    """Play one game. Returns dict with outcome and per-player timing stats."""
+
     game = hexchess.Game()
     move_count = 0
+    white_time = 0.0
+    black_time = 0.0
+    white_moves = 0
+    black_moves = 0
 
     while not game.is_game_over() and move_count < max_moves:
-        player = white if game.side_to_move() == "white" else black
+        is_white = game.side_to_move() == "white"
+        player = white if is_white else black
+        t0 = time.monotonic()
         mv = player.pick_move(game)
+        dt = time.monotonic() - t0
+        if is_white:
+            white_time += dt
+            white_moves += 1
+        else:
+            black_time += dt
+            black_moves += 1
         game.apply_move(
             mv["from_q"], mv["from_r"], mv["to_q"], mv["to_r"], mv.get("promotion")
         )
@@ -72,10 +87,20 @@ def play_game(white: Player, black: Player, max_moves: int = 300) -> str:
 
     status = game.status()
     if status == "checkmate_white":
-        return "white"
+        outcome = "white"
     elif status == "checkmate_black":
-        return "black"
-    return "draw"
+        outcome = "black"
+    else:
+        outcome = "draw"
+
+    return {
+        "outcome": outcome,
+        "moves": move_count,
+        "white_time": round(white_time, 2),
+        "black_time": round(black_time, 2),
+        "white_moves": white_moves,
+        "black_moves": black_moves,
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -469,17 +469,27 @@ def run_elo_service(
             state["total_games"] + 1, white_name, black_name, pair_games,
         )
 
-        t0 = time.time()
-        outcome = play_game(white_player, black_player)
-        elapsed = time.time() - t0
+        result = play_game(white_player, black_player)
+        outcome = result["outcome"]
 
+        w_avg = result["white_time"] / max(result["white_moves"], 1)
+        b_avg = result["black_time"] / max(result["black_moves"], 1)
         logger.info(
-            "  Result: {} ({:.0f}s)", outcome, elapsed,
+            "  Result: {} ({} moves) | {} {:.2f}s/move | {} {:.2f}s/move",
+            outcome, result["moves"],
+            white_name, w_avg, black_name, b_avg,
         )
 
-        # 8. Record result
+        # 8. Record result and timing stats
         _record_result(state, pair_key, white_name, outcome)
         state["total_games"] += 1
+
+        player_stats = state.setdefault("player_stats", {})
+        for name, t, m in [(white_name, result["white_time"], result["white_moves"]),
+                           (black_name, result["black_time"], result["black_moves"])]:
+            ps = player_stats.setdefault(name, {"total_time": 0.0, "total_moves": 0})
+            ps["total_time"] = round(ps["total_time"] + t, 2)
+            ps["total_moves"] += m
 
         # 9. Log event
         _log_event(logs_dir, {
@@ -487,7 +497,12 @@ def run_elo_service(
             "white": white_name,
             "black": black_name,
             "outcome": outcome,
-            "elapsed_seconds": round(elapsed, 1),
+            "moves": result["moves"],
+            "elapsed_seconds": round(result["white_time"] + result["black_time"], 1),
+            "white_time": result["white_time"],
+            "black_time": result["black_time"],
+            "white_moves": result["white_moves"],
+            "black_moves": result["black_moves"],
             "total_games": state["total_games"],
         })
 
