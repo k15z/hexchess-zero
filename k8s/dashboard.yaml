@@ -80,7 +80,7 @@ spec:
         - name: tunnel-notify
           image: ghcr.io/k15z/hexchess-zero/training:latest
           imagePullPolicy: Always
-          command: ["python3", "-c"]
+          command: ["python3", "-u", "-c"]
           args:
             - |
               import os, time, re, json, urllib.request
@@ -95,7 +95,7 @@ spec:
               print("Waiting for tunnel URL...")
               while True:
                   try:
-                      log = v1.read_namespaced_pod_log(pod, ns, container="tunnel", tail_lines=50)
+                      log = v1.read_namespaced_pod_log(pod, ns, container="tunnel", tail_lines=200)
                       urls = re.findall(r'https://[a-z0-9-]+\.trycloudflare\.com', log)
                       if urls:
                           url = urls[0]
