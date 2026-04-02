@@ -9,26 +9,29 @@ Hexagonal chess engine (Glinski variant) in Rust with AlphaZero-style self-play 
 ## Build & Test Commands
 
 ```bash
+# Setup (one-time)
+make setup                              # uv sync + build Python bindings
+
+# Training pipeline
+make worker                             # run self-play worker
+make trainer                            # run continuous trainer
+make elo                                # run Elo rating service
+make dashboard                          # run training dashboard
+make status                             # show training status
+
 # Engine (Rust)
-cargo test                              # run all unit tests (~95 tests)
+make test                               # cargo test (~95 tests)
+make bench                              # criterion benchmark for move generation
+make lint                               # clippy + fmt check
 cargo test board::tests::test_name      # run a single test by name
-cargo test -p hexchess-engine           # test only the engine crate
-cargo bench --bench movegen             # criterion benchmark for move generation
-cargo clippy                            # lint
-cargo fmt --check                       # format check
 
-# WASM bindings
-wasm-pack build --target web bindings/wasm
+# Web frontend
+make web-dev                            # WASM build + Vite dev server
+make web-build                          # production build
 
-# Python bindings (local dev install)
-cd bindings/python && maturin develop
-
-# Training pipeline (async distributed)
-python -m training worker                 # run self-play worker loop
-python -m training trainer                # run continuous trainer loop
-python -m training status                 # show cluster status
-python -m training progress               # show training progress table
-python -m training elo-service             # run continuous Elo rating service
+# Docker
+make docker-up                          # start all training services
+make docker-down                        # stop all services
 ```
 
 ## Architecture
@@ -52,20 +55,21 @@ python -m training elo-service             # run continuous Elo rating service
 
 ### Training (`training/`)
 
-Async distributed AlphaZero loop: workers generate self-play data continuously, trainer promotes every model unconditionally after each cycle. Elo service tracks strength independently.
+AlphaZero-style self-play training loop. All shared state lives in S3 (DigitalOcean Spaces / Cloudflare R2). Workers can run anywhere — local machines, cloud VMs, Docker.
 
-- **worker.py** — Continuous self-play loop. Polls for model updates, plays games using MCTS + latest model, flushes `.npz` batches to shared storage.
-- **trainer_loop.py** — Continuous trainer loop. Samples uniformly from a sliding-window replay buffer (5M positions), trains for N steps, exports ONNX, promotes unconditionally. Buffer reloaded every 1K steps to pick up fresh worker data. Saves versioned snapshots (`models/vN.onnx`).
-- **model.py** — `HexChessNet`: conv input → 6 residual blocks (128 filters) → policy head + WDL value head. Input `(19, 11, 11)`, policy output size = `num_move_indices()`, WDL output = 3 logits (Win/Draw/Loss).
-- **export.py** — PyTorch → ONNX. Softmax applied to policy logits at inference time in evaluator, not in the model.
-- **elo.py** — Shared Elo types: Player protocol, MinimaxPlayer, MctsPlayer, game play, MLE Elo computation.
-- **elo_service.py** — Continuous Elo rating service (k8s Deployment). Uncertainty-based matchmaking: picks the least-played pair, plays one game, updates Elo. Persists state to `elo_state.json`. LRU-caches player objects to bound memory.
-- **metrics.py** — Reads trainer logs and displays progress summary table.
-- **config.py** — All hyperparameters and derived paths (`AsyncConfig`).
+- **storage.py** — S3 abstraction layer. Key constants, upload/download helpers, position counting from filenames. All shared I/O goes through this module.
+- **worker.py** — Continuous self-play loop. Polls S3 for model updates, plays games using MCTS, flushes `.npz` batches to S3. During bootstrap (no model), generates minimax imitation data with process-pool parallelism.
+- **trainer_loop.py** — Continuous trainer. Samples from a sliding-window replay buffer (downloads from S3), trains for N steps per cycle, exports ONNX, promotes to S3. KataGo-style token bucket throttles training to match data production rate.
+- **model.py** — `HexChessNet`: SE residual blocks (128 filters) with KataGo-style global pooling → policy head + WDL value head. Input `(19, 11, 11)`, policy output size = `num_move_indices()`, WDL output = 3 logits.
+- **export.py** — PyTorch → ONNX export.
+- **elo.py** — Shared Elo types: Player protocol, MinimaxPlayer, MctsPlayer, game play with per-player timing, MLE Elo computation with Bayesian prior.
+- **elo_service.py** — Continuous Elo rating service. Uncertainty-based matchmaking, persists state to S3 (`state/elo.json`). LRU-caches player objects to bound memory.
+- **config.py** — Hyperparameters. Local `.cache/` directory for downloaded S3 objects.
+- **dashboard.py** + **dashboard.html** — Lightweight web dashboard reading from S3.
 
 ### Web (`web/`)
 
-Vanilla JS + SVG. Loads WASM package, renders flat-topped hex board, supports human vs AI play.
+React + TypeScript. Loads WASM package, renders flat-topped hex board, supports human vs AI play.
 
 ## Glinski Hex Chess Rules (key differences from standard chess)
 
@@ -75,17 +79,28 @@ Vanilla JS + SVG. Loads WASM package, renders flat-topped hex board, supports hu
 - Promotion cells: 11 edge cells per color along the far rank
 - Starting position has 51 legal moves (king has 2 moves from start, not 1)
 
-## Data Layout
+## S3 Bucket Layout
 
-Training artifacts are stored in `.data/` (gitignored), shared via NFS on k8s:
+All training artifacts are stored in S3 (configured via `.env`):
 ```
-.data/
-  models/          # best.onnx, best.pt, best.meta.json, v{N}.onnx snapshots
-  training_data/   # version-tagged selfplay .npz files
-  logs/            # trainer.jsonl, worker-*.jsonl
-  elo_state.json      # Continuous Elo service state (pair results, ratings)
-  elo_rankings.jsonl  # Elo ranking history (appended by both batch and service)
+models/
+  latest.onnx              # current model for inference
+  latest.meta.json         # {"version": N, "timestamp": "..."}
+  checkpoint.pt            # PyTorch training checkpoint
+  versions/{N}.onnx        # immutable version snapshots
+
+data/
+  selfplay/v{N}/{ts}_{rand}_n{count}.npz
+  imitation/{ts}_{rand}_n{count}.npz
+
+state/
+  elo.json                 # Elo ratings + pair results + player timing
+
+heartbeats/
+  {hostname}.json          # worker liveness + stats
 ```
+
+Position count is encoded in each `.npz` filename (`_n{count}`) so the trainer can count positions via S3 LIST without opening files.
 
 ## Workflow
 
@@ -97,3 +112,5 @@ Training artifacts are stored in `.data/` (gitignored), shared via NFS on k8s:
 - The `onnx` cargo feature gates all ONNX Runtime dependencies; Python bindings enable it, WASM does not
 - Move indices must stay deterministic — any change to the move table breaks all existing training data and models
 - Board tensor embedding: `col = q + 5, row = r + 5` maps hex cells into the 11x11 grid
+- S3 key constants are defined in `training/storage.py` — never use raw string keys elsewhere
+- `.env` file contains S3 credentials (BUCKET_NAME, ACCESS_KEY, SECRET_KEY, ENDPOINT) — gitignored, never committed
