@@ -77,6 +77,62 @@ spec:
             limits:
               memory: 128Mi
               cpu: "100m"
+        - name: tunnel-notify
+          image: ghcr.io/k15z/hexchess-zero/training:latest
+          imagePullPolicy: Always
+          command: ["python3", "-c"]
+          args:
+            - |
+              import os, time, re, json, urllib.request
+              from kubernetes import client, config
+
+              config.load_incluster_config()
+              v1 = client.CoreV1Api()
+              ns = os.environ["POD_NAMESPACE"]
+              pod = os.environ["POD_NAME"]
+              webhook = os.environ.get("SLACK_WEBHOOK_URL", "")
+
+              print("Waiting for tunnel URL...")
+              while True:
+                  try:
+                      log = v1.read_namespaced_pod_log(pod, ns, container="tunnel", tail_lines=50)
+                      urls = re.findall(r'https://[a-z0-9-]+\.trycloudflare\.com', log)
+                      if urls:
+                          url = urls[0]
+                          print(f"Tunnel URL: {url}")
+                          if webhook:
+                              data = json.dumps({"text": f"Dashboard: {url}"}).encode()
+                              req = urllib.request.Request(webhook, data=data,
+                                  headers={"Content-Type": "application/json"})
+                              urllib.request.urlopen(req)
+                              print("Posted to Slack")
+                          while True:
+                              time.sleep(3600)
+                  except Exception as e:
+                      print(f"Waiting... ({e})")
+                  time.sleep(5)
+          env:
+            - name: SLACK_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: slack-webhook
+                  key: webhook-url
+                  optional: true
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: "10m"
+            limits:
+              memory: 128Mi
+              cpu: "50m"
       volumes:
         - name: data
           persistentVolumeClaim:
