@@ -9,8 +9,9 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-def _data_root() -> Path:
-    return _project_root() / ".data"
+def _cache_root() -> Path:
+    """Local cache for downloaded S3 objects (models, .npz files)."""
+    return _project_root() / ".cache"
 
 
 @dataclass
@@ -45,15 +46,12 @@ class _BaseConfig:
     board_width: int = 11
 
 
-
 @dataclass
 class AsyncConfig(_BaseConfig):
     """Configuration for the async distributed training pipeline.
 
-    Uses a flat directory structure:
-      .data/models/       — best.onnx, best.pt, best.meta.json, v{N}.onnx snapshots
-      .data/training_data/ — version-tagged .npz files
-      .data/logs/          — append-only JSONL logs
+    All shared state lives in S3 (DigitalOcean Spaces / Cloudflare R2 / etc).
+    Local .cache/ directory holds downloaded files for ONNX Runtime and np.load.
     """
 
     # --- Async-specific ---
@@ -64,50 +62,29 @@ class AsyncConfig(_BaseConfig):
     min_positions_to_start: int = 1_000_000  # bootstrap gate: #15 found ~850k needed to beat heuristic
 
     # --- Imitation bootstrap ---
-    imitation_depth: int = 4  # minimax search depth for imitation targets
+    imitation_depth: int = 3  # minimax search depth for imitation targets
     imitation_random_plies: int = 8  # random opening moves per game for diversity
     imitation_temperature: float = 200.0  # softmax temperature for centipawn scores → policy
     bootstrap_steps: int = 50_000  # training steps for imitation bootstrap (before self-play)
     bootstrap_learning_rate: float = 0.01  # higher LR for clean supervised signal (10x self-play LR)
 
-    # --- Paths ---
+    # --- Local cache ---
 
     @property
-    def models_dir(self) -> Path:
-        return _data_root() / "models"
+    def cache_dir(self) -> Path:
+        return _cache_root()
 
     @property
-    def training_data_dir(self) -> Path:
-        return _data_root() / "training_data"
+    def model_cache_dir(self) -> Path:
+        return _cache_root() / "models"
 
     @property
-    def logs_dir(self) -> Path:
-        return _data_root() / "logs"
+    def data_cache_dir(self) -> Path:
+        return _cache_root() / "data"
 
-    @property
-    def best_model_path(self) -> Path:
-        return self.models_dir / "best.onnx"
-
-    @property
-    def best_checkpoint_path(self) -> Path:
-        return self.models_dir / "best.pt"
-
-    @property
-    def best_meta_path(self) -> Path:
-        return self.models_dir / "best.meta.json"
-
-    @property
-    def candidate_model_path(self) -> Path:
-        return self.models_dir / "candidate.onnx"
-
-    @property
-    def candidate_checkpoint_path(self) -> Path:
-        return self.models_dir / "candidate.pt"
-
-    def ensure_dirs(self) -> None:
-        self.models_dir.mkdir(parents=True, exist_ok=True)
-        self.training_data_dir.mkdir(parents=True, exist_ok=True)
-        self.logs_dir.mkdir(parents=True, exist_ok=True)
+    def ensure_cache_dirs(self) -> None:
+        self.model_cache_dir.mkdir(parents=True, exist_ok=True)
+        self.data_cache_dir.mkdir(parents=True, exist_ok=True)
 
 
 if __name__ == "__main__":
@@ -115,6 +92,3 @@ if __name__ == "__main__":
     print("Training pipeline configuration:")
     for k, v in cfg.__dict__.items():
         print(f"  {k}: {v}")
-    print(f"  models_dir: {cfg.models_dir}")
-    print(f"  training_data_dir: {cfg.training_data_dir}")
-    print(f"  best_model_path: {cfg.best_model_path}")

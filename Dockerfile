@@ -36,6 +36,4 @@ RUN pip install /tmp/*.whl && rm /tmp/*.whl
 # Copy training code
 COPY training/ training/
 
-# Default: run full training loop
 ENTRYPOINT ["python", "-m", "training"]
-CMD ["loop"]

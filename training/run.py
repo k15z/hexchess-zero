@@ -2,10 +2,12 @@ from __future__ import annotations
 """Main training orchestrator for async distributed training."""
 
 import argparse
-import json
 import sys
 
+from dotenv import load_dotenv
 from loguru import logger
+
+load_dotenv()
 
 from .config import AsyncConfig
 
@@ -49,55 +51,9 @@ def cmd_trainer(args) -> None:
 
 
 def cmd_status(args) -> None:
-    """Show the status of the async training cluster."""
-    cfg = AsyncConfig()
-
-    # Model version
-    if cfg.best_meta_path.exists():
-        meta = json.loads(cfg.best_meta_path.read_text())
-        print(f"Model: v{meta.get('version', '?')} "
-              f"(promoted {meta.get('timestamp', '?')})")
-    else:
-        print("Model: none (no best model yet)")
-
-    # Training data
-    npz_files = list(cfg.training_data_dir.glob("*.npz")) if cfg.training_data_dir.exists() else []
-    if npz_files:
-        import numpy as np
-        total_pos = 0
-        for f in npz_files:
-            try:
-                with np.load(f, mmap_mode="r") as data:
-                    total_pos += len(data["outcomes"])
-            except (OSError, ValueError, KeyError):
-                continue
-        print(f"Data: {len(npz_files)} files, {total_pos:,} positions")
-    else:
-        print("Data: none")
-
-    # Logs
-    if cfg.logs_dir.exists():
-        for log_file in sorted(cfg.logs_dir.glob("*.jsonl")):
-            # Read last line
-            lines = log_file.read_text().strip().split("\n")
-            if lines:
-                last = json.loads(lines[-1])
-                ts = last.get("timestamp", "?")
-                event = last.get("event", "?")
-                print(f"Log {log_file.name}: last event={event} at {ts}")
-
-    # Versioned model snapshots
-    if cfg.models_dir.exists():
-        snapshots = sorted(cfg.models_dir.glob("v*.onnx"))
-        if snapshots:
-            versions = []
-            for s in snapshots:
-                try:
-                    versions.append(int(s.stem[1:]))
-                except ValueError:
-                    continue
-            if versions:
-                print(f"Snapshots: {len(versions)} versions (v{min(versions)}–v{max(versions)})")
+    """Show the status of the training pipeline."""
+    from .metrics import print_progress
+    print_progress()
 
 
 def main() -> None:

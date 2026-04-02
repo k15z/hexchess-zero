@@ -4,17 +4,18 @@ from __future__ import annotations
 Two training regimes:
 
 1. **Bootstrap** (`_run_bootstrap`): Runs when no model exists yet. Waits for
-   workers to generate enough imitation data, then trains for multiple epochs
-   over the full static dataset. Promotes v1 once.
+   workers to generate enough imitation data, then trains for multiple epochs.
 
 2. **Self-play loop** (`run_trainer` main loop): Runs continuously after
    bootstrap. Samples from a recency-weighted replay buffer, trains for N
-   steps per cycle, exports and promotes unconditionally, repeat. Workers
-   pick up new models and generate progressively stronger data.
+   steps per cycle, exports and promotes unconditionally, repeat.
+
+All data exchange happens via S3 (DigitalOcean Spaces / R2 / etc).
 """
 
-import json
+import os
 import random
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,33 +26,19 @@ import torch.optim as optim
 from loguru import logger
 from torch.utils.data import DataLoader, IterableDataset
 
+from . import storage
 from .config import AsyncConfig
 from .export import export_to_onnx
 from .model import build_model
 from .slack import notify_training_cycle
 
 
-def _read_model_version(cfg: AsyncConfig) -> int:
-    if cfg.best_meta_path.exists():
-        try:
-            return json.loads(cfg.best_meta_path.read_text()).get("version", 0)
-        except (json.JSONDecodeError, OSError):
-            return 0
-    return 0
-
-
-def _atomic_write_json(path: Path, data: dict) -> None:
-    tmp = path.with_name(path.name + '.tmp')
-    tmp.write_text(json.dumps(data, indent=2) + "\n")
-    tmp.rename(path)
-
-
-def _atomic_copy(src: Path, dst: Path) -> None:
-    """Copy file atomically via write-to-temp-then-rename."""
-    import shutil
-    tmp = dst.with_name(dst.name + '.tmp')
-    shutil.copy2(src, tmp)
-    tmp.rename(dst)
+def _read_model_version() -> int:
+    """Read the current model version from S3."""
+    try:
+        return storage.get_json(storage.LATEST_META).get("version", 0)
+    except KeyError:
+        return 0
 
 
 # ---------------------------------------------------------------------------
@@ -86,15 +73,7 @@ class TrainBucket:
         self._last_added: float = 0.0
 
     def update(self, total_positions: int) -> None:
-        """Refresh the bucket with newly observed positions.
-
-        ``total_positions`` should be a cumulative count (all data ever
-        produced), **not** the capped replay-buffer size. Otherwise the
-        bucket starves once the buffer saturates.
-        """
         if self._prev_positions is None:
-            # First observation — seed so training can begin right away,
-            # but cap so a restart doesn't grant unlimited budget.
             tokens = total_positions * self.target_passes
             if self._max_seed is not None:
                 tokens = min(tokens, self._max_seed)
@@ -113,7 +92,6 @@ class TrainBucket:
         self._cumulative_positions = total_positions
 
     def consume(self) -> None:
-        """Consume tokens for one training step (= one batch)."""
         self._tokens -= self.batch_size
 
     @property
@@ -125,77 +103,60 @@ class TrainBucket:
 
 
 # ---------------------------------------------------------------------------
-# Replay buffer (self-play regime)
+# Replay buffer
 # ---------------------------------------------------------------------------
 
 class ReplayBuffer(IterableDataset):
-    """Streams training data with uniform sampling from a sliding window.
+    """Streams training data from S3 with uniform sampling.
 
-    Selects the most recent .npz files up to max_positions, then samples
-    files uniformly at random. Positions within each file pass through a
-    shuffle buffer to decorrelate batches.
-
-    The iterator is infinite — the training loop controls how many steps
-    to consume before reloading.
+    Selects the most recent files up to max_positions (by parsing
+    timestamps from S3 keys), downloads them to a local cache,
+    and samples from them with a shuffle buffer.
     """
 
     SHUFFLE_BUFFER_SIZE = 100_000
+    SAMPLE_PER_FILE = 2048
 
-    def __init__(self, data_dir: Path, max_positions: int = 5_000_000,
-                 glob_pattern: str = "sp_*.npz"):
-        self.data_dir = data_dir
+    def __init__(self, cache_dir: Path, max_positions: int = 5_000_000,
+                 s3_prefix: str = storage.SELFPLAY_PREFIX):
+        self.cache_dir = cache_dir
         self.max_positions = max_positions
-        self._glob_pattern = glob_pattern
-        self.files, self.total_positions = self._select_files()
+        self.s3_prefix = s3_prefix
+        self.files, self.total_positions = self._select_and_download()
 
-    def _select_files(self) -> tuple[list[Path], int]:
-        all_files = sorted(
-            (f for f in self.data_dir.glob(self._glob_pattern) if ".tmp" not in f.name),
-            key=lambda f: f.stat().st_mtime,
-        )
-        if not all_files:
+    def _select_and_download(self) -> tuple[list[Path], int]:
+        """Select recent files from S3 and download to local cache."""
+        selected = storage.select_recent_files(self.s3_prefix, self.max_positions)
+        if not selected:
             return [], 0
 
-        selected = []
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        needed = set()
+        local_files = []
         total = 0
-        for f in reversed(all_files):
-            try:
-                with np.load(f, mmap_mode="r") as data:
-                    n = len(data["outcomes"])
-            except (OSError, ValueError, KeyError):
-                continue
-            selected.append(f)
-            total += n
-            if total >= self.max_positions:
-                break
+        for entry in selected:
+            safe_name = entry["key"].replace("/", "_")
+            local_path = self.cache_dir / safe_name
+            needed.add(safe_name)
+            if not local_path.exists():
+                storage.get_file(entry["key"], local_path)
+            local_files.append(local_path)
+            total += entry["positions"]
 
-        selected.reverse()
-        total = min(total, self.max_positions)
-        return selected, total
+        # Prune cached files no longer in the selection
+        for f in self.cache_dir.iterdir():
+            if f.name not in needed and f.suffix == ".npz":
+                f.unlink()
+
+        return local_files, total
 
     def stats(self) -> dict:
-        """Return buffer diagnostics for logging."""
         if not self.files:
             return {}
-        now = time.time()
-        mtimes = [f.stat().st_mtime for f in self.files]
-        ages = sorted(now - t for t in mtimes)
-        # Parse version from filenames like sp_v5_... or im_v0_...
-        version_counts: dict[str, int] = {}
-        for f in self.files:
-            parts = f.name.split("_")
-            v = parts[1] if len(parts) >= 2 else "unknown"
-            version_counts[v] = version_counts.get(v, 0) + 1
         return {
             "files": len(self.files),
             "positions": self.total_positions,
-            "oldest_age_min": round(ages[-1] / 60, 1),
-            "newest_age_min": round(ages[0] / 60, 1),
-            "median_age_min": round(ages[len(ages) // 2] / 60, 1),
-            "versions": version_counts,
         }
-
-    SAMPLE_PER_FILE = 2048  # rows to sample from each .npz
 
     def __iter__(self):
         if not self.files:
@@ -204,7 +165,6 @@ class ReplayBuffer(IterableDataset):
         buf_b, buf_p, buf_o = [], [], []
 
         while True:
-            # Pick a file uniformly at random
             [chosen] = random.choices(self.files, k=1)
             try:
                 data = np.load(chosen, mmap_mode="r")
@@ -212,18 +172,16 @@ class ReplayBuffer(IterableDataset):
             except (OSError, ValueError, KeyError):
                 continue
 
-            # Sample a subset of rows to avoid loading entire file into RAM
             n = len(outcomes)
             k = min(n, self.SAMPLE_PER_FILE)
             idx = np.random.choice(n, size=k, replace=False)
-            idx.sort()  # sequential access for mmap friendliness
+            idx.sort()
             buf_b.append(np.array(boards[idx]))
             buf_p.append(np.array(policies[idx]))
             buf_o.append(np.array(outcomes[idx]))
 
             total = sum(len(b) for b in buf_b)
 
-            # Drain shuffle buffer when large enough
             if total >= self.SHUFFLE_BUFFER_SIZE:
                 merged_b = np.concatenate(buf_b)
                 merged_p = np.concatenate(buf_p)
@@ -241,44 +199,17 @@ class ReplayBuffer(IterableDataset):
 
 
 # ---------------------------------------------------------------------------
-# Bootstrap data loading
-# ---------------------------------------------------------------------------
-
-def _count_positions(data_dir: Path, glob_pattern: str = "sp_*.npz") -> int:
-    """Count total positions across matching .npz files.
-
-    # TODO: This opens every .npz on disk. If file count becomes a bottleneck,
-    # switch to a counter file that workers atomically increment on each flush.
-    """
-    total = 0
-    for f in data_dir.glob(glob_pattern):
-        if ".tmp" in f.name:
-            continue
-        try:
-            with np.load(f, mmap_mode="r") as data:
-                total += len(data["outcomes"])
-        except (OSError, ValueError, KeyError):
-            continue
-    return total
-
-
-# ---------------------------------------------------------------------------
-# Bootstrap training (imitation regime)
+# Bootstrap training
 # ---------------------------------------------------------------------------
 
 def _run_bootstrap(cfg: AsyncConfig, model: torch.nn.Module,
                    optimizer: optim.Optimizer, device: torch.device) -> int:
-    """Train on imitation data for many steps. Returns new model version.
-
-    Runs bootstrap_steps steps with uniform sampling (no recency bias)
-    over all available imitation data.
-    """
+    """Train on imitation data. Returns new model version."""
     logger.info("Bootstrap mode: waiting for {:,} imitation positions...",
                 cfg.min_positions_to_start)
 
-    # Wait for enough data
     while True:
-        available = _count_positions(cfg.training_data_dir, glob_pattern="im_*.npz")
+        available = storage.count_positions(storage.IMITATION_PREFIX)
         if available >= cfg.min_positions_to_start:
             break
         logger.info("Waiting for data: {:,}/{:,} positions",
@@ -294,16 +225,14 @@ def _run_bootstrap(cfg: AsyncConfig, model: torch.nn.Module,
     logger.info("=" * 60)
 
     def reload_buffer():
-        ds = ReplayBuffer(cfg.training_data_dir,
+        ds = ReplayBuffer(cfg.data_cache_dir / "imitation",
                           max_positions=cfg.replay_buffer_size,
-                          glob_pattern="im_*.npz")
+                          s3_prefix=storage.IMITATION_PREFIX)
         dl = DataLoader(ds, batch_size=cfg.batch_size, num_workers=0)
         return ds, dl
 
     dataset, dataloader = reload_buffer()
 
-    # Use higher LR for bootstrap (clean supervised signal), then
-    # self-play loop will use cfg.learning_rate (10x lower)
     for pg in optimizer.param_groups:
         pg['lr'] = cfg.bootstrap_learning_rate
 
@@ -352,70 +281,55 @@ def _run_bootstrap(cfg: AsyncConfig, model: torch.nn.Module,
                     total_steps / elapsed, elapsed,
                 )
 
-            # Periodic reload: pick up fresh imitation data from workers
             if total_steps % cfg.reload_interval == 0 and total_steps < total_steps_target:
                 dataset, dataloader = reload_buffer()
-                _log_buffer_stats("  Reloaded buffer", dataset.stats())
-                break  # restart with new dataloader
+                logger.info("  Reloaded buffer: {} files, {:,} positions",
+                            len(dataset.files), dataset.total_positions)
+                break
 
     train_elapsed = time.time() - t0
     logger.info("Bootstrap training complete: {:,} steps in {:.0f}s", total_steps, train_elapsed)
 
     # Export and promote v1
-    logger.info("Exporting bootstrap model...")
-    torch.save(model.state_dict(), cfg.candidate_checkpoint_path)
-    export_to_onnx(cfg.candidate_checkpoint_path, cfg.candidate_model_path, cfg)
-
     new_version = 1
-    _atomic_copy(cfg.candidate_model_path, cfg.best_model_path)
-    _atomic_copy(cfg.candidate_checkpoint_path, cfg.best_checkpoint_path)
-    _atomic_copy(cfg.candidate_model_path, cfg.models_dir / f"v{new_version}.onnx")
-    _atomic_write_json(cfg.best_meta_path, {
-        "version": new_version,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    })
+    _promote_model(cfg, model, new_version)
 
     logger.info("Promoted bootstrap model to v{} ({:,} steps, {:.0f}s)",
                 new_version, total_steps, train_elapsed)
-
-    _log_event(cfg, {
-        "event": "bootstrap_complete",
-        "version": new_version,
-        "steps": total_steps,
-        "positions": available,
-        "elapsed_seconds": round(train_elapsed, 1),
-    })
-
     return new_version
 
 
 # ---------------------------------------------------------------------------
-# Logging helpers
+# Model promotion
 # ---------------------------------------------------------------------------
 
-def _log_buffer_stats(prefix: str, s: dict) -> None:
-    logger.info(
-        "{}: {:,} pos, {} files | age: {:.0f}–{:.0f}min (median {:.0f}min) | versions: {}",
-        prefix, s.get("positions", 0), s.get("files", 0),
-        s.get("newest_age_min", 0), s.get("oldest_age_min", 0),
-        s.get("median_age_min", 0), s.get("versions", {}),
-    )
+def _promote_model(cfg: AsyncConfig, model: torch.nn.Module, version: int) -> None:
+    """Export model and upload to S3 as the latest version."""
+    cfg.ensure_cache_dirs()
 
+    local_pt = cfg.model_cache_dir / "checkpoint.pt"
+    local_onnx = cfg.model_cache_dir / "latest.onnx"
 
-def _log_event(cfg: AsyncConfig, event: dict) -> None:
-    log_path = cfg.logs_dir / "trainer.jsonl"
-    event["timestamp"] = datetime.now(timezone.utc).isoformat()
-    with open(log_path, "a") as f:
-        f.write(json.dumps(event) + "\n")
+    torch.save(model.state_dict(), local_pt)
+    export_to_onnx(local_pt, local_onnx, cfg)
+
+    storage.put_file(f"{storage.VERSIONS_PREFIX}{version}.onnx", local_onnx)
+    storage.put_file(storage.CHECKPOINT_PT, local_pt)
+    storage.copy(f"{storage.VERSIONS_PREFIX}{version}.onnx", storage.LATEST_ONNX)
+    # Meta is the commit point — workers poll this, so write it last
+    storage.put_json(storage.LATEST_META, {
+        "version": version,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
 
 
 # ---------------------------------------------------------------------------
-# Main trainer loop (self-play regime)
+# Main trainer loop
 # ---------------------------------------------------------------------------
 
 def run_trainer(cfg: AsyncConfig) -> None:
     """Run the continuous trainer loop."""
-    cfg.ensure_dirs()
+    cfg.ensure_cache_dirs()
 
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -426,13 +340,14 @@ def run_trainer(cfg: AsyncConfig) -> None:
     logger.info("Trainer starting on device: {} | buffer={:,} steps/cycle={}",
                 device, cfg.replay_buffer_size, cfg.steps_per_cycle)
 
-    current_version = _read_model_version(cfg)
+    current_version = _read_model_version()
 
-    # Persistent model and optimizer across cycles
     model = build_model(cfg).to(device)
-    if cfg.best_checkpoint_path.exists():
-        logger.info("Loading checkpoint: {}", cfg.best_checkpoint_path)
-        model.load_state_dict(torch.load(cfg.best_checkpoint_path, map_location=device, weights_only=True))
+    if current_version > 0:
+        local_pt = cfg.model_cache_dir / "checkpoint.pt"
+        storage.get_file(storage.CHECKPOINT_PT, local_pt)
+        logger.info("Loading checkpoint v{}", current_version)
+        model.load_state_dict(torch.load(local_pt, map_location=device, weights_only=True))
 
     optimizer = optim.SGD(
         model.parameters(),
@@ -441,10 +356,9 @@ def run_trainer(cfg: AsyncConfig) -> None:
         weight_decay=cfg.l2_regularization,
     )
 
-    # Bootstrap: train on imitation data if no model exists yet
-    if not cfg.best_model_path.exists():
+    # Bootstrap if no model exists
+    if current_version == 0:
         current_version = _run_bootstrap(cfg, model, optimizer, device)
-        # Fresh optimizer for self-play: reset momentum buffer and drop LR
         optimizer = optim.SGD(
             model.parameters(), lr=cfg.learning_rate,
             momentum=cfg.momentum, weight_decay=cfg.l2_regularization,
@@ -457,7 +371,21 @@ def run_trainer(cfg: AsyncConfig) -> None:
                          max_seed=cfg.steps_per_cycle * cfg.batch_size,
                          max_tokens=float(cfg.steps_per_cycle * cfg.batch_size))
 
+    def reload_buffer():
+        ds = ReplayBuffer(cfg.data_cache_dir / "selfplay",
+                          max_positions=cfg.replay_buffer_size,
+                          s3_prefix=storage.SELFPLAY_PREFIX)
+        dl = DataLoader(ds, batch_size=cfg.batch_size, num_workers=0)
+        return ds, dl
+
     while True:
+        # Wait for selfplay data before starting a cycle
+        dataset, dataloader = reload_buffer()
+        if dataset.total_positions == 0:
+            logger.info("No valid training data found, waiting...")
+            time.sleep(30)
+            continue
+
         cycle += 1
         cycle_t0 = time.time()
 
@@ -466,29 +394,7 @@ def run_trainer(cfg: AsyncConfig) -> None:
         logger.info("Training cycle {} | model v{}", cycle, current_version)
         logger.info("=" * 60)
 
-        # Check if model was promoted externally (shouldn't happen with single
-        # trainer, but defensive)
-        disk_version = _read_model_version(cfg)
-        if disk_version > current_version and cfg.best_checkpoint_path.exists():
-            logger.info("Model updated externally: v{} -> v{}, reloading", current_version, disk_version)
-            model.load_state_dict(torch.load(cfg.best_checkpoint_path, map_location=device, weights_only=True))
-            optimizer = optim.SGD(model.parameters(), lr=cfg.learning_rate, momentum=cfg.momentum, weight_decay=cfg.l2_regularization)
-            current_version = disk_version
-
-        # Load data
-        def reload_buffer():
-            ds = ReplayBuffer(cfg.training_data_dir,
-                              max_positions=cfg.replay_buffer_size)
-            dl = DataLoader(ds, batch_size=cfg.batch_size, num_workers=0)
-            return ds, dl
-
-        dataset, dataloader = reload_buffer()
-        if dataset.total_positions == 0:
-            logger.info("No valid training data found, waiting...")
-            time.sleep(30)
-            continue
-
-        bucket.update(_count_positions(cfg.training_data_dir))
+        bucket.update(storage.count_positions(storage.SELFPLAY_PREFIX))
 
         # Rate limit: wait for workers to produce enough data
         if not bucket.has_budget():
@@ -496,38 +402,33 @@ def run_trainer(cfg: AsyncConfig) -> None:
                         bucket.tokens)
             while not bucket.has_budget():
                 time.sleep(30)
-                dataset, dataloader = reload_buffer()
-                bucket.update(_count_positions(cfg.training_data_dir))
+                bucket.update(storage.count_positions(storage.SELFPLAY_PREFIX))
                 if not bucket.has_budget():
                     logger.info("  Still waiting... bucket={:.0f} tokens, {:,} cumulative positions",
                                 bucket.tokens, bucket._cumulative_positions)
 
-        buf_stats = dataset.stats()
-        _log_buffer_stats("Replay buffer", buf_stats)
-        logger.info("Train bucket: {:.0f} tokens available ({:,} new positions, +{:.0f} tokens, {:,} cumulative)",
-                    bucket.tokens, bucket._last_new, bucket._last_added, bucket._cumulative_positions)
+        logger.info("Replay buffer: {} files, {:,} positions",
+                    len(dataset.files), dataset.total_positions)
+        logger.info("Train bucket: {:.0f} tokens available ({:,} new positions, +{:.0f} tokens)",
+                    bucket.tokens, bucket._last_new, bucket._last_added)
 
-        # Step-based training
+        # Training
         model.train()
         step = 0
         cycle_policy_loss = 0.0
         cycle_value_loss = 0.0
         train_t0 = time.time()
-        log_interval = 100  # log every N steps
 
         logger.info("Training for {} steps (batch_size={})...", cfg.steps_per_cycle, cfg.batch_size)
 
         while step < cfg.steps_per_cycle:
-            # Wait for budget if bucket is exhausted mid-cycle
             if not bucket.has_budget():
                 logger.info("  Bucket empty mid-cycle at step {}, waiting for new data...", step)
                 while not bucket.has_budget():
                     time.sleep(30)
-                    dataset, dataloader = reload_buffer()
-                    bucket.update(_count_positions(cfg.training_data_dir))
+                    bucket.update(storage.count_positions(storage.SELFPLAY_PREFIX))
                     if not bucket.has_budget():
-                        logger.info("    Still waiting... bucket={:.0f} tokens, {:,} cumulative positions",
-                                    bucket.tokens, bucket._cumulative_positions)
+                        logger.info("    Still waiting... bucket={:.0f} tokens", bucket.tokens)
 
             for boards, policies, outcomes in dataloader:
                 if step >= cfg.steps_per_cycle or not bucket.has_budget():
@@ -539,11 +440,9 @@ def run_trainer(cfg: AsyncConfig) -> None:
 
                 pred_policy, pred_wdl = model(boards)
 
-                # Policy loss: cross-entropy with MCTS policy as soft target
                 log_probs = torch.log_softmax(pred_policy, dim=1)
                 policy_loss = -torch.sum(policies * log_probs, dim=1).mean()
 
-                # Value loss: cross-entropy on WDL targets
                 log_probs_v = torch.log_softmax(pred_wdl, dim=1)
                 value_loss = -torch.sum(outcomes * log_probs_v, dim=1).mean()
 
@@ -553,15 +452,13 @@ def run_trainer(cfg: AsyncConfig) -> None:
                 total_loss.backward()
                 optimizer.step()
 
-                pl = policy_loss.item()
-                vl = value_loss.item()
-                cycle_policy_loss += pl
-                cycle_value_loss += vl
+                cycle_policy_loss += policy_loss.item()
+                cycle_value_loss += value_loss.item()
                 step += 1
                 total_steps_all_time += 1
                 bucket.consume()
 
-                if step % log_interval == 0 or step == cfg.steps_per_cycle:
+                if step % 100 == 0 or step == cfg.steps_per_cycle:
                     elapsed = time.time() - train_t0
                     steps_per_sec = step / elapsed if elapsed > 0 else 0
                     avg_p = cycle_policy_loss / step
@@ -573,59 +470,28 @@ def run_trainer(cfg: AsyncConfig) -> None:
                         steps_per_sec, elapsed,
                     )
 
-                # Periodic reload: pick up fresh worker data and refill bucket
                 if step % cfg.reload_interval == 0 and step < cfg.steps_per_cycle:
                     dataset, dataloader = reload_buffer()
-                    bucket.update(_count_positions(cfg.training_data_dir))
-                    _log_buffer_stats("  Reloaded buffer", dataset.stats())
-                    logger.info("  Train bucket: {:.0f} tokens remaining ({:,} new positions, +{:.0f} tokens)",
-                                bucket.tokens, bucket._last_new, bucket._last_added)
-                    break  # restart with new dataloader
+                    bucket.update(storage.count_positions(storage.SELFPLAY_PREFIX))
+                    logger.info("  Reloaded buffer: {} files, {:,} positions | bucket: {:.0f} tokens",
+                                len(dataset.files), dataset.total_positions, bucket.tokens)
+                    break
 
         train_elapsed = time.time() - train_t0
         avg_policy = cycle_policy_loss / max(step, 1)
         avg_value = cycle_value_loss / max(step, 1)
-        logger.info(
-            "Training complete: {} steps in {:.0f}s | policy={:.4f} value={:.4f}",
-            step, train_elapsed, avg_policy, avg_value,
-        )
+        logger.info("Training complete: {} steps in {:.0f}s | policy={:.4f} value={:.4f}",
+                    step, train_elapsed, avg_policy, avg_value)
 
-        # Export candidate
-        logger.info("Exporting candidate ONNX model...")
-        candidate_pt = cfg.candidate_checkpoint_path
-        candidate_onnx = cfg.candidate_model_path
-        torch.save(model.state_dict(), candidate_pt)
-        export_to_onnx(candidate_pt, candidate_onnx, cfg)
-
-        # Always promote — Elo service handles strength tracking
+        # Promote
         new_version = current_version + 1
-        _atomic_copy(candidate_onnx, cfg.best_model_path)
-        _atomic_copy(candidate_pt, cfg.best_checkpoint_path)
-        _atomic_copy(candidate_onnx, cfg.models_dir / f"v{new_version}.onnx")
-        _atomic_write_json(cfg.best_meta_path, {
-            "version": new_version,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        })
+        _promote_model(cfg, model, new_version)
         current_version = new_version
 
         cycle_elapsed = time.time() - cycle_t0
         logger.info("Promoted to v{} (cycle {} done in {:.0f}s | total steps: {:,})",
                      new_version, cycle, cycle_elapsed, total_steps_all_time)
 
-        _log_event(cfg, {
-            "event": "cycle_complete",
-            "cycle": cycle,
-            "version": new_version,
-            "steps": step,
-            "total_steps": total_steps_all_time,
-            "positions": dataset.total_positions,
-            "policy_loss": round(avg_policy, 4),
-            "value_loss": round(avg_value, 4),
-            "elapsed_seconds": round(cycle_elapsed, 1),
-            "bucket_tokens_remaining": round(bucket.tokens, 1),
-            "cumulative_positions": bucket._cumulative_positions,
-            "initial_buffer_stats": buf_stats,
-        })
         notify_training_cycle(
             cycle=cycle, version=new_version, steps=step,
             total_steps=total_steps_all_time, positions=dataset.total_positions,

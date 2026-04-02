@@ -1,0 +1,36 @@
+# End-to-end training pipeline for local testing.
+#
+# Usage:
+#   docker compose up --build
+#
+# Requires .env with S3 credentials (BUCKET_NAME, ACCESS_KEY, SECRET_KEY, ENDPOINT).
+# All services share the same S3 bucket for coordination.
+
+services:
+  trainer:
+    build: .
+    command: ["trainer"]
+    env_file: .env
+    restart: unless-stopped
+
+  worker:
+    build: .
+    command: ["worker"]
+    env_file: .env
+    restart: unless-stopped
+    deploy:
+      replicas: 1
+
+  elo-service:
+    build: .
+    command: ["elo-service"]
+    env_file: .env
+    restart: unless-stopped
+
+  dashboard:
+    build: .
+    command: ["dashboard", "--port", "8080"]
+    env_file: .env
+    ports:
+      - "8081:8080"
+    restart: unless-stopped
