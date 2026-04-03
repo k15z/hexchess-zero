@@ -94,7 +94,8 @@ fn search_with_policy_benchmark() {
     let search_time = t0.elapsed();
 
     let t0 = std::time::Instant::now();
-    let policy_result = minimax::search_with_policy(&mut state, 3, &EvalWeights::material_only()).unwrap();
+    let policy_result =
+        minimax::search_with_policy(&mut state, 3, &EvalWeights::material_only()).unwrap();
     let policy_time = t0.elapsed();
 
     println!("\n=== search_with_policy depth 3 from starting position ===");

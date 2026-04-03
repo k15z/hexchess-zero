@@ -794,9 +794,16 @@ mod tests {
     use crate::eval::EvalWeights;
 
     const W: EvalWeights = EvalWeights {
-        material: 1, mobility: 0, pawn_advance: 0, center_control: 0,
-        king_safety: 0, bishop_color_bonus: 0, pawn_connected: 0, pawn_isolated: 0,
-        passed_pawn: 0, king_tropism: 0,
+        material: 1,
+        mobility: 0,
+        pawn_advance: 0,
+        center_control: 0,
+        king_safety: 0,
+        bishop_color_bonus: 0,
+        pawn_connected: 0,
+        pawn_isolated: 0,
+        passed_pawn: 0,
+        king_tropism: 0,
     };
 
     #[test]

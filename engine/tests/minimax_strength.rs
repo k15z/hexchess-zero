@@ -508,7 +508,8 @@ fn policy_best_score_matches_search() {
             None => continue,
         };
         let best = minimax::search(&mut state, 3, &EvalWeights::material_only()).unwrap();
-        let policy = minimax::search_with_policy(&mut state, 3, &EvalWeights::material_only()).unwrap();
+        let policy =
+            minimax::search_with_policy(&mut state, 3, &EvalWeights::material_only()).unwrap();
         assert_eq!(
             policy.best_score, best.score,
             "search_with_policy best_score {} != search score {} after {} moves",
@@ -524,7 +525,8 @@ fn policy_returns_all_legal_moves() {
             Some(s) => s,
             None => continue,
         };
-        let policy = minimax::search_with_policy(&mut state, 2, &EvalWeights::material_only()).unwrap();
+        let policy =
+            minimax::search_with_policy(&mut state, 2, &EvalWeights::material_only()).unwrap();
         let legal = state.legal_moves();
         assert_eq!(
             policy.move_scores.len(),
@@ -582,7 +584,8 @@ fn policy_scores_bounded() {
             Some(s) => s,
             None => continue,
         };
-        let policy = minimax::search_with_policy(&mut state, 2, &EvalWeights::material_only()).unwrap();
+        let policy =
+            minimax::search_with_policy(&mut state, 2, &EvalWeights::material_only()).unwrap();
         for rm in &policy.move_scores {
             assert!(
                 rm.score.abs() < 20_000,
@@ -618,7 +621,8 @@ fn policy_best_move_has_highest_or_near_highest_score() {
 fn policy_node_count_bounded() {
     let mut state = GameState::new();
     let search_result = minimax::search(&mut state, 3, &EvalWeights::material_only()).unwrap();
-    let policy_result = minimax::search_with_policy(&mut state, 3, &EvalWeights::material_only()).unwrap();
+    let policy_result =
+        minimax::search_with_policy(&mut state, 3, &EvalWeights::material_only()).unwrap();
     // Phase 1 + Phase 2 should be less than 3x Phase 1 alone (TT reuse).
     assert!(
         policy_result.nodes < search_result.nodes * 3,
@@ -659,8 +663,10 @@ fn policy_top_moves_correlate_with_naive() {
             Some(s) => s,
             None => continue,
         };
-        let policy = minimax::search_with_policy(&mut state, 2, &EvalWeights::material_only()).unwrap();
-        let naive_all = minimax::search_all_moves(&mut state, 2, &EvalWeights::material_only()).unwrap();
+        let policy =
+            minimax::search_with_policy(&mut state, 2, &EvalWeights::material_only()).unwrap();
+        let naive_all =
+            minimax::search_all_moves(&mut state, 2, &EvalWeights::material_only()).unwrap();
 
         // Get top-3 from policy and top-5 from naive.
         let mut policy_sorted: Vec<_> = policy.move_scores.iter().collect();

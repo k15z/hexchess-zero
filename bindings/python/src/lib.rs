@@ -96,9 +96,16 @@ impl PyEvalWeights {
             "EvalWeights(material={}, mobility={}, pawn_advance={}, center_control={}, \
              king_safety={}, bishop_color_bonus={}, pawn_connected={}, pawn_isolated={}, \
              passed_pawn={}, king_tropism={})",
-            w.material, w.mobility, w.pawn_advance, w.center_control,
-            w.king_safety, w.bishop_color_bonus, w.pawn_connected, w.pawn_isolated,
-            w.passed_pawn, w.king_tropism
+            w.material,
+            w.mobility,
+            w.pawn_advance,
+            w.center_control,
+            w.king_safety,
+            w.bishop_color_bonus,
+            w.pawn_connected,
+            w.pawn_isolated,
+            w.passed_pawn,
+            w.king_tropism
         )
     }
 }

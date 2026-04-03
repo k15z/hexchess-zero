@@ -1,4 +1,4 @@
-use crate::board::{Board, Color, HexCoord, PieceKind, BOARD_RADIUS, CARDINAL_DIRS};
+use crate::board::{BOARD_RADIUS, Board, CARDINAL_DIRS, Color, HexCoord, PieceKind};
 use crate::game::{GameState, GameStatus};
 use crate::movegen;
 
@@ -310,8 +310,8 @@ fn pawn_structure_score(board: &Board, us: Color) -> (i32, i32) {
             }
 
             let qi = (coord.q + 5) as usize;
-            let has_neighbor = (qi > 0 && pawn_on_file[qi - 1])
-                || (qi < 10 && pawn_on_file[qi + 1]);
+            let has_neighbor =
+                (qi > 0 && pawn_on_file[qi - 1]) || (qi < 10 && pawn_on_file[qi + 1]);
             if !has_neighbor {
                 isolated += 1;
             }
@@ -421,7 +421,11 @@ mod tests {
         let mut state = GameState::new();
         state.board.set(HexCoord::new(0, -1), None);
         let score = evaluate(&state);
-        assert!(score < 0, "Expected negative eval after removing white pawn, got {}", score);
+        assert!(
+            score < 0,
+            "Expected negative eval after removing white pawn, got {}",
+            score
+        );
     }
 
     #[test]
@@ -451,7 +455,10 @@ mod tests {
     fn weighted_eval_material_only_matches_original() {
         let board = Board::new();
         let weights = EvalWeights::material_only();
-        assert_eq!(evaluate_board_weighted(&board, &weights), evaluate_board(&board));
+        assert_eq!(
+            evaluate_board_weighted(&board, &weights),
+            evaluate_board(&board)
+        );
     }
 
     #[test]
@@ -459,9 +466,9 @@ mod tests {
         let mut state = GameState::new();
         let before = pawn_advance_score(&state.board, Color::White);
         let moves = state.legal_moves();
-        let pawn_move = moves.iter().find(|m| {
-            matches!(state.board.get(m.from), Some(p) if p.kind == PieceKind::Pawn)
-        });
+        let pawn_move = moves
+            .iter()
+            .find(|m| matches!(state.board.get(m.from), Some(p) if p.kind == PieceKind::Pawn));
         if let Some(mv) = pawn_move {
             state.apply_move(mv.clone());
             let after = pawn_advance_score(&state.board, Color::White);
