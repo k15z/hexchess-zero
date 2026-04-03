@@ -15,6 +15,7 @@ mod helpers;
 use helpers::naive_minimax::naive_search;
 use helpers::positions::play_n_moves;
 use hexchess_engine::board::{Board, Color, HexCoord, Piece, PieceKind};
+use hexchess_engine::eval::EvalWeights;
 use hexchess_engine::game::{GameState, GameStatus};
 use hexchess_engine::minimax;
 
@@ -65,7 +66,7 @@ fn free_queen_position() -> GameState {
 fn score_equiv_depth1_start() {
     let mut state = GameState::new();
     let (_, old_score, _) = naive_search(&mut state, 1).unwrap();
-    let new_result = minimax::search(&mut state, 1).unwrap();
+    let new_result = minimax::search(&mut state, 1, &EvalWeights::material_only()).unwrap();
     assert_eq!(old_score, new_result.score, "depth-1 scores should match");
 }
 
@@ -73,7 +74,7 @@ fn score_equiv_depth1_start() {
 fn score_equiv_depth2_start() {
     let mut state = GameState::new();
     let (_, old_score, _) = naive_search(&mut state, 2).unwrap();
-    let new_result = minimax::search(&mut state, 2).unwrap();
+    let new_result = minimax::search(&mut state, 2, &EvalWeights::material_only()).unwrap();
     assert_eq!(old_score, new_result.score, "depth-2 scores should match");
 }
 
@@ -87,7 +88,7 @@ fn scores_similar_in_midgame_positions() {
             None => continue,
         };
         let (_, old_score, _) = naive_search(&mut state, 2).unwrap();
-        let new_result = minimax::search(&mut state, 2).unwrap();
+        let new_result = minimax::search(&mut state, 2, &EvalWeights::material_only()).unwrap();
 
         let diff = (old_score - new_result.score).abs();
         assert!(
@@ -119,7 +120,7 @@ fn search_preserves_board_state() {
         let hash_before = state.board.zobrist_hash;
         let move_count_before = state.move_count();
 
-        let _ = minimax::search(&mut state, 3);
+        let _ = minimax::search(&mut state, 3, &EvalWeights::material_only());
 
         assert_eq!(
             state.board.cells, cells_before,
@@ -162,7 +163,7 @@ fn search_all_preserves_board_state() {
     let cells_before = state.board.cells;
     let hash_before = state.board.zobrist_hash;
 
-    let _ = minimax::search_all_moves(&mut state, 3);
+    let _ = minimax::search_all_moves(&mut state, 3, &EvalWeights::material_only());
 
     assert_eq!(state.board.cells, cells_before);
     assert_eq!(state.board.zobrist_hash, hash_before);
@@ -180,7 +181,7 @@ fn best_move_is_legal() {
             None => continue,
         };
         for depth in 1..=3 {
-            let result = minimax::search(&mut state, depth).unwrap();
+            let result = minimax::search(&mut state, depth, &EvalWeights::material_only()).unwrap();
             let legal = state.legal_moves();
             let found = legal.iter().any(|m| {
                 m.from == result.best_move.from
@@ -203,7 +204,7 @@ fn search_all_moves_are_legal_and_complete() {
             Some(s) => s,
             None => continue,
         };
-        let all = minimax::search_all_moves(&mut state, 2).unwrap();
+        let all = minimax::search_all_moves(&mut state, 2, &EvalWeights::material_only()).unwrap();
         let legal = state.legal_moves();
         assert_eq!(
             all.moves.len(),
@@ -225,7 +226,7 @@ fn scores_within_bounds() {
             Some(s) => s,
             None => continue,
         };
-        let result = minimax::search(&mut state, 3).unwrap();
+        let result = minimax::search(&mut state, 3, &EvalWeights::material_only()).unwrap();
         assert!(
             result.score.abs() < 20_000,
             "score {} out of bounds after {} moves",
@@ -238,9 +239,9 @@ fn scores_within_bounds() {
 #[test]
 fn deeper_search_explores_more_nodes() {
     let mut state = GameState::new();
-    let r1 = minimax::search(&mut state, 1).unwrap();
-    let r2 = minimax::search(&mut state, 2).unwrap();
-    let r3 = minimax::search(&mut state, 3).unwrap();
+    let r1 = minimax::search(&mut state, 1, &EvalWeights::material_only()).unwrap();
+    let r2 = minimax::search(&mut state, 2, &EvalWeights::material_only()).unwrap();
+    let r3 = minimax::search(&mut state, 3, &EvalWeights::material_only()).unwrap();
     assert!(
         r2.nodes > r1.nodes,
         "depth 2 should search more nodes than depth 1"
@@ -255,7 +256,7 @@ fn deeper_search_explores_more_nodes() {
 fn fewer_nodes_at_depth3() {
     let mut state = GameState::new();
     let (_, _, old_nodes) = naive_search(&mut state, 3).unwrap();
-    let new_result = minimax::search(&mut state, 3).unwrap();
+    let new_result = minimax::search(&mut state, 3, &EvalWeights::material_only()).unwrap();
     println!(
         "Depth 3 from start: naive={} nodes, optimized={} nodes, ratio={:.2}x",
         old_nodes,
@@ -281,8 +282,8 @@ fn search_and_search_all_agree_on_best_score() {
             Some(s) => s,
             None => continue,
         };
-        let best = minimax::search(&mut state, 2).unwrap();
-        let all = minimax::search_all_moves(&mut state, 2).unwrap();
+        let best = minimax::search(&mut state, 2, &EvalWeights::material_only()).unwrap();
+        let all = minimax::search_all_moves(&mut state, 2, &EvalWeights::material_only()).unwrap();
 
         let top = all.moves.iter().max_by_key(|m| m.score).unwrap();
         assert_eq!(
@@ -300,8 +301,8 @@ fn search_is_deterministic() {
             Some(s) => s,
             None => continue,
         };
-        let r1 = minimax::search(&mut state, 3).unwrap();
-        let r2 = minimax::search(&mut state, 3).unwrap();
+        let r1 = minimax::search(&mut state, 3, &EvalWeights::material_only()).unwrap();
+        let r2 = minimax::search(&mut state, 3, &EvalWeights::material_only()).unwrap();
         assert_eq!(
             r1.score, r2.score,
             "scores differ on repeated search (n={})",
@@ -323,8 +324,8 @@ fn search_is_deterministic() {
 #[test]
 fn search_all_top_move_matches_search_move() {
     let mut state = GameState::new();
-    let best = minimax::search(&mut state, 2).unwrap();
-    let all = minimax::search_all_moves(&mut state, 2).unwrap();
+    let best = minimax::search(&mut state, 2, &EvalWeights::material_only()).unwrap();
+    let all = minimax::search_all_moves(&mut state, 2, &EvalWeights::material_only()).unwrap();
 
     let top = all.moves.iter().max_by_key(|m| m.score).unwrap();
     assert_eq!(top.score, best.score);
@@ -358,7 +359,7 @@ fn depth3_does_not_lose_to_depth2() {
                 2
             };
 
-            match minimax::search(&mut state, depth) {
+            match minimax::search(&mut state, depth, &EvalWeights::material_only()) {
                 Some(r) => state.apply_move(r.best_move),
                 None => break,
             }
@@ -386,7 +387,7 @@ fn selfplay_completes_without_panic() {
         if state.is_game_over() {
             break;
         }
-        match minimax::search(&mut state, 2) {
+        match minimax::search(&mut state, 2, &EvalWeights::material_only()) {
             Some(r) => state.apply_move(r.best_move),
             None => break,
         }
@@ -400,7 +401,7 @@ fn selfplay_all_moves_legal() {
         if state.is_game_over() {
             break;
         }
-        let result = match minimax::search(&mut state, 2) {
+        let result = match minimax::search(&mut state, 2, &EvalWeights::material_only()) {
             Some(r) => r,
             None => break,
         };
@@ -426,7 +427,7 @@ fn selfplay_all_moves_legal() {
 #[test]
 fn finds_free_queen_capture() {
     let mut state = free_queen_position();
-    let result = minimax::search(&mut state, 1).unwrap();
+    let result = minimax::search(&mut state, 1, &EvalWeights::material_only()).unwrap();
     assert_eq!(
         result.best_move.to,
         HexCoord::new(0, 3),
@@ -443,7 +444,7 @@ fn finds_free_queen_capture() {
 #[test]
 fn free_queen_capture_all_moves() {
     let mut state = free_queen_position();
-    let all = minimax::search_all_moves(&mut state, 1).unwrap();
+    let all = minimax::search_all_moves(&mut state, 1, &EvalWeights::material_only()).unwrap();
     let top = all.moves.iter().max_by_key(|m| m.score).unwrap();
     assert_eq!(
         top.mv.to,
@@ -455,7 +456,7 @@ fn free_queen_capture_all_moves() {
 #[test]
 fn mate_score_exceeds_material() {
     let mut state = GameState::new();
-    let result = minimax::search(&mut state, 3).unwrap();
+    let result = minimax::search(&mut state, 3, &EvalWeights::material_only()).unwrap();
     assert!(
         result.score.abs() < 5000,
         "starting position score {} should be within material range",
@@ -470,7 +471,7 @@ fn search_all_scores_bounded() {
             Some(s) => s,
             None => continue,
         };
-        let all = minimax::search_all_moves(&mut state, 2).unwrap();
+        let all = minimax::search_all_moves(&mut state, 2, &EvalWeights::material_only()).unwrap();
         for rm in &all.moves {
             assert!(
                 rm.score.abs() < 20_000,
@@ -487,7 +488,7 @@ fn search_all_scores_bounded() {
 #[test]
 fn material_advantage_reflected_in_score() {
     let mut state = free_queen_position();
-    let result = minimax::search(&mut state, 2).unwrap();
+    let result = minimax::search(&mut state, 2, &EvalWeights::material_only()).unwrap();
     assert!(
         result.score > 0,
         "white with rook capturing free queen should have positive score, got {}",
@@ -506,8 +507,9 @@ fn policy_best_score_matches_search() {
             Some(s) => s,
             None => continue,
         };
-        let best = minimax::search(&mut state, 3).unwrap();
-        let policy = minimax::search_with_policy(&mut state, 3).unwrap();
+        let best = minimax::search(&mut state, 3, &EvalWeights::material_only()).unwrap();
+        let policy =
+            minimax::search_with_policy(&mut state, 3, &EvalWeights::material_only()).unwrap();
         assert_eq!(
             policy.best_score, best.score,
             "search_with_policy best_score {} != search score {} after {} moves",
@@ -523,7 +525,8 @@ fn policy_returns_all_legal_moves() {
             Some(s) => s,
             None => continue,
         };
-        let policy = minimax::search_with_policy(&mut state, 2).unwrap();
+        let policy =
+            minimax::search_with_policy(&mut state, 2, &EvalWeights::material_only()).unwrap();
         let legal = state.legal_moves();
         assert_eq!(
             policy.move_scores.len(),
@@ -547,7 +550,7 @@ fn policy_preserves_board_state() {
         let ep_before = state.board.en_passant;
         let hmc_before = state.board.halfmove_clock;
 
-        let _ = minimax::search_with_policy(&mut state, 3);
+        let _ = minimax::search_with_policy(&mut state, 3, &EvalWeights::material_only());
 
         assert_eq!(state.board.cells, cells_before, "cells changed (n={})", n);
         assert_eq!(
@@ -581,7 +584,8 @@ fn policy_scores_bounded() {
             Some(s) => s,
             None => continue,
         };
-        let policy = minimax::search_with_policy(&mut state, 2).unwrap();
+        let policy =
+            minimax::search_with_policy(&mut state, 2, &EvalWeights::material_only()).unwrap();
         for rm in &policy.move_scores {
             assert!(
                 rm.score.abs() < 20_000,
@@ -596,7 +600,7 @@ fn policy_scores_bounded() {
 #[test]
 fn policy_best_move_has_highest_or_near_highest_score() {
     let mut state = GameState::new();
-    let policy = minimax::search_with_policy(&mut state, 3).unwrap();
+    let policy = minimax::search_with_policy(&mut state, 3, &EvalWeights::material_only()).unwrap();
     let max_score = policy
         .move_scores
         .iter()
@@ -616,8 +620,9 @@ fn policy_best_move_has_highest_or_near_highest_score() {
 #[test]
 fn policy_node_count_bounded() {
     let mut state = GameState::new();
-    let search_result = minimax::search(&mut state, 3).unwrap();
-    let policy_result = minimax::search_with_policy(&mut state, 3).unwrap();
+    let search_result = minimax::search(&mut state, 3, &EvalWeights::material_only()).unwrap();
+    let policy_result =
+        minimax::search_with_policy(&mut state, 3, &EvalWeights::material_only()).unwrap();
     // Phase 1 + Phase 2 should be less than 3x Phase 1 alone (TT reuse).
     assert!(
         policy_result.nodes < search_result.nodes * 3,
@@ -636,7 +641,7 @@ fn policy_node_count_bounded() {
 #[test]
 fn policy_finds_free_queen() {
     let mut state = free_queen_position();
-    let policy = minimax::search_with_policy(&mut state, 2).unwrap();
+    let policy = minimax::search_with_policy(&mut state, 2, &EvalWeights::material_only()).unwrap();
     assert_eq!(
         policy.best_move.to,
         HexCoord::new(0, 3),
@@ -658,8 +663,10 @@ fn policy_top_moves_correlate_with_naive() {
             Some(s) => s,
             None => continue,
         };
-        let policy = minimax::search_with_policy(&mut state, 2).unwrap();
-        let naive_all = minimax::search_all_moves(&mut state, 2).unwrap();
+        let policy =
+            minimax::search_with_policy(&mut state, 2, &EvalWeights::material_only()).unwrap();
+        let naive_all =
+            minimax::search_all_moves(&mut state, 2, &EvalWeights::material_only()).unwrap();
 
         // Get top-3 from policy and top-5 from naive.
         let mut policy_sorted: Vec<_> = policy.move_scores.iter().collect();

@@ -342,15 +342,17 @@ struct SearchState {
     killers: Killers,
     history: History,
     nodes: u64,
+    weights: eval::EvalWeights,
 }
 
 impl SearchState {
-    fn new() -> Self {
+    fn new(weights: eval::EvalWeights) -> Self {
         Self {
             tt: TranspositionTable::new(),
             killers: Killers::new(),
             history: History::new(),
             nodes: 0,
+            weights,
         }
     }
 }
@@ -378,7 +380,7 @@ fn quiescence(
 ) -> i32 {
     ss.nodes += 1;
 
-    let stand_pat = eval::evaluate_board(&state.board);
+    let stand_pat = eval::evaluate_board_weighted(&state.board, &ss.weights);
     if stand_pat >= beta {
         return beta;
     }
@@ -493,7 +495,7 @@ fn negamax(
     if depth == 0 {
         return match mode {
             SearchMode::Full => quiescence(state, alpha, beta, MAX_QS_DEPTH, ss),
-            SearchMode::ProbeOnly => eval::evaluate_board(&state.board),
+            SearchMode::ProbeOnly => eval::evaluate_board_weighted(&state.board, &ss.weights),
         };
     }
 
@@ -647,10 +649,14 @@ fn iterative_deepen(
 /// Run iterative-deepening alpha-beta search up to the given depth.
 ///
 /// Returns `None` if the position is terminal (no legal moves).
-pub fn search(state: &mut GameState, depth: u32) -> Option<MinimaxResult> {
+pub fn search(
+    state: &mut GameState,
+    depth: u32,
+    weights: &eval::EvalWeights,
+) -> Option<MinimaxResult> {
     assert!(depth >= 1, "minimax depth must be >= 1");
 
-    let mut ss = SearchState::new();
+    let mut ss = SearchState::new(*weights);
     let (mv, score) = iterative_deepen(state, depth, &mut ss)?;
 
     Some(MinimaxResult {
@@ -667,7 +673,11 @@ pub fn search(state: &mut GameState, depth: u32) -> Option<MinimaxResult> {
 /// with a full window at the final depth (including quiescence). Kept for
 /// backward compatibility and as a test reference.
 /// Returns `None` if the position is terminal.
-pub fn search_all_moves(state: &mut GameState, depth: u32) -> Option<MinimaxAllResult> {
+pub fn search_all_moves(
+    state: &mut GameState,
+    depth: u32,
+    weights: &eval::EvalWeights,
+) -> Option<MinimaxAllResult> {
     assert!(depth >= 1, "minimax depth must be >= 1");
 
     let moves = movegen::generate_legal_moves(&state.board);
@@ -675,7 +685,7 @@ pub fn search_all_moves(state: &mut GameState, depth: u32) -> Option<MinimaxAllR
         return None;
     }
 
-    let mut ss = SearchState::new();
+    let mut ss = SearchState::new(*weights);
 
     for d in 1..depth {
         search_root(state, d, &mut ss);
@@ -721,10 +731,14 @@ pub fn search_all_moves(state: &mut GameState, depth: u32) -> Option<MinimaxAllR
 /// score, since Phase 2 is shallower.
 ///
 /// Returns `None` if the position is terminal.
-pub fn search_with_policy(state: &mut GameState, depth: u32) -> Option<MinimaxPolicyResult> {
+pub fn search_with_policy(
+    state: &mut GameState,
+    depth: u32,
+    weights: &eval::EvalWeights,
+) -> Option<MinimaxPolicyResult> {
     assert!(depth >= 1, "minimax depth must be >= 1");
 
-    let mut ss = SearchState::new();
+    let mut ss = SearchState::new(*weights);
 
     // Phase 1: full optimized search.
     let (best_move, best_score) = iterative_deepen(state, depth, &mut ss)?;
@@ -777,11 +791,14 @@ pub fn search_with_policy(state: &mut GameState, depth: u32) -> Option<MinimaxPo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::eval::EvalWeights;
+
+    const W: EvalWeights = EvalWeights::material_only();
 
     #[test]
     fn depth1_returns_move() {
         let mut state = GameState::new();
-        let result = search(&mut state, 1).unwrap();
+        let result = search(&mut state, 1, &W).unwrap();
         assert!(result.nodes > 0);
         assert!(result.score.abs() <= 10_100);
     }
@@ -789,28 +806,28 @@ mod tests {
     #[test]
     fn depth2_returns_move() {
         let mut state = GameState::new();
-        let result = search(&mut state, 2).unwrap();
+        let result = search(&mut state, 2, &W).unwrap();
         assert!(result.nodes > 0);
     }
 
     #[test]
     fn depth3_returns_move() {
         let mut state = GameState::new();
-        let result = search(&mut state, 3).unwrap();
+        let result = search(&mut state, 3, &W).unwrap();
         assert!(result.nodes > 0);
     }
 
     #[test]
     fn terminal_returns_none() {
         let mut state = GameState::new();
-        assert!(search(&mut state, 1).is_some());
+        assert!(search(&mut state, 1, &W).is_some());
     }
 
     #[test]
     fn search_all_moves_best_matches_search() {
         let mut state = GameState::new();
-        let best = search(&mut state, 2).unwrap();
-        let all = search_all_moves(&mut state, 2).unwrap();
+        let best = search(&mut state, 2, &W).unwrap();
+        let all = search_all_moves(&mut state, 2, &W).unwrap();
 
         let top = all.moves.iter().max_by_key(|m| m.score).unwrap();
         assert_eq!(top.score, best.score);
@@ -822,16 +839,16 @@ mod tests {
     #[test]
     fn iterative_deepening_improves_node_count() {
         let mut state = GameState::new();
-        let r2 = search(&mut state, 2).unwrap();
-        let r3 = search(&mut state, 3).unwrap();
+        let r2 = search(&mut state, 2, &W).unwrap();
+        let r3 = search(&mut state, 3, &W).unwrap();
         assert!(r3.nodes > r2.nodes);
     }
 
     #[test]
     fn tt_reduces_nodes_on_repeated_search() {
         let mut state = GameState::new();
-        let r1 = search(&mut state, 3).unwrap();
-        let r2 = search(&mut state, 3).unwrap();
+        let r1 = search(&mut state, 3, &W).unwrap();
+        let r2 = search(&mut state, 3, &W).unwrap();
         assert_eq!(r1.score, r2.score);
     }
 
@@ -872,7 +889,7 @@ mod tests {
     #[test]
     fn quiescence_does_not_panic() {
         let mut state = GameState::new();
-        let mut ss = SearchState::new();
+        let mut ss = SearchState::new(W);
         let score = quiescence(&mut state, i32::MIN + 1, i32::MAX, MAX_QS_DEPTH, &mut ss);
         assert!(score.abs() <= 10_100);
     }
@@ -880,7 +897,7 @@ mod tests {
     #[test]
     fn quiescence_depth_cap_terminates() {
         let mut state = GameState::new();
-        let mut ss = SearchState::new();
+        let mut ss = SearchState::new(W);
         let score = quiescence(&mut state, i32::MIN + 1, i32::MAX, 1, &mut ss);
         assert!(score.abs() <= 10_100);
     }
@@ -888,8 +905,8 @@ mod tests {
     #[test]
     fn deeper_search_finds_better_or_equal_move() {
         let mut state = GameState::new();
-        let r1 = search(&mut state, 1).unwrap();
-        let r2 = search(&mut state, 2).unwrap();
+        let r1 = search(&mut state, 1, &W).unwrap();
+        let r2 = search(&mut state, 2, &W).unwrap();
         assert!(r1.score.abs() <= 11_000);
         assert!(r2.score.abs() <= 11_000);
     }
@@ -937,7 +954,7 @@ mod tests {
     #[test]
     fn search_with_policy_returns_all_moves() {
         let mut state = GameState::new();
-        let result = search_with_policy(&mut state, 2).unwrap();
+        let result = search_with_policy(&mut state, 2, &W).unwrap();
         let legal = state.legal_moves();
         assert_eq!(result.move_scores.len(), legal.len());
     }
@@ -945,8 +962,8 @@ mod tests {
     #[test]
     fn search_with_policy_best_matches_search() {
         let mut state = GameState::new();
-        let best = search(&mut state, 3).unwrap();
-        let policy = search_with_policy(&mut state, 3).unwrap();
+        let best = search(&mut state, 3, &W).unwrap();
+        let policy = search_with_policy(&mut state, 3, &W).unwrap();
         assert_eq!(
             policy.best_score, best.score,
             "search_with_policy best_score {} != search score {}",
@@ -963,7 +980,7 @@ mod tests {
         let hash_before = state.board.zobrist_hash;
         let stm_before = state.side_to_move();
 
-        let _ = search_with_policy(&mut state, 3);
+        let _ = search_with_policy(&mut state, 3, &W);
 
         assert_eq!(state.board.cells, cells_before);
         assert_eq!(state.board.zobrist_hash, hash_before);

@@ -5,6 +5,7 @@ mod helpers;
 
 use helpers::naive_minimax::naive_search;
 use helpers::positions::play_n_moves;
+use hexchess_engine::eval::EvalWeights;
 use hexchess_engine::game::GameState;
 use hexchess_engine::minimax;
 
@@ -17,7 +18,7 @@ fn depth4_node_comparison() {
     let old_time = t0.elapsed();
 
     let t0 = std::time::Instant::now();
-    let new_result = minimax::search(&mut state, 4).unwrap();
+    let new_result = minimax::search(&mut state, 4, &EvalWeights::material_only()).unwrap();
     let new_time = t0.elapsed();
 
     println!("\n=== Depth 4 from starting position ===");
@@ -58,7 +59,7 @@ fn midgame_node_comparison() {
     let old_time = t0.elapsed();
 
     let t0 = std::time::Instant::now();
-    let new_result = minimax::search(&mut state, 3).unwrap();
+    let new_result = minimax::search(&mut state, 3, &EvalWeights::material_only()).unwrap();
     let new_time = t0.elapsed();
 
     println!("\n=== Depth 3 from mid-game position ===");
@@ -89,11 +90,12 @@ fn search_with_policy_benchmark() {
     let mut state = GameState::new();
 
     let t0 = std::time::Instant::now();
-    let search_result = minimax::search(&mut state, 3).unwrap();
+    let search_result = minimax::search(&mut state, 3, &EvalWeights::material_only()).unwrap();
     let search_time = t0.elapsed();
 
     let t0 = std::time::Instant::now();
-    let policy_result = minimax::search_with_policy(&mut state, 3).unwrap();
+    let policy_result =
+        minimax::search_with_policy(&mut state, 3, &EvalWeights::material_only()).unwrap();
     let policy_time = t0.elapsed();
 
     println!("\n=== search_with_policy depth 3 from starting position ===");

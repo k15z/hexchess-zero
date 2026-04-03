@@ -56,8 +56,11 @@ impl Evaluator for HeuristicEvaluator {
 
         // Material + terminal-aware value mapped to [-1, 1].
         // Terminal states (±10000) saturate to ±1.0, material diffs scale smoothly.
+        // Scale 750 calibrated from 22k positions across 200 depth-2 games
+        // (scripts/calibrate_wdl_scale.py). Previous value of 400 (borrowed from
+        // standard chess Elo convention) was overconfident for hex chess.
         let cp = eval::evaluate(state) as f32;
-        let value = (cp / 400.0).tanh();
+        let value = (cp / 750.0).tanh();
 
         (policy, value)
     }
