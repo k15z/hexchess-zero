@@ -12,6 +12,8 @@ For imitation (minimax), parallelizes across cores via ProcessPoolExecutor.
 import json
 import os
 import platform
+import signal
+import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
 from datetime import datetime, timezone
@@ -129,6 +131,22 @@ def run_worker(cfg: AsyncConfig) -> None:
     """Run the continuous self-play worker loop."""
     if hexchess is None:
         raise ImportError("hexchess bindings not available")
+
+    # Ensure child processes are killed when the worker is terminated.
+    def _cleanup(signum, frame):
+        logger.info("Received signal {}, terminating child processes...", signum)
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        os.killpg(0, signal.SIGTERM)
+        sys.exit(1)
+
+    signal.signal(signal.SIGTERM, _cleanup)
+    signal.signal(signal.SIGINT, _cleanup)
+    # Put this process in its own process group so killpg only affects us + children.
+    try:
+        os.setpgrp()
+    except OSError:
+        pass
 
     cfg.ensure_cache_dirs()
 
