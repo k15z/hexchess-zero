@@ -368,9 +368,25 @@ pub fn evaluate_board_weighted(board: &Board, weights: &EvalWeights) -> i32 {
 // Original evaluation functions (backward compatibility)
 // ---------------------------------------------------------------------------
 
+/// Centipawn-to-value scale for tanh mapping. Calibrated from 22k positions
+/// across 200 depth-2 games (scripts/calibrate_wdl_scale.py).
+pub const CP_TANH_SCALE: f32 = 750.0;
+
 /// Evaluate a game state from the perspective of the side to move.
 /// Terminal states return large values (±10000 for checkmate, 0 for draws).
 pub fn evaluate(state: &GameState) -> i32 {
+    evaluate_terminal(state, evaluate_board)
+}
+
+/// Like [`evaluate`] but uses [`evaluate_board_weighted`] with the given
+/// weights for ongoing positions.
+pub fn evaluate_weighted(state: &GameState, weights: &EvalWeights) -> i32 {
+    evaluate_terminal(state, |board| evaluate_board_weighted(board, weights))
+}
+
+/// Shared terminal-state dispatch: returns ±10000 for checkmate, 0 for draws,
+/// or delegates to `ongoing_fn` for ongoing positions.
+fn evaluate_terminal(state: &GameState, ongoing_fn: impl FnOnce(&Board) -> i32) -> i32 {
     match state.status() {
         GameStatus::Checkmate(winner) => {
             if winner == state.side_to_move() {
@@ -383,7 +399,7 @@ pub fn evaluate(state: &GameState) -> i32 {
         | GameStatus::DrawByRepetition
         | GameStatus::DrawByFiftyMoves
         | GameStatus::DrawByInsufficientMaterial => 0,
-        GameStatus::Ongoing => evaluate_board(&state.board),
+        GameStatus::Ongoing => ongoing_fn(&state.board),
     }
 }
 

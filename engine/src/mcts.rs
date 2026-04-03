@@ -54,13 +54,78 @@ impl Evaluator for HeuristicEvaluator {
             }
         }
 
-        // Material + terminal-aware value mapped to [-1, 1].
-        // Terminal states (±10000) saturate to ±1.0, material diffs scale smoothly.
-        // Scale 750 calibrated from 22k positions across 200 depth-2 games
-        // (scripts/calibrate_wdl_scale.py). Previous value of 400 (borrowed from
-        // standard chess Elo convention) was overconfident for hex chess.
         let cp = eval::evaluate(state) as f32;
-        let value = (cp / 750.0).tanh();
+        let value = (cp / eval::CP_TANH_SCALE).tanh();
+
+        (policy, value)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WeightedHeuristicEvaluator
+// ---------------------------------------------------------------------------
+
+/// One-ply lookahead policy with full positional evaluation.
+pub struct WeightedHeuristicEvaluator {
+    weights: eval::EvalWeights,
+    policy_temperature: f32,
+}
+
+impl WeightedHeuristicEvaluator {
+    pub fn new(weights: eval::EvalWeights) -> Self {
+        Self {
+            weights,
+            policy_temperature: 200.0,
+        }
+    }
+
+    pub fn with_policy_temperature(mut self, temperature: f32) -> Self {
+        self.policy_temperature = temperature;
+        self
+    }
+}
+
+impl Evaluator for WeightedHeuristicEvaluator {
+    fn evaluate(&self, state: &GameState) -> (Vec<f32>, f32) {
+        let moves = state.legal_moves();
+        let num_indices = serialization::num_move_indices();
+        let mut policy = vec![0.0f32; num_indices];
+
+        if !moves.is_empty() {
+            // Score each move: apply, evaluate from opponent's perspective, negate.
+            let mut scores: Vec<(usize, f32)> = Vec::with_capacity(moves.len());
+            let mut max_score = f32::NEG_INFINITY;
+            let mut state_clone = state.clone();
+
+            for mv in &moves {
+                if let Some(idx) = serialization::move_to_index(mv) {
+                    state_clone.apply_move(mv.clone());
+                    let score =
+                        -eval::evaluate_board_weighted(&state_clone.board, &self.weights) as f32;
+                    state_clone.undo_move();
+                    if score > max_score {
+                        max_score = score;
+                    }
+                    scores.push((idx, score));
+                }
+            }
+
+            // Softmax with temperature.
+            let mut sum = 0.0f32;
+            for (_, score) in &mut scores {
+                let exp = ((*score - max_score) / self.policy_temperature).exp();
+                *score = exp;
+                sum += exp;
+            }
+            if sum > 0.0 {
+                for (idx, prob) in scores {
+                    policy[idx] = prob / sum;
+                }
+            }
+        }
+
+        let cp = eval::evaluate_weighted(state, &self.weights) as f32;
+        let value = (cp / eval::CP_TANH_SCALE).tanh();
 
         (policy, value)
     }
