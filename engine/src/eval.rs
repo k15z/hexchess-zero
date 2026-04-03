@@ -35,7 +35,7 @@ impl Default for EvalWeights {
 }
 
 impl EvalWeights {
-    pub fn material_only() -> Self {
+    pub const fn material_only() -> Self {
         Self {
             material: 1,
             ..ZEROED
@@ -79,11 +79,6 @@ pub fn material(board: &Board, color: Color) -> i32 {
 // ---------------------------------------------------------------------------
 // Signal helpers
 // ---------------------------------------------------------------------------
-
-/// Score a signal for both sides: f(us) - f(opponent).
-fn differential<F: Fn(Color) -> i32>(us: Color, f: F) -> i32 {
-    f(us) - f(us.opponent())
-}
 
 fn hex_dist(coord: HexCoord) -> i32 {
     let q = coord.q as i32;
@@ -139,13 +134,14 @@ fn mobility_score(board: &Board, us: Color) -> i32 {
 }
 
 fn pawn_advance_score(board: &Board, us: Color) -> i32 {
-    differential(us, |color| {
+    let score_for = |color: Color| -> i32 {
         board
             .all_pieces(color)
             .filter(|(_, p)| p.kind == PieceKind::Pawn)
             .map(|(c, _)| advance_bonus(c.q, c.r, color))
             .sum()
-    })
+    };
+    score_for(us) - score_for(us.opponent())
 }
 
 fn passed_pawn_score(board: &Board, us: Color) -> i32 {
