@@ -11,6 +11,7 @@ use hexchess_engine::game::GameState;
 use hexchess_engine::inference::OnnxEvaluator;
 use hexchess_engine::mcts::{
     DirichletConfig, Evaluator, HeuristicEvaluator, MctsSearch as EngineSearch,
+    WeightedHeuristicEvaluator,
 };
 use hexchess_engine::minimax;
 
@@ -245,7 +246,7 @@ impl PyMctsSearch {
     /// uses it as the evaluator for all subsequent `run()` calls.
     /// Otherwise, uses a heuristic evaluator (uniform policy, material value).
     #[new]
-    #[pyo3(signature = (simulations=800, c_puct=1.5, model_path=None, batch_size=32, tt_capacity=500_000, intra_threads=0))]
+    #[pyo3(signature = (simulations=800, c_puct=1.5, model_path=None, batch_size=32, tt_capacity=500_000, intra_threads=0, use_weighted_eval=false))]
     fn new(
         simulations: u32,
         c_puct: f32,
@@ -253,6 +254,7 @@ impl PyMctsSearch {
         batch_size: usize,
         tt_capacity: usize,
         intra_threads: usize,
+        use_weighted_eval: bool,
     ) -> PyResult<Self> {
         let evaluator: Box<dyn Evaluator> = match model_path {
             Some(path) => {
@@ -262,7 +264,13 @@ impl PyMctsSearch {
                     })?;
                 Box::new(eval)
             }
-            None => Box::new(HeuristicEvaluator),
+            None => {
+                if use_weighted_eval {
+                    Box::new(WeightedHeuristicEvaluator::new(EvalWeights::default()))
+                } else {
+                    Box::new(HeuristicEvaluator)
+                }
+            }
         };
         let mut search = EngineSearch::new(evaluator);
         search.set_c_puct(c_puct);
