@@ -1,5 +1,6 @@
 //! Shared test position helpers.
 
+use hexchess_engine::eval::EvalWeights;
 use hexchess_engine::game::GameState;
 use hexchess_engine::minimax;
 
@@ -11,7 +12,7 @@ pub fn play_n_moves(n: usize) -> Option<GameState> {
         if state.is_game_over() {
             return None;
         }
-        match minimax::search(&mut state, 1) {
+        match minimax::search(&mut state, 1, &EvalWeights::material_only()) {
             Some(r) => state.apply_move(r.best_move),
             None => return None,
         }

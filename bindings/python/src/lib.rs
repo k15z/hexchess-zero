@@ -6,6 +6,7 @@ use numpy::ndarray::{Array1, Array3, Array4};
 use numpy::{IntoPyArray, PyArray3, PyArray4};
 
 use hexchess_engine::board::{self, HexCoord, PieceKind};
+use hexchess_engine::eval::EvalWeights;
 use hexchess_engine::game::GameState;
 use hexchess_engine::inference::OnnxEvaluator;
 use hexchess_engine::mcts::{
@@ -33,6 +34,73 @@ fn move_to_pydict<'py>(py: Python<'py>, mv: &movegen::Move) -> PyResult<Bound<'p
     dict.set_item("to_r", mv.to.r)?;
     dict.set_item("promotion", promotion_str(mv.promotion))?;
     Ok(dict)
+}
+
+// ---------------------------------------------------------------------------
+// PyEvalWeights class
+// ---------------------------------------------------------------------------
+
+#[pyclass(name = "EvalWeights")]
+#[derive(Clone)]
+struct PyEvalWeights {
+    inner: EvalWeights,
+}
+
+#[pymethods]
+impl PyEvalWeights {
+    #[new]
+    #[pyo3(signature = (
+        material=1, mobility=0, pawn_advance=1, center_control=4,
+        king_safety=0, bishop_color_bonus=30, pawn_connected=7, pawn_isolated=-10,
+        passed_pawn=3, king_tropism=2
+    ))]
+    fn new(
+        material: i32,
+        mobility: i32,
+        pawn_advance: i32,
+        center_control: i32,
+        king_safety: i32,
+        bishop_color_bonus: i32,
+        pawn_connected: i32,
+        pawn_isolated: i32,
+        passed_pawn: i32,
+        king_tropism: i32,
+    ) -> Self {
+        PyEvalWeights {
+            inner: EvalWeights {
+                material,
+                mobility,
+                pawn_advance,
+                center_control,
+                king_safety,
+                bishop_color_bonus,
+                pawn_connected,
+                pawn_isolated,
+                passed_pawn,
+                king_tropism,
+            },
+        }
+    }
+
+    /// Material counting only — no positional signals.
+    #[staticmethod]
+    fn material_only() -> Self {
+        PyEvalWeights {
+            inner: EvalWeights::material_only(),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        let w = &self.inner;
+        format!(
+            "EvalWeights(material={}, mobility={}, pawn_advance={}, center_control={}, \
+             king_safety={}, bishop_color_bonus={}, pawn_connected={}, pawn_isolated={}, \
+             passed_pawn={}, king_tropism={})",
+            w.material, w.mobility, w.pawn_advance, w.center_control,
+            w.king_safety, w.bishop_color_bonus, w.pawn_connected, w.pawn_isolated,
+            w.passed_pawn, w.king_tropism
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -345,15 +413,25 @@ fn num_move_indices() -> usize {
 // Minimax search
 // ---------------------------------------------------------------------------
 
+fn resolve_weights(weights: Option<&PyEvalWeights>) -> EvalWeights {
+    match weights {
+        Some(w) => w.inner,
+        None => EvalWeights::default(),
+    }
+}
+
 /// Run alpha-beta minimax search. Returns dict {best_move, score, nodes}.
 /// Raises ValueError if the game is already over.
 #[pyfunction]
+#[pyo3(signature = (game, depth, weights=None))]
 fn minimax_search<'py>(
     py: Python<'py>,
     game: &mut PyGame,
     depth: u32,
+    weights: Option<&PyEvalWeights>,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let result = minimax::search(&mut game.state, depth)
+    let w = resolve_weights(weights);
+    let result = minimax::search(&mut game.state, depth, &w)
         .ok_or_else(|| PyValueError::new_err("cannot search a terminal position"))?;
     let dict = PyDict::new(py);
     dict.set_item("best_move", move_to_pydict(py, &result.best_move)?)?;
@@ -365,12 +443,15 @@ fn minimax_search<'py>(
 /// Run minimax and return scores for ALL legal moves.
 /// Returns dict {moves: [{move: {...}, score: int}, ...], nodes: int}.
 #[pyfunction]
+#[pyo3(signature = (game, depth, weights=None))]
 fn minimax_search_all<'py>(
     py: Python<'py>,
     game: &mut PyGame,
     depth: u32,
+    weights: Option<&PyEvalWeights>,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let result = minimax::search_all_moves(&mut game.state, depth)
+    let w = resolve_weights(weights);
+    let result = minimax::search_all_moves(&mut game.state, depth, &w)
         .ok_or_else(|| PyValueError::new_err("cannot search a terminal position"))?;
 
     let moves_list = PyList::empty(py);
@@ -391,12 +472,15 @@ fn minimax_search_all<'py>(
 /// shallow TT-backed re-search for all root moves (Phase 2).
 /// Returns dict {best_move, best_score, moves: [{move, score}, ...], nodes}.
 #[pyfunction]
+#[pyo3(signature = (game, depth, weights=None))]
 fn minimax_search_with_policy<'py>(
     py: Python<'py>,
     game: &mut PyGame,
     depth: u32,
+    weights: Option<&PyEvalWeights>,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let result = minimax::search_with_policy(&mut game.state, depth)
+    let w = resolve_weights(weights);
+    let result = minimax::search_with_policy(&mut game.state, depth, &w)
         .ok_or_else(|| PyValueError::new_err("cannot search a terminal position"))?;
 
     let moves_list = PyList::empty(py);
@@ -423,6 +507,7 @@ fn minimax_search_with_policy<'py>(
 fn hexchess(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyGame>()?;
     m.add_class::<PyMctsSearch>()?;
+    m.add_class::<PyEvalWeights>()?;
     m.add_function(wrap_pyfunction!(encode_board, m)?)?;
     m.add_function(wrap_pyfunction!(encode_batch, m)?)?;
     m.add_function(wrap_pyfunction!(move_to_index, m)?)?;

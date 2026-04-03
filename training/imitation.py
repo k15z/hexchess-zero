@@ -59,7 +59,10 @@ def _score_to_wdl(score: int) -> np.ndarray:
     """
     score_clamped = max(-5000, min(5000, score))
     s = score_clamped / WDL_SCALE
-    draw_margin = 0.5
+    # Draw margin calibrated from 22k positions across 200 depth-2 games
+    # (scripts/calibrate_wdl_scale.py). Previous value of 0.5 underestimated
+    # draw frequency in hex chess (~40-55% near equal positions vs ~25% implied).
+    draw_margin = 1.0
     w = 1.0 / (1.0 + np.exp(-(s - draw_margin)))
     l = 1.0 / (1.0 + np.exp(-(-s - draw_margin)))
     d = max(0.0, 1.0 - w - l)
