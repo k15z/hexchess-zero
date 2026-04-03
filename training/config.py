@@ -36,11 +36,11 @@ class _BaseConfig:
     replay_buffer_size: int = 5_000_000
 
     # --- Network architecture ---
-    num_residual_blocks: int = 6
-    num_filters: int = 128
-    se_channels: int = 32  # SE bottleneck width (Leela-style)
+    num_residual_blocks: int = 10
+    num_filters: int = 192
+    se_channels: int = 48  # SE bottleneck width (Leela-style)
     global_pool_channels: int = 32  # KataGo-style global pooling width
-    global_pool_blocks: tuple[int, ...] = (1, 4)  # which blocks get global pooling
+    global_pool_blocks: tuple[int, ...] = (3, 6)  # which blocks get global pooling
     board_channels: int = 19
     board_height: int = 11
     board_width: int = 11
