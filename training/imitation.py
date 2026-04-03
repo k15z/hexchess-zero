@@ -11,7 +11,6 @@ ground truth about who actually won (from the game outcome).
 
 from __future__ import annotations
 
-import random
 import time
 
 import numpy as np
@@ -25,27 +24,25 @@ NUM_MOVES = hexchess.num_move_indices()
 WDL_SCALE = 400.0
 
 
+def _softmax_probs(move_scores: list[dict], temperature: float) -> np.ndarray:
+    """Compute softmax probabilities over minimax move scores."""
+    scores = np.array([m["score"] for m in move_scores], dtype=np.float64)
+    scores = np.clip(scores, -5000, 5000)
+    scaled = scores / temperature
+    scaled -= scaled.max()
+    exp_scores = np.exp(scaled)
+    return exp_scores / exp_scores.sum()
+
+
 def _scores_to_policy(move_scores: list[dict], temperature: float) -> np.ndarray:
     """Convert minimax move scores to a softmax policy vector."""
+    probs = _softmax_probs(move_scores, temperature)
     policy = np.zeros(NUM_MOVES, dtype=np.float32)
-    indices = []
-    scores = []
-    for entry in move_scores:
+    for entry, p in zip(move_scores, probs):
         mv = entry["move"]
         idx = hexchess.move_to_index(
             mv["from_q"], mv["from_r"], mv["to_q"], mv["to_r"], mv.get("promotion"),
         )
-        indices.append(idx)
-        scores.append(entry["score"])
-
-    scores_arr = np.array(scores, dtype=np.float64)
-    scores_arr = np.clip(scores_arr, -5000, 5000)
-    scaled = scores_arr / temperature
-    scaled -= scaled.max()
-    exp_scores = np.exp(scaled)
-    probs = exp_scores / exp_scores.sum()
-
-    for idx, p in zip(indices, probs):
         policy[idx] = p
     return policy
 
@@ -86,6 +83,13 @@ def _flip_wdl(wdl: np.ndarray) -> np.ndarray:
     return np.array([wdl[2], wdl[1], wdl[0]], dtype=np.float32)
 
 
+def _sample_move(move_scores: list[dict], temperature: float) -> dict:
+    """Sample a move from minimax scores using softmax temperature."""
+    probs = _softmax_probs(move_scores, temperature)
+    idx = np.random.choice(len(move_scores), p=probs)
+    return move_scores[idx]["move"]
+
+
 def play_imitation_game(cfg: AsyncConfig, log_interval: int = 50) -> list[dict]:
     """Play one game collecting imitation samples with blended WDL targets.
 
@@ -96,27 +100,19 @@ def play_imitation_game(cfg: AsyncConfig, log_interval: int = 50) -> list[dict]:
               blend eval-derived WDL with game outcome for each position:
               wdl = λ * sigmoid(eval) + (1-λ) * game_outcome
 
-    Starts with random opening moves for diversity. Randomizes between
-    N and N+1 random plies so both sides make equal random moves and
-    alternate who gets the first minimax move.
+    Uses softmax temperature-based move selection for the first N plies
+    to create diverse openings while keeping positions natural. After the
+    exploration phase, always plays the best minimax move.
     """
     game = hexchess.Game()
     pending = []  # (board_tensor, policy, eval_score, side_to_move)
 
     ply = 0
     max_ply = 300
-    random_plies = cfg.imitation_random_plies + random.randint(0, 1)
     game_t0 = time.time()
 
     # Pass 1: play the game, collect raw data.
     while not game.is_game_over() and ply < max_ply:
-        if ply < random_plies:
-            moves = game.legal_moves()
-            mv = random.choice(moves)
-            game.apply_move(mv["from_q"], mv["from_r"], mv["to_q"], mv["to_r"], mv.get("promotion"))
-            ply += 1
-            continue
-
         result = hexchess.minimax_search_with_policy(game, cfg.imitation_depth)
 
         board_tensor = np.array(hexchess.encode_board(game), dtype=np.float32)
@@ -126,7 +122,10 @@ def play_imitation_game(cfg: AsyncConfig, log_interval: int = 50) -> list[dict]:
 
         pending.append((board_tensor, policy, best_score, side))
 
-        mv = result["best_move"]
+        if ply < cfg.imitation_exploration_plies and len(result["moves"]) > 1:
+            mv = _sample_move(result["moves"], cfg.imitation_temperature)
+        else:
+            mv = result["best_move"]
         game.apply_move(mv["from_q"], mv["from_r"], mv["to_q"], mv["to_r"], mv.get("promotion"))
         ply += 1
 
