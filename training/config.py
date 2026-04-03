@@ -65,6 +65,7 @@ class AsyncConfig(_BaseConfig):
     imitation_depth: int = 3  # minimax search depth for imitation targets
     imitation_random_plies: int = 8  # random opening moves per game for diversity
     imitation_temperature: float = 200.0  # softmax temperature for centipawn scores → policy
+    imitation_wdl_lambda: float = 0.5  # blend: λ*sigmoid(eval) + (1-λ)*game_outcome
     bootstrap_steps: int = 50_000  # training steps for imitation bootstrap (before self-play)
     bootstrap_learning_rate: float = 0.01  # higher LR for clean supervised signal (10x self-play LR)
 
