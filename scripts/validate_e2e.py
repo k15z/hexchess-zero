@@ -183,43 +183,18 @@ def train_model(cfg: AsyncConfig) -> str:
     return str(local_onnx)
 
 
-def evaluate_model(onnx_path: str, games_per_pair: int = 6) -> bool:
+def evaluate_model(onnx_path: str, cfg: AsyncConfig, games_per_pair: int = 6) -> bool:
     """Play MCTS+NN vs MCTS+heuristic and Minimax-2. Returns True if NN wins."""
-    import random
-    from training.elo import MctsPlayer, MinimaxPlayer, compute_elo, format_elo_table
-    import hexchess
+    from training.elo import MctsPlayer, MinimaxPlayer, play_game, compute_elo, format_elo_table
 
-    logger.info("Evaluating MCTS+NN vs baselines ({} games/pair, random openings)...", games_per_pair)
+    logger.info("Evaluating MCTS+NN vs baselines ({} games/pair, {} sims, random openings)...",
+                games_per_pair, cfg.num_simulations)
 
     players = [
-        MctsPlayer(name="MCTS-Heuristic", simulations=200),
-        MctsPlayer(name="MCTS-NN", simulations=200, model_path=onnx_path),
+        MctsPlayer(name="MCTS-Heuristic", simulations=cfg.num_simulations),
+        MctsPlayer(name="MCTS-NN", simulations=cfg.num_simulations, model_path=onnx_path),
         MinimaxPlayer(name="Minimax-2", depth=2),
     ]
-
-    def play_with_random_opening(white, black, max_moves=200):
-        game = hexchess.Game()
-        n_random = 7 + random.randint(0, 1)
-        for _ in range(n_random):
-            if game.is_game_over():
-                break
-            moves = game.legal_moves()
-            mv = random.choice(moves)
-            game.apply_move(mv["from_q"], mv["from_r"], mv["to_q"], mv["to_r"], mv.get("promotion"))
-
-        move_count = n_random
-        while not game.is_game_over() and move_count < max_moves:
-            player = white if game.side_to_move() == "white" else black
-            mv = player.pick_move(game)
-            game.apply_move(mv["from_q"], mv["from_r"], mv["to_q"], mv["to_r"], mv.get("promotion"))
-            move_count += 1
-
-        status = game.status()
-        if status == "checkmate_white":
-            return "white"
-        elif status == "checkmate_black":
-            return "black"
-        return "draw"
 
     results = []
     for i, p1 in enumerate(players):
@@ -231,14 +206,14 @@ def evaluate_model(onnx_path: str, games_per_pair: int = 6) -> bool:
                 white, black = (p1, p2) if g % 2 == 0 else (p2, p1)
                 print(f"  {p1.name} vs {p2.name} (game {g+1}/{games_per_pair})...", end=" ", flush=True)
                 t0 = time.time()
-                outcome = play_with_random_opening(white, black)
+                result = play_game(white, black, max_moves=200, random_opening_plies=8)
                 dt = time.time() - t0
 
-                if outcome == "white":
+                if result["outcome"] == "white":
                     winner = white.name
                     if white.name == p1.name: a_wins += 1
                     else: b_wins += 1
-                elif outcome == "black":
+                elif result["outcome"] == "black":
                     winner = black.name
                     if black.name == p1.name: a_wins += 1
                     else: b_wins += 1
@@ -254,7 +229,6 @@ def evaluate_model(onnx_path: str, games_per_pair: int = 6) -> bool:
     elo = compute_elo(player_names, results, anchor="Minimax-2")
 
     print(f"\n  Elo Ratings:")
-    from training.elo import format_elo_table
     print(format_elo_table(elo))
 
     nn_elo = elo.get("MCTS-NN", 0)
@@ -286,7 +260,7 @@ if __name__ == "__main__":
     print(f"\n{'='*60}")
     print("STEP 3: Evaluate MCTS+NN vs baselines")
     print(f"{'='*60}")
-    passed = evaluate_model(onnx_path)
+    passed = evaluate_model(onnx_path, cfg)
 
     print(f"\n{'='*60}")
     print(f"E2E VALIDATION: {'PASS' if passed else 'FAIL'}")

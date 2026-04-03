@@ -67,7 +67,7 @@ def _score_to_wdl(score: int) -> np.ndarray:
     return np.array([w / total, d / total, l / total], dtype=np.float32)
 
 
-def _outcome_to_wdl(status: str, side_to_move: str) -> np.ndarray:
+def _outcome_to_wdl(status: str) -> np.ndarray:
     """Convert a game status string to a WDL vector from white's perspective."""
     if status == "checkmate_white":
         return np.array([1.0, 0.0, 0.0], dtype=np.float32)
@@ -134,7 +134,7 @@ def play_imitation_game(cfg: AsyncConfig, log_interval: int = 50) -> list[dict]:
 
     # Pass 2: determine outcome and blend WDL targets.
     status = game.status() if game.is_game_over() else "max_ply"
-    outcome_wdl_white = _outcome_to_wdl(status, "white")
+    outcome_wdl_white = _outcome_to_wdl(status)
     lam = cfg.imitation_wdl_lambda
 
     samples = []

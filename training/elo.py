@@ -58,10 +58,29 @@ def baselines(simulations: int = 500) -> list[Player]:
 # ---------------------------------------------------------------------------
 
 
-def play_game(white: Player, black: Player, max_moves: int = 300) -> dict:
-    """Play one game. Returns dict with outcome and per-player timing stats."""
+def play_game(white: Player, black: Player, max_moves: int = 300,
+              random_opening_plies: int = 0) -> dict:
+    """Play one game. Returns dict with outcome and per-player timing stats.
+
+    If random_opening_plies > 0, plays that many random moves before handing
+    off to the players. Randomizes ±1 ply so both sides get an equal chance
+    of making the first non-random move.
+    """
+    import random
 
     game = hexchess.Game()
+
+    if random_opening_plies > 0:
+        n_random = random_opening_plies + random.randint(-1, 0)
+        for _ in range(n_random):
+            if game.is_game_over():
+                break
+            moves = game.legal_moves()
+            mv = random.choice(moves)
+            game.apply_move(
+                mv["from_q"], mv["from_r"], mv["to_q"], mv["to_r"], mv.get("promotion")
+            )
+
     move_count = 0
     white_time = 0.0
     black_time = 0.0

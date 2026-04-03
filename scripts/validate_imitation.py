@@ -147,42 +147,9 @@ def validate_outcome_balance(n_games: int = 50) -> bool:
     return passed
 
 
-def _play_game_with_random_opening(white, black, random_plies=8, max_moves=200):
-    """Play a game with random opening moves, then hand off to players."""
-    import hexchess
-    import random as rnd
-
-    game = hexchess.Game()
-    n_random = random_plies + rnd.randint(-1, 0)
-
-    for _ in range(n_random):
-        if game.is_game_over():
-            break
-        moves = game.legal_moves()
-        mv = rnd.choice(moves)
-        game.apply_move(mv["from_q"], mv["from_r"], mv["to_q"], mv["to_r"], mv.get("promotion"))
-
-    move_count = n_random
-    while not game.is_game_over() and move_count < max_moves:
-        player = white if game.side_to_move() == "white" else black
-        mv = player.pick_move(game)
-        game.apply_move(mv["from_q"], mv["from_r"], mv["to_q"], mv["to_r"], mv.get("promotion"))
-        move_count += 1
-
-    status = game.status()
-    if status == "checkmate_white":
-        outcome = "white"
-    elif status == "checkmate_black":
-        outcome = "black"
-    else:
-        outcome = "draw"
-
-    return {"outcome": outcome, "moves": move_count}
-
-
 def validate_strength_ordering(games_per_pair: int = 6) -> bool:
     """Run round-robin tournament with random openings to verify strength ordering."""
-    from training.elo import MinimaxPlayer, MctsPlayer, compute_elo, format_elo_table
+    from training.elo import MinimaxPlayer, MctsPlayer, play_game, compute_elo, format_elo_table
 
     print(f"\n{'='*60}")
     print(f"STRENGTH ORDERING: round-robin tournament ({games_per_pair} games/pair, random openings)...")
@@ -212,7 +179,7 @@ def validate_strength_ordering(games_per_pair: int = 6) -> bool:
 
                 print(f"  {p1.name} vs {p2.name} (game {g+1}/{games_per_pair})...", end=" ", flush=True)
                 t0 = time.time()
-                result = _play_game_with_random_opening(white, black)
+                result = play_game(white, black, max_moves=200, random_opening_plies=8)
                 dt = time.time() - t0
 
                 if result["outcome"] == "white":
