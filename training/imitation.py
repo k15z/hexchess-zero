@@ -94,15 +94,15 @@ def play_imitation_game(cfg: AsyncConfig, log_interval: int = 50) -> list[dict]:
               wdl = λ * sigmoid(eval) + (1-λ) * game_outcome
 
     Starts with random opening moves for diversity. Randomizes between
-    N-1 and N random plies so both sides get an equal chance of making
-    the first minimax move.
+    N and N+1 random plies so both sides make equal random moves and
+    alternate who gets the first minimax move.
     """
     game = hexchess.Game()
     pending = []  # (board_tensor, policy, eval_score, side_to_move)
 
     ply = 0
     max_ply = 300
-    random_plies = cfg.imitation_random_plies + random.randint(-1, 0)
+    random_plies = cfg.imitation_random_plies + random.randint(0, 1)
     game_t0 = time.time()
 
     # Pass 1: play the game, collect raw data.
