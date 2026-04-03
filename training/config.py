@@ -62,7 +62,7 @@ class AsyncConfig(_BaseConfig):
     min_positions_to_start: int = 1_000_000  # bootstrap gate: #15 found ~850k needed to beat heuristic
 
     # --- Imitation bootstrap ---
-    imitation_depth: int = 4  # minimax search depth for imitation targets
+    imitation_depth: int = 6  # minimax search depth for imitation targets
     imitation_random_plies: int = 8  # random opening moves per game for diversity
     imitation_temperature: float = 200.0  # softmax temperature for centipawn scores → policy
     imitation_wdl_lambda: float = 0.5  # blend: λ*sigmoid(eval) + (1-λ)*game_outcome
