@@ -106,6 +106,13 @@ impl MoveList {
         self.iter().copied().collect()
     }
 
+    /// Swap two elements by index (for in-place move ordering).
+    #[inline]
+    pub fn swap(&mut self, a: usize, b: usize) {
+        debug_assert!(a < self.len && b < self.len);
+        self.moves.swap(a, b);
+    }
+
     #[inline]
     fn get(&self, idx: usize) -> &Move {
         debug_assert!(idx < self.len);
