@@ -457,6 +457,13 @@ fn negamax(
 ) -> i32 {
     ss.nodes += 1;
 
+    // Draw detection must come before TT cutoffs: repetition is path-dependent,
+    // so a TT entry from a non-repeating path would return a wrong score if
+    // the current path is a threefold repetition.
+    if state.is_draw() {
+        return 0;
+    }
+
     let key = state.board.zobrist_hash;
     let tt_hint = match ss.tt.probe(key) {
         Some(entry) if entry.depth >= depth => {
@@ -471,10 +478,6 @@ fn negamax(
         Some(entry) => (entry.best_from, entry.best_to, entry.best_promo),
         None => NO_TT_HINT,
     };
-
-    if state.is_draw() {
-        return 0;
-    }
 
     let mut moves = movegen::generate_legal_moves(&state.board);
 
@@ -607,7 +610,7 @@ fn search_root(state: &mut GameState, d: u32, ss: &mut SearchState) -> Option<(M
         }
     }
 
-    // Root uses a full window (alpha starts at MIN), so the result is exact.
+    // All root moves are visited (no beta cutoff), so the best score is exact.
     ss.tt
         .store(key, d, best_score, Bound::Exact, Some(&best_move));
 
