@@ -45,7 +45,29 @@ mod onnx_impl {
             path: impl AsRef<Path>,
             intra_threads: usize,
         ) -> Result<Self, ort::Error> {
-            let session = Session::builder()?
+            let builder = Session::builder()?;
+
+            // Use CoreML on Apple devices for GPU/ANE acceleration when
+            // HEXCHESS_COREML=1 is set. Currently opt-in because the model
+            // is small enough that CPU-to-GPU transfer overhead dominates
+            // for single/small-batch evaluations (typical in MCTS).
+            #[cfg(target_vendor = "apple")]
+            let builder = if std::env::var("HEXCHESS_COREML").as_deref() == Ok("1") {
+                match builder.with_execution_providers([ort::ep::CoreML::default().build()]) {
+                    Ok(b) => {
+                        eprintln!("Using CoreML execution provider");
+                        b
+                    }
+                    Err(e) => {
+                        eprintln!("CoreML unavailable, falling back to CPU: {e}");
+                        Session::builder()?
+                    }
+                }
+            } else {
+                builder
+            };
+
+            let session = builder
                 .with_intra_threads(intra_threads)?
                 .commit_from_file(path)?;
             Ok(Self {
@@ -56,6 +78,19 @@ mod onnx_impl {
         /// Load an ONNX model with default thread settings (auto-detect cores).
         pub fn from_path(path: impl AsRef<Path>) -> Result<Self, ort::Error> {
             Self::from_path_with_threads(path, 0)
+        }
+
+        /// Load an ONNX model using CPU-only execution (no CoreML/GPU).
+        pub fn from_path_cpu_only(
+            path: impl AsRef<Path>,
+            intra_threads: usize,
+        ) -> Result<Self, ort::Error> {
+            let session = Session::builder()?
+                .with_intra_threads(intra_threads)?
+                .commit_from_file(path)?;
+            Ok(Self {
+                session: Mutex::new(session),
+            })
         }
     }
 
