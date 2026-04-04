@@ -4,7 +4,7 @@ metadata:
   name: worker
   namespace: hexchess
 spec:
-  replicas: 3
+  replicas: 2
   selector:
     matchLabels:
       app: hexchess-worker
@@ -21,9 +21,13 @@ spec:
             - secretRef:
                 name: hexchess-env
           resources:
+            # Self-play workers are ONNX-inference bound. Each worker plays
+            # one game at a time with 500 MCTS sims/move. ~7 CPU gives
+            # ~2-3s/move, keeping games under 10 min. Scale replicas based
+            # on node count (2 workers per 16-core node).
             requests:
-              cpu: "14"
-              memory: "4Gi"
+              cpu: "7"
+              memory: "1Gi"
             limits:
-              cpu: "14"
-              memory: "4Gi"
+              cpu: "7"
+              memory: "2Gi"
