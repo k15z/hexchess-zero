@@ -99,7 +99,7 @@ impl Evaluator for WeightedHeuristicEvaluator {
 
             for mv in &moves {
                 if let Some(idx) = serialization::move_to_index(mv) {
-                    state_clone.apply_move(mv.clone());
+                    state_clone.apply_move(*mv);
                     let score =
                         -eval::evaluate_board_weighted(&state_clone.board, &self.weights) as f32;
                     state_clone.undo_move();
