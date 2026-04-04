@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: elo-service
+  namespace: hexchess
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hexchess-elo
+  template:
+    metadata:
+      labels:
+        app: hexchess-elo
+    spec:
+      containers:
+        - name: elo
+          image: ghcr.io/k15z/hexchess-zero/training:latest
+          args: ["elo-service"]
+          envFrom:
+            - secretRef:
+                name: hexchess-env
+          resources:
+            requests:
+              cpu: "4"
+              memory: "2Gi"
+            limits:
+              cpu: "4"
+              memory: "2Gi"

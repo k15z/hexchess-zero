@@ -115,3 +115,4 @@ Position count is encoded in each `.npz` filename (`_n{count}`) so the trainer c
 - S3 key constants are defined in `training/storage.py` — never use raw string keys elsewhere
 - `.env` file contains S3 credentials (BUCKET_NAME, ACCESS_KEY, SECRET_KEY, ENDPOINT) — gitignored, never committed
 - MCTS evaluations and tournaments must use ≥500 simulations (the production default). Lower sim counts (e.g. 200) produce misleading results because the NN's learned policy advantage only compounds with sufficient search depth
+- The k3s cluster nodes (`kevz-infra-*`) are Hetzner servers. **Never delete Hetzner servers without filtering by name** — always exclude `kevz-infra-*` to avoid destroying the cluster

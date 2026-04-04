@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboard
+  namespace: hexchess
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hexchess-dashboard
+  template:
+    metadata:
+      labels:
+        app: hexchess-dashboard
+    spec:
+      containers:
+        - name: dashboard
+          image: ghcr.io/k15z/hexchess-zero/training:latest
+          args: ["dashboard", "--port", "8080"]
+          envFrom:
+            - secretRef:
+                name: hexchess-env
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+        - name: tunnel
+          image: ghcr.io/k15z/hexchess-zero/training:latest
+          command: ["python3", "-u", "-c"]
+          args:
+            - |
+              import subprocess, re, os, urllib.request, json, stat
+
+              # Download cloudflared
+              print("Downloading cloudflared...", flush=True)
+              url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
+              path = "/usr/local/bin/cloudflared"
+              urllib.request.urlretrieve(url, path)
+              os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC)
+              print("cloudflared installed", flush=True)
+
+              proc = subprocess.Popen(
+                  ["cloudflared", "tunnel", "--no-autoupdate", "--url", "http://localhost:8080"],
+                  stderr=subprocess.STDOUT, stdout=subprocess.PIPE, text=True
+              )
+              notified = False
+              for line in proc.stdout:
+                  print(line, end="", flush=True)
+                  if not notified and "trycloudflare.com" in line:
+                      m = re.search(r"https://[^\s|]+trycloudflare\.com", line)
+                      if m:
+                          tunnel_url = m.group(0)
+                          webhook = os.environ.get("SLACK_WEBHOOK", "")
+                          if webhook:
+                              data = json.dumps({"text": f"Dashboard: {tunnel_url}"}).encode()
+                              req = urllib.request.Request(webhook, data=data,
+                                  headers={"Content-Type": "application/json"})
+                              urllib.request.urlopen(req)
+                              print(f"Notified Slack: {tunnel_url}", flush=True)
+                          notified = True
+          envFrom:
+            - secretRef:
+                name: hexchess-env
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
