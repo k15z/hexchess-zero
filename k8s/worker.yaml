@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: hexchess
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: hexchess-worker
+  template:
+    metadata:
+      labels:
+        app: hexchess-worker
+    spec:
+      containers:
+        - name: worker
+          image: ghcr.io/k15z/hexchess-zero/training:latest
+          args: ["worker"]
+          envFrom:
+            - secretRef:
+                name: hexchess-env
+          resources:
+            requests:
+              cpu: "14"
+              memory: "4Gi"
+            limits:
+              cpu: "14"
+              memory: "4Gi"
