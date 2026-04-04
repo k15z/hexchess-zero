@@ -144,15 +144,17 @@ class HexChessNet(nn.Module):
                 blocks.append(SEResidualBlock(nf, se_ch))
         self.residual_blocks = nn.Sequential(*blocks)
 
-        # --- Policy head ---
-        self.policy_conv = nn.Conv2d(nf, 2, 1, bias=False)
-        self.policy_bn = nn.BatchNorm2d(2)
-        self.policy_fc = nn.Linear(2 * self.board_h * self.board_w, NUM_MOVE_INDICES)
+        # --- Policy head (8-channel conv for richer spatial features) ---
+        policy_ch = cfg.policy_channels
+        self.policy_conv = nn.Conv2d(nf, policy_ch, 1, bias=False)
+        self.policy_bn = nn.BatchNorm2d(policy_ch)
+        self.policy_fc = nn.Linear(policy_ch * self.board_h * self.board_w, NUM_MOVE_INDICES)
 
-        # --- Value head ---
-        self.value_conv = nn.Conv2d(nf, 1, 1, bias=False)
-        self.value_bn = nn.BatchNorm2d(1)
-        self.value_fc1 = nn.Linear(1 * self.board_h * self.board_w, 256)
+        # --- Value head (global avg pool for translation-invariant value) ---
+        value_ch = cfg.value_channels
+        self.value_conv = nn.Conv2d(nf, value_ch, 1, bias=False)
+        self.value_bn = nn.BatchNorm2d(value_ch)
+        self.value_fc1 = nn.Linear(value_ch, 256)
         self.value_fc2 = nn.Linear(256, 3)
 
     def forward(
@@ -169,9 +171,9 @@ class HexChessNet(nn.Module):
         p = p.view(p.size(0), -1)
         p = self.policy_fc(p)
 
-        # Value head (WDL logits)
+        # Value head (WDL logits — global avg pool)
         v = F.relu(self.value_bn(self.value_conv(x)))
-        v = v.view(v.size(0), -1)
+        v = v.mean(dim=(2, 3))
         v = F.relu(self.value_fc1(v))
         v = self.value_fc2(v)
 

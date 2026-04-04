@@ -41,6 +41,8 @@ class _BaseConfig:
     se_channels: int = 48  # SE bottleneck width (Leela-style)
     global_pool_channels: int = 32  # KataGo-style global pooling width
     global_pool_blocks: tuple[int, ...] = (3, 6)  # which blocks get global pooling
+    policy_channels: int = 8  # conv channels in policy head (wider = better move prediction)
+    value_channels: int = 32  # conv channels in value head (pooled via global avg)
     board_channels: int = 19
     board_height: int = 11
     board_width: int = 11
@@ -67,7 +69,7 @@ class AsyncConfig(_BaseConfig):
     imitation_temperature: float = 200.0  # softmax temperature for policy targets and exploration sampling
     imitation_wdl_lambda: float = 0.5  # blend: λ*sigmoid(eval) + (1-λ)*game_outcome
     bootstrap_steps: int = 50_000  # training steps for imitation bootstrap (before self-play)
-    bootstrap_learning_rate: float = 0.01  # higher LR for clean supervised signal (10x self-play LR)
+    bootstrap_learning_rate: float = 0.003  # higher LR for clean supervised signal (3x self-play LR)
 
     # --- Local cache ---
 
