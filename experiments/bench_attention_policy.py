@@ -228,8 +228,6 @@ class AttentionPolicyHead(nn.Module):
         feats = self.embed(feats) + self.pos_embed  # (B, 91, head_dim)
         feats = self.attn(feats)  # (B, 91, head_dim)
 
-        B = feats.size(0)
-
         # Project from/to features
         from_feats = self.from_fc(feats)  # (B, 91, head_dim)
         to_feats = self.to_fc(feats)      # (B, 91, head_dim)

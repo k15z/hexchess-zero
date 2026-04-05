@@ -240,7 +240,7 @@ def append_jsonl(key: str, record: dict, max_records: int = 2000) -> None:
     line = json.dumps(record, separators=(",", ":"))
     lines = existing.split("\n") if existing else []
     # Filter empty lines from trailing newline
-    lines = [l for l in lines if l]
+    lines = [ln for ln in lines if ln]
     lines.append(line)
     if len(lines) > max_records:
         lines = lines[-max_records:]

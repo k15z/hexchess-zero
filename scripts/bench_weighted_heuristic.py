@@ -204,7 +204,7 @@ def main():
         wld = f"{r['a_wins']}-{r['b_wins']}-{r['draws']}"
         print(f"  {matchup:<40s} {wld:>10s} {r['a_rate']:>5.0f}% {r['a_ms']:>8.1f} {r['b_ms']:>8.1f}")
 
-    print(f"\n=== PART 2: Color bias check (MCTS-New self-play, 30 games) ===")
+    print("\n=== PART 2: Color bias check (MCTS-New self-play, 30 games) ===")
     bias = run_self_play(
         lambda: MctsPlayer(f"MCTS-New({sims}s)", sims, use_weighted_eval=True),
         n_games=30,

@@ -1,5 +1,6 @@
-from __future__ import annotations
 """Main training orchestrator for async distributed training."""
+
+from __future__ import annotations
 
 import argparse
 import sys
@@ -9,7 +10,7 @@ from loguru import logger
 
 load_dotenv()
 
-from .config import AsyncConfig
+from .config import AsyncConfig  # noqa: E402 — must load .env before importing config
 
 
 def _configure_logging() -> None:

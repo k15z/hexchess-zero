@@ -1,5 +1,6 @@
-from __future__ import annotations
 """Export a PyTorch checkpoint to ONNX format."""
+
+from __future__ import annotations
 
 from pathlib import Path
 

@@ -27,11 +27,9 @@ from .elo import (
     MinimaxPlayer,
     Player,
     baselines,
-    conservative_rating,
     format_elo_table,
     new_rating,
     play_game,
-    replay_results,
     update_ratings,
 )
 

@@ -1,4 +1,3 @@
-from __future__ import annotations
 """ResNet policy + value network with SE and global pooling for hexagonal chess.
 
 Architecture: global_pool_se — validated as best cost/quality tradeoff in
@@ -9,6 +8,8 @@ Blocks at configured positions also get KataGo-style global pooling, which
 injects board-wide context (material balance, king safety) into local
 convolutions via a pooled bias vector.
 """
+
+from __future__ import annotations
 
 import torch
 import torch.nn as nn

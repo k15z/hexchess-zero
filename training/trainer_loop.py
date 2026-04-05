@@ -1,4 +1,3 @@
-from __future__ import annotations
 """Continuous trainer for async distributed training.
 
 Two training regimes:
@@ -13,9 +12,9 @@ Two training regimes:
 All data exchange happens via S3 (DigitalOcean Spaces / R2 / etc).
 """
 
-import os
+from __future__ import annotations
+
 import random
-import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
