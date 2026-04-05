@@ -27,7 +27,7 @@ spec:
             # on node count (2 workers per 16-core node).
             requests:
               cpu: "7"
-              memory: "8Gi"
+              memory: "14Gi"
             limits:
               cpu: "7"
-              memory: "8Gi"
+              memory: "14Gi"
