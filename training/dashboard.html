@@ -8,24 +8,23 @@
   @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=DM+Sans:wght@400;500;600;700&display=swap');
 
   :root {
-    --bg-deep: #080b10;
-    --bg-base: #0c1018;
-    --bg-raised: #111822;
-    --bg-surface: #16202e;
-    --border-dim: #1a2535;
-    --border-mid: #243448;
-    --text-primary: #e2e8f0;
-    --text-secondary: #8494a7;
-    --text-dim: #4a5c72;
-    --accent-blue: #3b82f6;
-    --accent-cyan: #22d3ee;
-    --accent-green: #34d399;
-    --accent-amber: #f59e0b;
-    --accent-red: #ef4444;
-    --accent-purple: #a78bfa;
+    --bg-deep: #09090b;
+    --bg-base: #0e0e11;
+    --bg-raised: #141417;
+    --bg-surface: #1a1a1f;
+    --border-dim: #1e1e24;
+    --border-mid: #2a2a33;
+    --text-primary: #e4e4e7;
+    --text-secondary: #a1a1aa;
+    --text-dim: #52525b;
+    --accent: #e4e4e7;
+    --accent-dim: #71717a;
     --win-green: #22c55e;
     --loss-red: #ef4444;
-    --draw-gray: #64748b;
+    --draw-gray: #52525b;
+    --status-green: #22c55e;
+    --status-amber: #eab308;
+    --status-red: #ef4444;
     --mono: 'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
     --sans: 'DM Sans', -apple-system, sans-serif;
   }
@@ -41,23 +40,8 @@
     min-height: 100vh;
   }
 
-  /* --- Subtle grid background --- */
-  body::before {
-    content: '';
-    position: fixed;
-    inset: 0;
-    background-image:
-      linear-gradient(var(--border-dim) 1px, transparent 1px),
-      linear-gradient(90deg, var(--border-dim) 1px, transparent 1px);
-    background-size: 48px 48px;
-    opacity: 0.15;
-    pointer-events: none;
-    z-index: 0;
-  }
-
   .container {
     position: relative;
-    z-index: 1;
     max-width: 960px;
     margin: 0 auto;
     padding: 0 16px 48px;
@@ -72,7 +56,6 @@
     border-bottom: 1px solid var(--border-mid);
     padding: 12px 0;
     margin-bottom: 20px;
-    backdrop-filter: blur(12px);
   }
 
   .header-row {
@@ -108,15 +91,7 @@
     border-radius: 3px;
     font-size: 12px;
     font-weight: 600;
-    color: var(--accent-cyan);
-  }
-
-  .model-badge::before {
-    content: '';
-    width: 6px; height: 6px;
-    border-radius: 50%;
-    background: var(--accent-cyan);
-    box-shadow: 0 0 6px var(--accent-cyan);
+    color: var(--text-primary);
   }
 
   .header-meta {
@@ -178,6 +153,19 @@
 
   .panel-body { padding: 10px 12px; }
 
+  /* --- Two-column grid for bottom panels --- */
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+
+  .two-col .panel { margin-bottom: 0; }
+
+  @media (max-width: 640px) {
+    .two-col { grid-template-columns: 1fr; }
+  }
+
   /* --- Tables --- */
   table {
     width: 100%;
@@ -202,7 +190,7 @@
     padding: 4px 8px;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
-    border-bottom: 1px solid rgba(26, 37, 53, 0.4);
+    border-bottom: 1px solid rgba(30, 30, 36, 0.5);
   }
 
   tr:last-child td { border-bottom: none; }
@@ -230,22 +218,8 @@
     position: absolute;
     top: 2px; bottom: 2px;
     border-radius: 1px;
-    opacity: 0.25;
+    opacity: 0.2;
   }
-
-  /* --- Group labels --- */
-  .group-label {
-    font-family: var(--sans);
-    font-size: 10px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    color: var(--text-dim);
-    padding: 8px 8px 3px;
-    border-bottom: 1px solid var(--border-dim);
-  }
-
-  .group-label:first-child { padding-top: 0; }
 
   /* --- Worker dots --- */
   .dot {
@@ -255,9 +229,9 @@
     margin-right: 4px;
   }
 
-  .dot.fresh { background: var(--accent-green); box-shadow: 0 0 4px var(--accent-green); }
-  .dot.stale { background: var(--accent-amber); }
-  .dot.dead { background: var(--accent-red); }
+  .dot.fresh { background: var(--status-green); box-shadow: 0 0 4px var(--status-green); }
+  .dot.stale { background: var(--status-amber); }
+  .dot.dead { background: var(--status-red); }
 
   /* --- Head-to-head matrix --- */
   .h2h-wrap { overflow-x: auto; }
@@ -327,9 +301,8 @@
   .initial .panel:nth-child(2) { animation-delay: 0.04s; }
   .initial .panel:nth-child(3) { animation-delay: 0.08s; }
   .initial .panel:nth-child(4) { animation-delay: 0.12s; }
-  .initial .panel:nth-child(5) { animation-delay: 0.16s; }
-  .initial .panel:nth-child(6) { animation-delay: 0.20s; }
-  .initial .panel:nth-child(7) { animation-delay: 0.24s; }
+  .initial .two-col .panel { animation: fadeUp 0.3s ease both; animation-delay: 0.16s; }
+  .initial .two-col .panel:nth-child(2) { animation-delay: 0.20s; }
 </style>
 </head>
 <body>
@@ -339,7 +312,7 @@
   <div class="header-row">
     <div class="header-left">
       <div class="logo">hexchess <span>// training</span></div>
-      <span class="model-badge" id="model-badge">—</span>
+      <span class="model-badge" id="model-badge">&mdash;</span>
     </div>
     <div class="header-meta">
       <div id="promoted-at"></div>
@@ -375,7 +348,7 @@ function ago(ts) {
 }
 
 function fmt(n) {
-  if (n == null) return '—';
+  if (n == null) return '\u2014';
   return typeof n === 'number' ? n.toLocaleString() : n;
 }
 
@@ -414,7 +387,7 @@ function panelHtml(id, title, badge, body, defaultOpen = true) {
   </div>`;
 }
 
-function renderRatingTable(players, ratings, playerStats, label) {
+function renderRatingTable(players, ratings, playerStats) {
   if (!players.length) return '';
 
   const items = players
@@ -433,30 +406,30 @@ function renderRatingTable(players, ratings, playerStats, label) {
   const base = minElo - range * 0.05;
   const span = range * 1.1;
 
-  let html = `<div class="group-label">${label}</div>`;
-  html += '<table><tr><th style="width:24px">#</th><th>player</th><th class="r">rating</th><th class="r" style="width:52px">±</th><th class="r" style="width:52px">s/mv</th><th style="min-width:100px"></th></tr>';
+  let html = '<table><tr><th style="width:24px">#</th><th>player</th><th class="r">rating</th><th class="r" style="width:52px">\u00b1</th><th class="r" style="width:52px">s/mv</th><th style="min-width:100px"></th></tr>';
 
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
     const ps = playerStats[it.name];
-    const avg = ps && ps.total_moves > 0 ? (ps.total_time / ps.total_moves).toFixed(2) : '—';
+    const avg = ps && ps.total_moves > 0 ? (ps.total_time / ps.total_moves).toFixed(2) : '\u2014';
 
     const barLeft = Math.max(0, ((it.elo - it.eloSigma) - base) / span * 100);
     const barRight = Math.min(100, ((it.elo + it.eloSigma) - base) / span * 100);
-    const barCenter = ((it.elo) - base) / span * 100;
 
-    const color = BASELINES.has(it.name) ? 'var(--accent-purple)' : 'var(--accent-blue)';
+    const isBaseline = BASELINES.has(it.name);
+    const barColor = isBaseline ? 'var(--accent-dim)' : 'var(--accent)';
+    const ratingColor = it.elo >= 1500 ? 'var(--win-green)' : it.elo >= 1200 ? 'var(--text-primary)' : 'var(--loss-red)';
 
     html += `<tr>
       <td class="r muted">${i + 1}</td>
-      <td>${it.name}</td>
-      <td class="r" style="font-weight:600;color:${it.elo >= 1500 ? 'var(--accent-green)' : it.elo >= 1200 ? 'var(--text-primary)' : 'var(--accent-red)'}">${it.elo > 0 ? '+' : ''}${it.elo}</td>
+      <td style="${isBaseline ? 'color:var(--text-dim)' : ''}">${it.name}</td>
+      <td class="r" style="font-weight:600;color:${ratingColor}">${it.elo > 0 ? '+' : ''}${it.elo}</td>
       <td class="r muted">${it.eloSigma}</td>
       <td class="r muted">${avg}</td>
       <td>
         <div class="rating-bar-track">
-          <div class="rating-bar-ci" style="left:${barLeft}%;width:${barRight - barLeft}%;background:${color}"></div>
-          <div class="rating-bar" style="left:${Math.max(0, (it.elo - base) / span * 100 - 0.5)}%;width:3px;background:${color}"></div>
+          <div class="rating-bar-ci" style="left:${barLeft}%;width:${barRight - barLeft}%;background:${barColor}"></div>
+          <div class="rating-bar" style="left:${Math.max(0, (it.elo - base) / span * 100 - 0.5)}%;width:3px;background:${barColor}"></div>
         </div>
       </td>
     </tr>`;
@@ -472,28 +445,6 @@ function renderHeader(data) {
   document.getElementById('last-refresh').textContent = `refreshed ${ago(data.timestamp)}`;
 }
 
-function buildWorkers(data) {
-  const w = data.workers || {};
-  const names = Object.keys(w).sort();
-  if (!names.length) return panelHtml('workers', 'Workers', null, '<div class="empty">No worker heartbeats</div>');
-
-  let html = `<table><tr><th></th><th>worker</th><th>model</th><th class="r">games</th><th class="r">positions</th><th class="r">last seen</th></tr>`;
-  for (const name of names) {
-    const hb = w[name];
-    const cls = freshness(hb.timestamp);
-    html += `<tr>
-      <td><span class="dot ${cls}"></span></td>
-      <td>${name}</td>
-      <td>v${hb.model_version || '?'}</td>
-      <td class="r">${fmt(hb.total_games)}</td>
-      <td class="r">${fmt(hb.total_positions)}</td>
-      <td class="r muted">${ago(hb.timestamp)}</td>
-    </tr>`;
-  }
-  html += '</table>';
-  return panelHtml('workers', 'Workers', `${names.length}`, html);
-}
-
 function buildRatings(data) {
   const e = data.elo;
   const ratings = e.ratings || {};
@@ -505,117 +456,10 @@ function buildRatings(data) {
       `<div class="empty">No ratings yet (${e.total_games} games played)</div>`);
   }
 
-  const models = active.filter(n => !BASELINES.has(n));
-  const bases = active.filter(n => BASELINES.has(n));
-
   let body = `<div class="kv-row"><span class="k">total games</span><span class="v">${fmt(e.total_games)}</span></div>`;
-  body += renderRatingTable(models, ratings, ps, 'Models');
-  body += renderRatingTable(bases, ratings, ps, 'Baselines');
+  body += renderRatingTable(active, ratings, ps);
 
   return panelHtml('ratings', 'Ratings', `${active.length} players`, body);
-}
-
-function buildH2H(data) {
-  const e = data.elo;
-  const active = e.active_players || [];
-  const pairs = e.pair_results || {};
-
-  if (active.length < 2) {
-    return panelHtml('h2h', 'Head-to-Head', null, '<div class="empty">Not enough players</div>', false);
-  }
-
-  // Sort by rating
-  const ratings = e.ratings || {};
-  const sorted = [...active].sort((a, b) => {
-    const ra = ratings[a], rb = ratings[b];
-    if (!ra || !rb) return 0;
-    return conservRating(rb.mu, rb.sigma) - conservRating(ra.mu, ra.sigma);
-  });
-
-  let html = '<div class="h2h-wrap"><table class="h2h-table"><tr><th></th>';
-  for (const p of sorted) {
-    const short = p.length > 7 ? p.slice(0, 6) + '…' : p;
-    html += `<th title="${p}">${short}</th>`;
-  }
-  html += '</tr>';
-
-  for (const row of sorted) {
-    const shortRow = row.length > 7 ? row.slice(0, 6) + '…' : row;
-    html += `<tr><th title="${row}" style="text-align:right">${shortRow}</th>`;
-    for (const col of sorted) {
-      if (row === col) {
-        html += '<td class="self">—</td>';
-        continue;
-      }
-      const key = pairKey(row, col);
-      const pr = pairs[key];
-      if (!pr) {
-        html += '<td><span class="h2h-cell none">—</span></td>';
-        continue;
-      }
-      const a_name = key.split(':')[0];
-      const rowIsA = row === a_name;
-      const wins = rowIsA ? pr.a_wins : pr.b_wins;
-      const losses = rowIsA ? pr.b_wins : pr.a_wins;
-      const draws = pr.draws;
-      const total = wins + losses + draws;
-      const winRate = total > 0 ? wins / total : 0.5;
-
-      let cls = 'even';
-      if (total >= 3) {
-        if (winRate >= 0.6) cls = 'dominant';
-        else if (winRate <= 0.4) cls = 'losing';
-      }
-
-      html += `<td><span class="h2h-cell ${cls}" title="${row} vs ${col}: ${wins}W ${draws}D ${losses}L">${wins}-${draws}-${losses}</span></td>`;
-    }
-    html += '</tr>';
-  }
-  html += '</table></div>';
-
-  return panelHtml('h2h', 'Head-to-Head', `${Object.keys(pairs).length} pairs`, html, false);
-}
-
-function buildRetired(data) {
-  const e = data.elo;
-  const retired = e.retired_players || [];
-  const ratings = e.ratings || {};
-  const ps = e.player_stats || {};
-
-  if (!retired.length) return '';
-
-  const body = renderRatingTable(retired, ratings, ps, 'Retired Models');
-  if (!body) return '';
-  return panelHtml('retired', 'Retired', `${retired.length}`, body, false);
-}
-
-function buildGames(data) {
-  const games = data.recent_games || [];
-  if (!games.length) {
-    return panelHtml('games', 'Recent Games', null, '<div class="empty">No games recorded</div>');
-  }
-
-  const show = games.slice(-20).reverse();
-
-  let html = '<table><tr><th class="r">#</th><th>white</th><th>black</th><th>result</th><th class="r">moves</th><th class="r">when</th></tr>';
-  for (const g of show) {
-    let outcomeHtml;
-    if (g.outcome === 'white') outcomeHtml = `<span class="game-outcome w">1-0</span>`;
-    else if (g.outcome === 'black') outcomeHtml = `<span class="game-outcome b">0-1</span>`;
-    else outcomeHtml = `<span class="game-outcome d">½-½</span>`;
-
-    html += `<tr>
-      <td class="r muted">${g.game}</td>
-      <td>${g.white}</td>
-      <td>${g.black}</td>
-      <td>${outcomeHtml}</td>
-      <td class="r">${g.moves}</td>
-      <td class="r muted">${ago(g.timestamp)}</td>
-    </tr>`;
-  }
-  html += '</table>';
-
-  return panelHtml('games', 'Recent Games', `${games.length}`, html);
 }
 
 function buildData(data) {
@@ -644,6 +488,130 @@ function buildData(data) {
   return panelHtml('data', 'Training Data', null, html);
 }
 
+function buildH2H(data) {
+  const e = data.elo;
+  const active = e.active_players || [];
+  const pairs = e.pair_results || {};
+
+  if (active.length < 2) {
+    return panelHtml('h2h', 'Head-to-Head', null, '<div class="empty">Not enough players</div>', false);
+  }
+
+  const ratings = e.ratings || {};
+  const sorted = [...active].sort((a, b) => {
+    const ra = ratings[a], rb = ratings[b];
+    if (!ra || !rb) return 0;
+    return conservRating(rb.mu, rb.sigma) - conservRating(ra.mu, ra.sigma);
+  });
+
+  const shorten = s => s.length > 7 ? s.slice(0, 6) + '\u2026' : s;
+
+  let html = '<div class="h2h-wrap"><table class="h2h-table"><tr><th></th>';
+  for (const p of sorted) {
+    html += `<th title="${p}">${shorten(p)}</th>`;
+  }
+  html += '</tr>';
+
+  for (const row of sorted) {
+    html += `<tr><th title="${row}" style="text-align:right">${shorten(row)}</th>`;
+    for (const col of sorted) {
+      if (row === col) {
+        html += '<td class="self">\u2014</td>';
+        continue;
+      }
+      const key = pairKey(row, col);
+      const pr = pairs[key];
+      if (!pr) {
+        html += '<td><span class="h2h-cell none">\u2014</span></td>';
+        continue;
+      }
+      const a_name = key.split(':')[0];
+      const rowIsA = row === a_name;
+      const wins = rowIsA ? pr.a_wins : pr.b_wins;
+      const losses = rowIsA ? pr.b_wins : pr.a_wins;
+      const draws = pr.draws;
+      const total = wins + losses + draws;
+      const winRate = total > 0 ? wins / total : 0.5;
+
+      let cls = 'even';
+      if (total >= 3) {
+        if (winRate >= 0.6) cls = 'dominant';
+        else if (winRate <= 0.4) cls = 'losing';
+      }
+
+      html += `<td><span class="h2h-cell ${cls}" title="${row} vs ${col}: ${wins}W ${draws}D ${losses}L">${wins}-${draws}-${losses}</span></td>`;
+    }
+    html += '</tr>';
+  }
+  html += '</table></div>';
+
+  return panelHtml('h2h', 'Head-to-Head', `${Object.keys(pairs).length} pairs`, html, false);
+}
+
+function buildGames(data) {
+  const games = data.recent_games || [];
+  if (!games.length) {
+    return panelHtml('games', 'Recent Games', null, '<div class="empty">No games recorded</div>');
+  }
+
+  const show = games.slice(-20).reverse();
+
+  let html = '<table><tr><th class="r">#</th><th>white</th><th>black</th><th>result</th><th class="r">moves</th><th class="r">when</th></tr>';
+  for (const g of show) {
+    let outcomeHtml;
+    if (g.outcome === 'white') outcomeHtml = `<span class="game-outcome w">1-0</span>`;
+    else if (g.outcome === 'black') outcomeHtml = `<span class="game-outcome b">0-1</span>`;
+    else outcomeHtml = `<span class="game-outcome d">\u00bd-\u00bd</span>`;
+
+    html += `<tr>
+      <td class="r muted">${g.game}</td>
+      <td>${g.white}</td>
+      <td>${g.black}</td>
+      <td>${outcomeHtml}</td>
+      <td class="r">${g.moves}</td>
+      <td class="r muted">${ago(g.timestamp)}</td>
+    </tr>`;
+  }
+  html += '</table>';
+
+  return panelHtml('games', 'Recent Games', `${games.length}`, html);
+}
+
+function buildWorkers(data) {
+  const w = data.workers || {};
+  const names = Object.keys(w).sort();
+  if (!names.length) return panelHtml('workers', 'Workers', null, '<div class="empty">No worker heartbeats</div>');
+
+  let html = `<table><tr><th></th><th>worker</th><th>model</th><th class="r">games</th><th class="r">pos</th><th class="r">seen</th></tr>`;
+  for (const name of names) {
+    const hb = w[name];
+    const cls = freshness(hb.timestamp);
+    html += `<tr>
+      <td><span class="dot ${cls}"></span></td>
+      <td>${name}</td>
+      <td>v${hb.model_version || '?'}</td>
+      <td class="r">${fmt(hb.total_games)}</td>
+      <td class="r">${fmt(hb.total_positions)}</td>
+      <td class="r muted">${ago(hb.timestamp)}</td>
+    </tr>`;
+  }
+  html += '</table>';
+  return panelHtml('workers', 'Workers', `${names.length}`, html);
+}
+
+function buildRetired(data) {
+  const e = data.elo;
+  const retired = e.retired_players || [];
+  const ratings = e.ratings || {};
+  const ps = e.player_stats || {};
+
+  if (!retired.length) return '';
+
+  const body = renderRatingTable(retired, ratings, ps);
+  if (!body) return '';
+  return panelHtml('retired', 'Retired', `${retired.length}`, body, false);
+}
+
 function render(data) {
   if (!data) return;
   lastData = data;
@@ -651,14 +619,20 @@ function render(data) {
 
   const panels = document.getElementById('panels');
   if (firstRender) panels.classList.add('initial');
+
+  const retiredHtml = buildRetired(data);
+
   panels.innerHTML = [
-    buildWorkers(data),
     buildRatings(data),
-    buildH2H(data),
-    buildGames(data),
-    buildRetired(data),
     buildData(data),
+    buildH2H(data),
+    retiredHtml,
+    `<div class="two-col">
+      ${buildGames(data)}
+      ${buildWorkers(data)}
+    </div>`,
   ].join('');
+
   if (firstRender) {
     firstRender = false;
     setTimeout(() => panels.classList.remove('initial'), 500);
