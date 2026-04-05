@@ -35,6 +35,7 @@ jobs:
         working-directory: docs
       - run: npm run build
         working-directory: docs
+      - run: cp -r bindings/wasm/pkg docs/out/wasm
 
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

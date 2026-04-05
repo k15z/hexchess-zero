@@ -38,8 +38,10 @@ export interface AiHandle {
 
 export async function initWasm() {
   if (wasm) return;
-  // Build URL dynamically so webpack/turbopack won't try to resolve it.
-  const base = window.location.origin;
+  // Build URL relative to the current page to support subdirectory hosting.
+  // __NEXT_DATA__.basePath is set by Next.js at runtime.
+  const basePath = (window as any).__NEXT_DATA__?.basePath ?? "";
+  const base = `${window.location.origin}${basePath}`;
   const jsUrl = `${base}/wasm/hexchess_wasm.js`;
   const wasmUrl = `${base}/wasm/hexchess_wasm_bg.wasm`;
   wasm = await (Function(`return import("${jsUrl}")`)() as Promise<any>);
