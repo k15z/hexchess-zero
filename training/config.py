@@ -22,9 +22,9 @@ class _BaseConfig:
     num_simulations: int = 500
 
     # --- Self-play ---
-    temperature_threshold: int = 60  # after this many moves, temperature → near-zero
+    temperature_threshold: int = 60  # after this many moves, temperature drops to temperature_low
     temperature_high: float = 1.0
-    temperature_low: float = 0.01
+    temperature_low: float = 0.35  # Lc0-style floor — 0.01 produced one-hot targets in 65-70% of positions
     dirichlet_alpha: float = 0.3
     dirichlet_epsilon: float = 0.25
 
