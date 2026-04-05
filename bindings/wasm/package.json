@@ -1,0 +1,17 @@
+{
+  "name": "hexchess-zero",
+  "description": "Glinski hexagonal chess engine with AlphaZero-style training",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/k15z/hexchess-zero"
+  },
+  "keywords": [
+    "chess",
+    "hexagonal",
+    "alphazero",
+    "mcts",
+    "wasm",
+    "game-engine"
+  ]
+}

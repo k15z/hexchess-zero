@@ -3,6 +3,27 @@ requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "hexchess"
-version = "0.1.0"
+name = "hexchess-zero"
+dynamic = ["version"]
+description = "Glinski hexagonal chess engine with AlphaZero-style training"
 requires-python = ">=3.8"
+license = "MIT"
+authors = [{ name = "Kevin Zhang" }]
+keywords = ["chess", "hexagonal", "alphazero", "mcts", "game-engine"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Rust",
+    "Topic :: Games/Entertainment :: Board Games",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.urls]
+Repository = "https://github.com/k15z/hexchess-zero"
+
+[tool.maturin]
+module-name = "hexchess"
