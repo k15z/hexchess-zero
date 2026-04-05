@@ -1,0 +1,51 @@
+---
+title: Glinski hex chess rules
+description: How Glinski's hexagonal chess variant differs from standard chess
+---
+
+Hexchess implements **Glinski's hexagonal chess**, the most popular hexagonal chess variant. Here are the key differences from standard chess.
+
+## The board
+
+The board has **91 hexagonal cells** arranged in a hex grid, compared to 64 squares in standard chess. Each cell has 6 edges and up to 6 orthogonal neighbors.
+
+Cells are addressed using **axial coordinates** `(q, r)` where `max(|q|, |r|, |q+r|) <= 5`. The center cell is `(0, 0)`.
+
+## Pieces and starting position
+
+Each side starts with:
+- 1 king, 1 queen, 2 rooks, 2 knights
+- **3 bishops** (one per cell color — hex boards have 3 cell colors, not 2)
+- **9 pawns** (not 8)
+
+There is **no castling** in Glinski chess.
+
+## Movement directions
+
+Standard chess has 8 directions (4 orthogonal + 4 diagonal). On a hex board:
+
+- **6 cardinal directions** — used by rooks and queens (analogous to orthogonal)
+- **6 diagonal directions** — used by bishops and queens
+- **12 knight jumps** — the knight has more possible destinations than in standard chess
+
+The king moves one step in any of the 6 cardinal or 6 diagonal directions (12 possible moves from the center, vs 8 in standard chess).
+
+## Pawns
+
+- White pawns advance in the `+r` direction, black pawns in the `-r` direction
+- Pawns can capture diagonally forward (2 capture directions, similar to standard chess)
+- En passant works analogously to standard chess
+- **Promotion cells**: each color has 11 edge cells along the opponent's back rank where pawns promote
+
+## Game-ending conditions
+
+The same conditions as standard chess:
+- **Checkmate** — the side to move is in check with no legal moves
+- **Stalemate** — the side to move has no legal moves but is not in check (draw)
+- **Threefold repetition** — the same position occurs three times (draw)
+- **50-move rule** — 50 consecutive moves without a capture or pawn advance (draw)
+- **Insufficient material** — neither side can force checkmate (draw)
+
+## Starting position statistics
+
+From the initial position, White has **51 legal moves** — significantly more than standard chess (20 moves). The king has 2 legal moves from the start.

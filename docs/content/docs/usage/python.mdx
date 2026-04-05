@@ -1,0 +1,189 @@
+---
+title: Python
+description: Using the hexchess engine from Python for analysis, training, and research
+---
+
+The Python bindings give you full access to the engine, MCTS search, board encoding, and minimax — everything needed for training and analysis.
+
+## Installation
+
+```bash
+# Install dependencies and build bindings
+make setup
+
+# Or manually:
+uv sync --group dev
+uv run maturin develop --release -m bindings/python/Cargo.toml
+```
+
+This compiles the Rust engine with ONNX Runtime support and installs the `hexchess` Python module.
+
+## Game class
+
+### Create and play
+
+```python
+import hexchess
+
+game = hexchess.Game()
+
+moves = game.legal_moves()
+# [{'from_q': 0, 'from_r': -4, 'to_q': 0, 'to_r': -3, 'promotion': None}, ...]
+
+game.apply_move(0, -4, 0, -3)  # move a piece
+
+game.side_to_move()   # "white" or "black"
+game.status()         # "ongoing", "checkmate_white", etc.
+game.is_game_over()   # bool
+game.is_in_check()    # bool
+```
+
+### Board state and undo
+
+```python
+pieces = game.board_state()
+# [{'q': 0, 'r': -5, 'piece': 'king', 'color': 'white'}, ...]
+
+game.undo_move()  # undo the last move
+
+# Deep copy for branching analysis
+game2 = game.clone()
+```
+
+### Pawn promotion
+
+```python
+game.apply_move(0, 4, 0, 5, "queen")  # promote to queen
+# options: "queen", "rook", "bishop", "knight"
+```
+
+## MCTS search
+
+### Heuristic search (no model)
+
+```python
+mcts = hexchess.MctsSearch(simulations=500)
+
+result = mcts.run(game)
+result["best_move"]   # {'from_q': ..., 'to_q': ..., ...}
+result["value"]       # float in [-1, 1], positive = good for side to move
+result["policy"]      # numpy array of shape (num_move_indices,)
+result["nodes"]       # number of nodes searched
+```
+
+### Neural network search
+
+```python
+mcts = hexchess.MctsSearch(
+    simulations=800,
+    model_path="path/to/model.onnx",
+    c_puct=1.5,
+    batch_size=32,
+    tt_capacity=500_000,
+)
+
+result = mcts.run(game)
+```
+
+### Temperature and Dirichlet noise
+
+```python
+# Temperature for exploration (used in self-play)
+result = mcts.run(game, temperature=1.0)
+
+# Dirichlet noise at root (encourages exploring new moves)
+result = mcts.run(game, dirichlet_epsilon=0.25, dirichlet_alpha=0.3)
+```
+
+### Transposition table stats
+
+```python
+stats = mcts.tt_stats()
+# {'hits': 1234, 'misses': 5678, 'clears': 2, 'current_size': 10000}
+```
+
+## Minimax search
+
+For classical alpha-beta search (used in imitation bootstrap and analysis):
+
+```python
+# Basic minimax
+result = hexchess.minimax_search(game, depth=5)
+result["best_move"]  # best move dict
+result["score"]      # centipawn score (positive = good for side to move)
+result["nodes"]      # nodes searched
+
+# Search with scores for ALL legal moves
+result = hexchess.minimax_search_all(game, depth=5)
+result["moves"]  # [{'move': {...}, 'score': 123}, ...]
+
+# Two-phase search: deep best-move + shallow policy for all moves
+result = hexchess.minimax_search_with_policy(game, depth=5)
+result["best_move"]
+result["best_score"]
+result["moves"]      # all moves with scores
+```
+
+### Custom evaluation weights
+
+```python
+weights = hexchess.EvalWeights(
+    material=1,
+    mobility=0,
+    pawn_advance=1,
+    center_control=4,
+    king_safety=0,
+    bishop_color_bonus=30,
+    pawn_connected=7,
+    pawn_isolated=-10,
+    passed_pawn=3,
+    king_tropism=2,
+)
+result = hexchess.minimax_search(game, depth=5, weights=weights)
+
+# Or material-only evaluation:
+weights = hexchess.EvalWeights.material_only()
+```
+
+## Board encoding (for training)
+
+Convert game states to tensors for neural network training:
+
+```python
+# Single position → numpy array of shape (19, 11, 11)
+tensor = hexchess.encode_board(game)
+
+# Batch encoding → numpy array of shape (N, 19, 11, 11)
+tensors = hexchess.encode_batch([game1, game2, game3])
+
+# Tensor shape constant
+hexchess.TENSOR_SHAPE  # (19, 11, 11)
+```
+
+The 19 channels encode:
+- Channels 0-11: piece planes (6 piece types x 2 colors)
+- Channel 12: side to move
+- Channel 13: fullmove number
+- Channel 14: halfmove clock
+- Channel 15: en passant
+- Channel 16: repetition count
+- Channel 17: validity mask (which cells are valid hex cells)
+- Channel 18: in-check flag
+
+## Move indexing
+
+Convert between moves and policy vector indices:
+
+```python
+# Move → index
+idx = hexchess.move_to_index(0, -4, 0, -3)
+
+# Index → move
+move = hexchess.index_to_move(idx)
+# {'from_q': 0, 'from_r': -4, 'to_q': 0, 'to_r': -3, 'promotion': None}
+
+# Total policy vector size
+hexchess.num_move_indices()  # ~4206
+```
+
+The move index table is deterministic — any change would break compatibility with existing training data and models.

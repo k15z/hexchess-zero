@@ -1,4 +1,4 @@
-.PHONY: setup worker trainer elo dashboard status test bench lint web-dev web-build clean
+.PHONY: setup worker trainer elo dashboard status test bench lint docs-dev docs-build clean
 
 # --- Training pipeline ---
 
@@ -33,15 +33,15 @@ lint: ## Run clippy + format check
 	cargo clippy -p hexchess-engine -- -D warnings
 	cargo fmt --all --check
 
-# --- Web frontend ---
+# --- Documentation ---
 
-web-dev: ## Build WASM + start Vite dev server
+docs-dev: ## Start documentation dev server (builds WASM first)
 	wasm-pack build --target web bindings/wasm
-	cd web && npm ci && npm run dev
+	cd docs && npm install && npm run copy-wasm && npm run dev
 
-web-build: ## Production build of web frontend
+docs-build: ## Build documentation site (builds WASM first)
 	wasm-pack build --target web bindings/wasm
-	cd web && npm ci && npm run build
+	cd docs && npm install && npm run build
 
 # --- Docker ---
 
@@ -54,7 +54,7 @@ docker-down: ## Stop all services
 # --- Misc ---
 
 clean: ## Remove build artifacts and caches
-	rm -rf .cache/ .venv/ target/ web/dist/ bindings/wasm/pkg/
+	rm -rf .cache/ .venv/ target/ bindings/wasm/pkg/
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'

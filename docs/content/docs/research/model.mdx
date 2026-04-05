@@ -1,0 +1,95 @@
+---
+title: Neural network
+description: The SE residual network with KataGo-style global pooling
+---
+
+The neural network is defined in `training/model.py`. It's a convolutional residual network inspired by Leela Chess Zero and KataGo.
+
+## Architecture overview
+
+```
+Input (19, 11, 11)
+    │
+    ▼
+Conv2d 3x3 → BN → ReLU          (19 → 192 channels)
+    │
+    ▼
+SE Residual Blocks × 10          (192 channels, with global pooling at blocks 3 & 6)
+    │
+    ├─────────────┐
+    ▼             ▼
+Policy Head    Value Head
+    │             │
+    ▼             ▼
+~4206 moves    WDL (3 logits)
+```
+
+## Input tensor
+
+The input is a `(19, 11, 11)` tensor — the 91-cell hex board embedded in an 11x11 grid with zero-padding for invalid cells:
+
+| Channels | Content |
+|----------|---------|
+| 0-11 | Piece planes (6 types x 2 colors) |
+| 12 | Side to move |
+| 13 | Fullmove number |
+| 14 | Halfmove clock |
+| 15 | En passant |
+| 16 | Repetition count |
+| 17 | Validity mask |
+| 18 | In-check flag |
+
+## SE residual blocks
+
+Each block follows the **Squeeze-and-Excitation** pattern (Leela Chess variant):
+
+```
+x → Conv 3x3 → BN → ReLU → Conv 3x3 → BN → SE → ReLU(out + x)
+```
+
+The SE module:
+1. Global average pool → `(B, C)`
+2. FC → ReLU → FC → split into `scale` (sigmoid) and `bias`
+3. Output = `scale * x + bias`
+
+This gives each channel a learned, input-dependent scaling — the network can dynamically emphasize or suppress features based on the global position.
+
+## KataGo-style global pooling
+
+At configured block positions (blocks 3 and 6), an additional **global pooling branch** injects board-wide context into the local convolutions:
+
+1. A parallel 1x1 conv computes `pool_channels` features
+2. Three pooling operations: mean, scaled mean, max
+3. The pooled features are projected to a per-channel bias added before the second convolution
+
+This lets the network reason about global properties (material balance, king safety, piece counts) while still operating with local 3x3 convolutions.
+
+## Policy head
+
+```
+Conv 1x1 (192 → 8) → BN → ReLU → Flatten → Linear → 4206 outputs
+```
+
+Outputs logits over the deterministic move index table. During training, the target is the MCTS visit count distribution (after temperature). During inference, legal moves are masked and softmax is applied.
+
+## Value head
+
+```
+Conv 1x1 (192 → 32) → BN → ReLU → Global Avg Pool → Linear → 3 WDL logits
+```
+
+Outputs **Win/Draw/Loss** logits rather than a single scalar. This provides richer training signal (the network learns to distinguish wins from draws) and converts to a scalar via `W - L` for MCTS backup.
+
+## Architecture parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `num_residual_blocks` | 10 | Depth of the residual tower |
+| `num_filters` | 192 | Width of convolutional layers |
+| `se_channels` | 48 | SE bottleneck width |
+| `global_pool_channels` | 32 | Global pooling feature width |
+| `global_pool_blocks` | (3, 6) | Which blocks get global pooling |
+| `policy_channels` | 8 | Conv channels in policy head |
+| `value_channels` | 32 | Conv channels in value head |
+
+The architecture was validated through experiments comparing SE-only, global-pool-only, and combined configurations (see `training/experiments/`).

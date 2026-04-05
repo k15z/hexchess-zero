@@ -1,0 +1,54 @@
+---
+title: Move generation
+description: How legal moves are generated on the hexagonal board
+---
+
+Move generation lives in `engine/src/movegen.rs` and is the most performance-critical part of the engine — it runs millions of times during MCTS search and training.
+
+## Two-phase approach
+
+Move generation follows the standard chess engine pattern:
+
+1. **Pseudo-legal generation** — generate all moves that follow piece movement rules, ignoring whether they leave the king in check
+2. **Legality filtering** — apply each pseudo-legal move, check if the king is in check, then undo
+
+This is simpler and faster than trying to generate only legal moves directly, especially on a hex board where pin/check detection is more complex.
+
+## Precomputed tables
+
+Sliding piece moves (rooks, bishops, queens) use **precomputed ray tables** — for each cell and each of the 12 ray directions (6 cardinal + 6 diagonal), the table stores the ordered list of cells along that ray. Knight moves use a similar **precomputed jump table**.
+
+These tables are lazily initialized via `OnceLock` on first use.
+
+```
+6 cardinal directions → rook rays
+6 diagonal directions → bishop rays
+12 knight jumps       → knight table
+```
+
+## MoveList: stack-allocated, no heap
+
+The `MoveList` type is a fixed-size array of 256 entries stored on the stack. This avoids heap allocation in the hot path — critical when generating millions of move lists during search.
+
+```rust
+pub struct MoveList {
+    moves: [Move; 256],
+    len: usize,
+}
+```
+
+256 is more than enough — the maximum number of legal moves in any Glinski position is well below this.
+
+## Move representation
+
+Each `Move` stores:
+
+- `from: HexCoord` — source cell
+- `to: HexCoord` — destination cell
+- `promotion: Option<PieceKind>` — promotion piece for pawn moves reaching the back rank
+
+Pawn promotions are represented as separate moves: a pawn reaching a promotion cell generates 4 moves (one per promotion piece: queen, rook, bishop, knight).
+
+## Check detection
+
+`is_in_check(board, color)` determines whether the given color's king is attacked. This is called after every pseudo-legal move to filter illegal ones, and also used for game status detection (checkmate vs stalemate).

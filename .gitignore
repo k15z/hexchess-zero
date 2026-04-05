@@ -28,7 +28,6 @@ target/wheels/
 
 # Node
 node_modules/
-web/dist/
 *.wasm
 
 # Claude Code (keep settings.json and CLAUDE.md committed)

@@ -1,0 +1,84 @@
+---
+title: Deployment
+description: Running the training pipeline on Kubernetes
+---
+
+The training pipeline is designed to run as a distributed system. All coordination happens through S3, so components can run on any mix of hardware.
+
+## Infrastructure
+
+The production setup uses:
+
+| Component | Infrastructure | Resources |
+|-----------|---------------|-----------|
+| Self-play workers | Hetzner k3s cluster | CPU pods (14Gi memory each) |
+| Trainer | GPU-capable node | GPU + CPU |
+| Elo service | k3s cluster | CPU pod (8Gi memory) |
+| Dashboard | k3s cluster | Lightweight CPU pod |
+| Shared state | S3 (DigitalOcean Spaces / Cloudflare R2) | Object storage |
+
+## Docker
+
+All components are containerized with a multi-arch Docker image (amd64 + arm64):
+
+```bash
+# Start everything locally
+make docker-up
+
+# Stop
+make docker-down
+```
+
+The `docker-compose.yml` runs workers, trainer, Elo service, and dashboard.
+
+## Kubernetes
+
+Kubernetes manifests live in `k8s/`. The cluster runs on Hetzner Cloud servers using k3s.
+
+### Scaling workers
+
+Workers are stateless — just add more replicas or nodes. Each worker:
+
+- Polls S3 for the latest model
+- Runs MCTS self-play (CPU-bound, ~14Gi memory per pod)
+- Uploads `.npz` batches to S3
+- Sends heartbeats so the dashboard can track worker health
+
+### Resource requirements
+
+Worker memory usage is dominated by the MCTS search tree (arena-allocated nodes) and the inference model loaded in memory. The Elo service caches multiple model versions for matchmaking, requiring significant memory.
+
+## Monitoring
+
+### Dashboard
+
+```bash
+make dashboard
+```
+
+The training dashboard (`training/dashboard.py` + `dashboard.html`) reads directly from S3 and shows:
+
+- Worker heartbeats and health
+- Training progress (positions generated, model version, loss curves)
+- Elo ratings over time
+
+### Status command
+
+```bash
+make status
+```
+
+Shows a quick summary of the training pipeline: active workers, current model version, position counts, and Elo rankings.
+
+## Configuration
+
+All configuration lives in `training/config.py` as a dataclass. S3 credentials are in `.env` (gitignored):
+
+```
+BUCKET_NAME=your-bucket
+ACCESS_KEY=your-key
+SECRET_KEY=your-secret
+ENDPOINT=https://your-s3-endpoint
+```
+
+S3 key constants are defined in `training/storage.py` — never use raw string keys elsewhere.

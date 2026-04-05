@@ -25,9 +25,9 @@ make bench                              # criterion benchmark for move generatio
 make lint                               # clippy + fmt check
 cargo test board::tests::test_name      # run a single test by name
 
-# Web frontend
-make web-dev                            # WASM build + Vite dev server
-make web-build                          # production build
+# Documentation
+make docs-dev                           # WASM build + Fumadocs dev server
+make docs-build                         # production build
 
 # Docker
 make docker-up                          # start all training services
@@ -67,9 +67,9 @@ AlphaZero-style self-play training loop. All shared state lives in S3 (DigitalOc
 - **config.py** — Hyperparameters. Local `.cache/` directory for downloaded S3 objects.
 - **dashboard.py** + **dashboard.html** — Lightweight web dashboard reading from S3.
 
-### Web (`web/`)
+### Documentation (`docs/`)
 
-React + TypeScript. Loads WASM package, renders flat-topped hex board, supports human vs AI play.
+Fumadocs (Next.js) documentation site with an interactive playground. The playground loads the WASM package to let users play hexagonal chess in the browser. Built via `make docs-dev`.
 
 ## Glinski Hex Chess Rules (key differences from standard chess)
 

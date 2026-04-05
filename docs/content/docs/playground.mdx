@@ -1,0 +1,18 @@
+---
+title: Playground
+description: Play hexagonal chess in your browser against the AI
+---
+
+import { Playground } from "@/components/playground"
+
+Play hexagonal chess right here. Click a piece to select it, then click a highlighted cell to move. The AI (heuristic MCTS, 500 simulations) responds automatically.
+
+<Playground />
+
+**Controls:**
+- **New Game** — start a fresh game
+- **Undo** — take back your last move (undoes both yours and the AI's response)
+- **Flip Side** — switch to play as the other color
+- **AI vs AI** — watch two AI players play against each other
+
+The engine runs entirely in your browser via WebAssembly — no server needed. See the [Glinski rules](/docs/rules) page if you're new to hexagonal chess.

@@ -1,0 +1,38 @@
+---
+title: Research overview
+description: AlphaZero-style reinforcement learning for hexagonal chess
+---
+
+The hexchess training pipeline implements **AlphaZero-style self-play reinforcement learning** — the engine learns to play hex chess from scratch by playing against itself, with no human games or handcrafted evaluation beyond the initial bootstrap.
+
+## The AlphaZero approach
+
+The core loop:
+
+1. **Self-play**: the current neural network guides MCTS search to play games against itself, producing training data (board positions, search policies, game outcomes)
+2. **Training**: a neural network is trained on this data to predict both the search policy and game outcome from a raw board position
+3. **Iteration**: the updated network is used for the next round of self-play, producing better data, which trains a better network
+
+Over time, the network learns increasingly sophisticated evaluation and move selection — initially random, then developing material awareness, positional understanding, and tactical calculation.
+
+## What makes this interesting
+
+Hexagonal chess is a compelling testbed for AlphaZero-style learning because:
+
+- **No existing theory** — unlike standard chess, there's minimal opening theory or endgame tablebases to lean on. The network must discover everything from scratch.
+- **Larger branching factor** — 51 legal moves from the start position (vs 20 in standard chess), making search harder
+- **Different geometry** — 6 cardinal + 6 diagonal directions, 3 bishops, 12 knight jumps. Pattern recognition learned for standard chess doesn't transfer.
+- **Tractable scale** — 91 cells (vs 64) is larger but still feasible for training on modest hardware
+
+## Pipeline components
+
+The training pipeline has three asynchronous components:
+
+| Component | Role | Where it runs |
+|-----------|------|---------------|
+| [MCTS search](/docs/research/mcts) | Position evaluation during self-play | Workers (CPU) |
+| [Neural network](/docs/research/model) | Policy and value prediction | Trainer (GPU) |
+| [Training loop](/docs/research/training) | Data generation, training, model promotion | Distributed (S3-coordinated) |
+| [Deployment](/docs/research/deployment) | Kubernetes orchestration, scaling | k3s cluster |
+
+All shared state lives in **S3** (DigitalOcean Spaces / Cloudflare R2). Workers can run anywhere — local machines, cloud VMs, Docker containers — and coordinate purely through S3 polling.

@@ -1,0 +1,4 @@
+{
+  "title": "Engine internals",
+  "pages": ["board", "move-generation", "inference"]
+}

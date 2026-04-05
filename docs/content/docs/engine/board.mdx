@@ -1,0 +1,51 @@
+---
+title: Board representation
+description: How the 91-cell hex grid is represented internally
+---
+
+The board is the core data structure of the engine, defined in `engine/src/board.rs`.
+
+## Axial coordinates
+
+Every cell is addressed by an **axial coordinate** `(q, r)`. A coordinate is valid when:
+
+```
+max(|q|, |r|, |q + r|) <= 5
+```
+
+This gives exactly 91 valid cells. The center of the board is `(0, 0)`.
+
+## Cell indexing
+
+For fast array access, each `(q, r)` coordinate maps to an integer index 0-90 via precomputed const lookup tables. This avoids hash maps in the hot path.
+
+```rust
+// Coordinate → index (fast, const table)
+let idx = coord_to_index(HexCoord::new(0, 0)); // center = some index
+
+// Index → coordinate (reverse lookup)
+let coord = index_to_coord(idx);
+```
+
+## Board state
+
+The `Board` struct stores:
+
+- **`cells: [Option<Piece>; 91]`** — one slot per valid hex cell, `None` if empty
+- **`en_passant: Option<HexCoord>`** — en passant target square, if any
+- **`zobrist: u64`** — incrementally updated Zobrist hash for transposition detection
+
+Each `Piece` has a `kind` (King, Queen, Rook, Bishop, Knight, Pawn) and a `color` (White, Black).
+
+## Zobrist hashing
+
+The board maintains a **Zobrist hash** that is incrementally updated on every move. This is used for:
+
+- **Threefold repetition detection** — the `GameState` tracks a history of Zobrist hashes
+- **Transposition table** in MCTS — caching neural network evaluations for positions that arise via different move orders
+
+The hash incorporates piece positions, side to move, and en passant state.
+
+## Tensor encoding
+
+For neural network input, the board maps into an **11x11 grid** using `col = q + 5, row = r + 5`. Invalid cells (outside the hex) are zero-padded. The full tensor has shape `(19, 11, 11)` — see the [Python bindings](/docs/usage/python#board-encoding-for-training) for the channel layout.
