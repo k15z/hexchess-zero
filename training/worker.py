@@ -1,4 +1,3 @@
-from __future__ import annotations
 """Continuous self-play worker for async distributed training.
 
 Runs an infinite loop: fetch the latest model from S3, play games,
@@ -8,6 +7,8 @@ between batches.
 Concurrency: each worker process lets ONNX Runtime use all cores.
 For imitation (minimax), parallelizes across cores via ProcessPoolExecutor.
 """
+
+from __future__ import annotations
 
 import json
 import os

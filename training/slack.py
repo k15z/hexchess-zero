@@ -1,5 +1,6 @@
-from __future__ import annotations
 """Slack webhook notifications for training progress."""
+
+from __future__ import annotations
 
 import json
 import os

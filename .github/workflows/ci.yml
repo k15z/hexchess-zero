@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -49,30 +53,35 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - run: cargo install wasm-pack
+      - uses: taiki-e/install-action@wasm-pack
       - run: wasm-pack build --target web bindings/wasm
       - uses: actions/upload-artifact@v4
         with:
           name: wasm-pkg
           path: bindings/wasm/pkg/
 
-  python-bindings:
-    name: Python Bindings Build
+  python-lint:
+    name: Python Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/ruff-action@v3
+
+  python-test:
+    name: Python Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-      - run: pip install maturin
-      - run: cd bindings/python && maturin build
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --group dev
+      - run: uv run pytest
 
   docker-publish:
     name: Publish Training Image
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [rust-test, python-bindings]
+    needs: [rust-test, python-test]
     runs-on: ubuntu-latest
     permissions:
       contents: read

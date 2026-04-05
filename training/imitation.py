@@ -61,10 +61,10 @@ def _score_to_wdl(score: int) -> np.ndarray:
     # draw frequency in hex chess (~40-55% near equal positions vs ~25% implied).
     draw_margin = 1.0
     w = 1.0 / (1.0 + np.exp(-(s - draw_margin)))
-    l = 1.0 / (1.0 + np.exp(-(-s - draw_margin)))
-    d = max(0.0, 1.0 - w - l)
-    total = w + d + l
-    return np.array([w / total, d / total, l / total], dtype=np.float32)
+    loss_prob = 1.0 / (1.0 + np.exp(-(-s - draw_margin)))
+    d = max(0.0, 1.0 - w - loss_prob)
+    total = w + d + loss_prob
+    return np.array([w / total, d / total, loss_prob / total], dtype=np.float32)
 
 
 def _outcome_to_wdl(status: str) -> np.ndarray:
