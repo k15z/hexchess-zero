@@ -53,7 +53,7 @@ All parameters live in `training/config.py`. Here's how they interact:
 | `num_simulations` | 500 | MCTS simulations per move. Higher = stronger play but slower data generation. Directly controls worker throughput (positions/hour). |
 | `temperature_threshold` | 60 | Move number after which temperature drops to `temperature_low`. Controls exploration vs exploitation in self-play games. |
 | `temperature_high` | 1.0 | Temperature for early-game moves (before threshold). Higher = more diverse openings in training data. |
-| `temperature_low` | 0.01 | Temperature for late-game moves (after threshold). Near-zero = near-deterministic play for cleaner endgame signals. |
+| `temperature_low` | 0.35 | Temperature for late-game moves (after threshold). Lc0-style floor ensures policy targets retain gradient signal. |
 | `dirichlet_alpha` | 0.3 | Dirichlet noise concentration at MCTS root. Encourages exploration of moves the net hasn't learned yet. |
 | `dirichlet_epsilon` | 0.25 | Mixing weight for Dirichlet noise (0 = no noise, 1 = all noise). |
 | `worker_batch_size` | 5 | Games per `.npz` flush. Smaller = fresher data available to trainer sooner, but more filesystem overhead. |
