@@ -19,12 +19,9 @@
     --text-dim: #52525b;
     --accent: #e4e4e7;
     --accent-dim: #71717a;
-    --win-green: #22c55e;
-    --loss-red: #ef4444;
-    --draw-gray: #52525b;
-    --status-green: #22c55e;
-    --status-amber: #eab308;
-    --status-red: #ef4444;
+    --green: #22c55e;
+    --amber: #eab308;
+    --red: #ef4444;
     --mono: 'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
     --sans: 'DM Sans', -apple-system, sans-serif;
   }
@@ -229,9 +226,9 @@
     margin-right: 4px;
   }
 
-  .dot.fresh { background: var(--status-green); box-shadow: 0 0 4px var(--status-green); }
-  .dot.stale { background: var(--status-amber); }
-  .dot.dead { background: var(--status-red); }
+  .dot.fresh { background: var(--green); box-shadow: 0 0 4px var(--green); }
+  .dot.stale { background: var(--amber); }
+  .dot.dead { background: var(--red); }
 
   /* --- Head-to-head matrix --- */
   .h2h-wrap { overflow-x: auto; }
@@ -262,8 +259,8 @@
     font-weight: 500;
   }
 
-  .h2h-cell.dominant { color: var(--win-green); }
-  .h2h-cell.losing { color: var(--loss-red); }
+  .h2h-cell.dominant { color: var(--green); }
+  .h2h-cell.losing { color: var(--red); }
   .h2h-cell.even { color: var(--text-dim); }
   .h2h-cell.none { color: var(--text-dim); opacity: 0.3; }
 
@@ -273,9 +270,9 @@
     font-size: 11px;
   }
 
-  .game-outcome.w { color: var(--win-green); }
-  .game-outcome.b { color: var(--loss-red); }
-  .game-outcome.d { color: var(--draw-gray); }
+  .game-outcome.w { color: var(--green); }
+  .game-outcome.b { color: var(--red); }
+  .game-outcome.d { color: var(--text-dim); }
 
   /* --- KV pairs --- */
   .kv-row {
@@ -361,6 +358,7 @@ function freshness(ts) {
 }
 
 function pairKey(a, b) { return [a, b].sort().join(':'); }
+function shorten(s) { return s.length > 7 ? s.slice(0, 6) + '\u2026' : s; }
 
 // --- Panel collapse state ---
 const panelState = {};
@@ -415,10 +413,11 @@ function renderRatingTable(players, ratings, playerStats) {
 
     const barLeft = Math.max(0, ((it.elo - it.eloSigma) - base) / span * 100);
     const barRight = Math.min(100, ((it.elo + it.eloSigma) - base) / span * 100);
+    const barCenter = (it.elo - base) / span * 100;
 
     const isBaseline = BASELINES.has(it.name);
     const barColor = isBaseline ? 'var(--accent-dim)' : 'var(--accent)';
-    const ratingColor = it.elo >= 1500 ? 'var(--win-green)' : it.elo >= 1200 ? 'var(--text-primary)' : 'var(--loss-red)';
+    const ratingColor = it.elo >= 1500 ? 'var(--green)' : it.elo >= 1200 ? 'var(--text-primary)' : 'var(--red)';
 
     html += `<tr>
       <td class="r muted">${i + 1}</td>
@@ -429,7 +428,7 @@ function renderRatingTable(players, ratings, playerStats) {
       <td>
         <div class="rating-bar-track">
           <div class="rating-bar-ci" style="left:${barLeft}%;width:${barRight - barLeft}%;background:${barColor}"></div>
-          <div class="rating-bar" style="left:${Math.max(0, (it.elo - base) / span * 100 - 0.5)}%;width:3px;background:${barColor}"></div>
+          <div class="rating-bar" style="left:${Math.max(0, barCenter - 0.5)}%;width:3px;background:${barColor}"></div>
         </div>
       </td>
     </tr>`;
@@ -503,8 +502,6 @@ function buildH2H(data) {
     if (!ra || !rb) return 0;
     return conservRating(rb.mu, rb.sigma) - conservRating(ra.mu, ra.sigma);
   });
-
-  const shorten = s => s.length > 7 ? s.slice(0, 6) + '\u2026' : s;
 
   let html = '<div class="h2h-wrap"><table class="h2h-table"><tr><th></th>';
   for (const p of sorted) {
