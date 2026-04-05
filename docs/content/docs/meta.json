@@ -1,0 +1,15 @@
+{
+  "title": "Hexchess Zero",
+  "pages": [
+    "index",
+    "playground",
+    "rules",
+    "---Usage---",
+    "...usage",
+    "---Research---",
+    "...engine",
+    "...research",
+    "---",
+    "...contributing"
+  ]
+}

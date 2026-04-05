@@ -1,0 +1,129 @@
+---
+title: JavaScript / WASM
+description: Using the hexchess engine in the browser via WebAssembly
+---
+
+The WASM bindings let you run the full hexchess engine in the browser — including AI move search with a neural network model.
+
+## Setup
+
+Build the WASM package:
+
+```bash
+wasm-pack build --target web bindings/wasm
+```
+
+This produces a `bindings/wasm/pkg/` directory you can import from your web app.
+
+```js
+import init, { Game, AiPlayer } from "hexchess-wasm";
+
+await init(); // initialize WASM module
+```
+
+## Game class
+
+### Create a new game
+
+```js
+const game = new Game();
+```
+
+### Get legal moves
+
+```js
+const moves = game.legalMoves();
+// [{from_q: 0, from_r: -4, to_q: 0, to_r: -3, promotion: null}, ...]
+```
+
+Each move has `from_q`, `from_r`, `to_q`, `to_r`, and an optional `promotion` field.
+
+### Apply a move
+
+```js
+game.applyMove(0, -4, 0, -3, null);
+
+// For pawn promotion:
+game.applyMove(0, 4, 0, 5, "queen");
+```
+
+The method throws if the move is illegal.
+
+### Undo a move
+
+```js
+game.undoMove(); // throws if no moves to undo
+```
+
+### Query game state
+
+```js
+game.sideToMove();  // "white" or "black"
+game.status();      // "ongoing", "checkmate_white", etc.
+game.isGameOver();  // boolean
+game.isInCheck();   // boolean
+```
+
+### Get board state
+
+```js
+const pieces = game.boardState();
+// [{q: 0, r: -5, piece: "king", color: "white"}, ...]
+```
+
+Each piece has `q`, `r`, `piece` (king/queen/rook/bishop/knight/pawn), and `color` (white/black).
+
+## AiPlayer class
+
+### Heuristic AI (no model needed)
+
+```js
+const ai = new AiPlayer(500); // 500 MCTS simulations
+const move = ai.bestMove(game);
+// {from_q, from_r, to_q, to_r, promotion}
+```
+
+Higher simulation counts produce stronger play but take longer.
+
+### Neural network AI
+
+Load an ONNX model file and pass the bytes:
+
+```js
+const response = await fetch("/models/latest.onnx");
+const modelBytes = new Uint8Array(await response.arrayBuffer());
+
+const ai = AiPlayer.withModel(500, modelBytes);
+const move = ai.bestMove(game);
+```
+
+The WASM bindings use [Tract](https://github.com/sonos/tract) for inference — a pure-Rust ML runtime that compiles to WASM. No server-side inference needed.
+
+### Temperature control
+
+Use `bestMoveWithTemperature` for non-deterministic play:
+
+```js
+// temperature=0: always pick the best move (greedy)
+// temperature=1: sample proportional to visit counts
+const move = ai.bestMoveWithTemperature(game, 0.3);
+```
+
+## Full example
+
+```js
+import init, { Game, AiPlayer } from "hexchess-wasm";
+
+await init();
+
+const game = new Game();
+const ai = new AiPlayer(500);
+
+while (!game.isGameOver()) {
+  const move = ai.bestMove(game);
+  game.applyMove(move.from_q, move.from_r, move.to_q, move.to_r, move.promotion);
+  console.log(`${game.sideToMove()} to move — status: ${game.status()}`);
+}
+
+console.log(`Game over: ${game.status()}`);
+```

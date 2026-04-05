@@ -1,0 +1,52 @@
+---
+title: Inference
+description: Neural network evaluation backends for different targets
+---
+
+The engine supports multiple inference backends for evaluating positions during MCTS search. The `Evaluator` trait abstracts over them, defined in `engine/src/inference.rs`.
+
+## Evaluator trait
+
+```rust
+pub trait Evaluator: Send + Sync {
+    fn evaluate(&self, state: &GameState) -> (Vec<f32>, f32);
+    fn evaluate_batch(&self, states: &[&GameState]) -> Vec<(Vec<f32>, f32)>;
+}
+```
+
+Every evaluator returns:
+- **Policy logits** — a vector of size `num_move_indices()` (~4206), representing the probability distribution over all possible moves
+- **Value** — a scalar in `[-1, 1]` where positive means good for the side to move
+
+Neural network backends output **WDL logits** (Win/Draw/Loss) which are converted to scalar value via `W - L`.
+
+## Backends
+
+### OnnxEvaluator
+
+Uses [ONNX Runtime](https://onnxruntime.ai/) for production inference. Feature-gated behind the `onnx` Cargo feature — enabled in the Python bindings, disabled in WASM.
+
+- Supports batched inference for better throughput
+- Configurable thread count via `from_path_with_threads()`
+- Used by the training pipeline (workers and Elo service)
+
+### TractEvaluator
+
+Uses [Tract](https://github.com/sonos/tract), a pure-Rust ML runtime. This is the backend used in the **WASM bindings** since ONNX Runtime doesn't compile to WebAssembly.
+
+- Loads models from raw bytes (`from_bytes()`)
+- Single-threaded, suitable for browser use
+- Slightly slower than ONNX Runtime but fully portable
+
+### HeuristicEvaluator
+
+A fallback that requires no model:
+
+- **Policy**: uniform distribution over legal moves
+- **Value**: material-based evaluation passed through `tanh(cp / 750)`
+
+Used when no trained model is available, or as a baseline for Elo measurements.
+
+### WeightedHeuristicEvaluator
+
+An enhanced heuristic that provides a one-ply lookahead policy using full positional evaluation with configurable weights (material, mobility, pawn structure, king safety, etc.). Used during the imitation bootstrap phase.

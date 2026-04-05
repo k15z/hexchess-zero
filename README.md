@@ -8,7 +8,7 @@ Hexagonal chess engine (Glinski variant) in Rust with AlphaZero-style self-play 
 - **`training/`** — Async distributed AlphaZero loop: self-play workers, continuous trainer, Elo rating service
 - **`bindings/wasm/`** — WASM bindings for browser play (uses tract for inference)
 - **`bindings/python/`** — PyO3 bindings for the training pipeline (uses ONNX Runtime)
-- **`web/`** — Browser UI (vanilla JS + SVG)
+- **`docs/`** — Documentation site with interactive playground (Fumadocs)
 
 ## Quick Start
 
@@ -28,8 +28,8 @@ python -m training elo-service # Elo rating service (run 1)
 python -m training status      # cluster status
 python -m training progress    # training progress table
 
-# Build WASM bindings (for web UI)
-wasm-pack build --target web bindings/wasm
+# Run documentation site (includes interactive playground)
+make docs-dev
 ```
 
 ## Training Pipeline

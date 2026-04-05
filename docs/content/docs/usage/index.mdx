@@ -1,0 +1,36 @@
+---
+title: Usage overview
+description: Using the hexchess engine via JavaScript or Python bindings
+---
+
+The engine is written in Rust, but you don't need to know Rust to use it. Two sets of bindings expose the engine to higher-level languages:
+
+| Binding | Package | Inference | Use case |
+|---------|---------|-----------|----------|
+| **JavaScript/WASM** | `hexchess-wasm` | Tract (pure Rust) | Browser apps, play against AI |
+| **Python** | `hexchess` | ONNX Runtime | Training, analysis, research |
+
+Both bindings expose the same core concepts:
+
+- **`Game`** — a game state that you can query (legal moves, board state, status) and mutate (apply/undo moves)
+- **AI search** — MCTS-based move selection with configurable strength (simulation count) and optional neural network model
+
+## Coordinate system
+
+All coordinates use the **axial system** `(q, r)`. Moves are represented as `(from_q, from_r, to_q, to_r)` with an optional `promotion` field for pawn promotions (`"queen"`, `"rook"`, `"bishop"`, or `"knight"`).
+
+## Game status
+
+The `status()` method returns one of:
+- `"ongoing"` — game is in progress
+- `"checkmate_white"` — White wins by checkmate
+- `"checkmate_black"` — Black wins by checkmate
+- `"stalemate"` — draw by stalemate
+- `"draw_repetition"` — draw by threefold repetition
+- `"draw_fifty"` — draw by 50-move rule
+- `"draw_material"` — draw by insufficient material
+
+Choose your language to get started:
+
+- [JavaScript/WASM](/docs/usage/javascript) — for browser applications
+- [Python](/docs/usage/python) — for training, analysis, and scripting

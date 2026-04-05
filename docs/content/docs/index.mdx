@@ -1,0 +1,52 @@
+---
+title: Overview
+description: Hexagonal chess engine with AlphaZero-style self-play training
+---
+
+Hexchess Zero is a hexagonal chess engine implementing the [Glinski variant](https://en.wikipedia.org/wiki/Hexagonal_chess#Gli%C5%84ski's_hexagonal_chess) — chess played on a 91-cell hexagonal board. The core engine is written in Rust and provides:
+
+- **Complete Glinski rules** — move generation, check/checkmate/stalemate detection, draw conditions (threefold repetition, 50-move rule, insufficient material)
+- **AlphaZero-style MCTS** — Monte Carlo Tree Search with neural network evaluation for strong play
+- **JavaScript/WASM bindings** — play in the browser with a bundled AI opponent
+- **Python bindings** — full access to the engine, MCTS, board encoding, and minimax search for training and research
+
+## Architecture
+
+The project is a monorepo with the Rust engine as the single source of truth for game rules:
+
+```
+engine/          Rust engine — board, move generation, MCTS, inference
+bindings/wasm/   WASM bindings for browser play (tract inference)
+bindings/python/ PyO3 bindings for training (ONNX Runtime inference)
+training/        AlphaZero distributed training pipeline
+docs/            Documentation site with interactive playground
+```
+
+The engine compiles to three targets:
+
+| Target | Inference backend | Use case |
+|--------|------------------|----------|
+| Native (Rust) | ONNX Runtime | Testing, benchmarks |
+| WASM | Tract | Browser play |
+| Python (PyO3) | ONNX Runtime | Training pipeline |
+
+## Coordinate system
+
+All positions use **axial coordinates** `(q, r)`. A cell is valid when `max(|q|, |r|, |q+r|) <= 5`, giving exactly 91 cells. The center of the board is `(0, 0)`.
+
+For tensor encoding, hex cells map into an 11x11 grid via `col = q + 5, row = r + 5`. Invalid cells are zero-padded.
+
+## Quick start
+
+```bash
+# Run engine tests
+make test
+
+# Documentation site with interactive playground
+make docs-dev
+
+# Set up Python bindings for training
+make setup
+```
+
+See the [Usage](/docs/usage) section for JS and Python API guides, or the [Research](/docs/research) section for details on the training pipeline and MCTS implementation.

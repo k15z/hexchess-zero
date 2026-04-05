@@ -1,0 +1,120 @@
+---
+title: Training pipeline
+description: Distributed self-play training with S3 coordination
+---
+
+The training pipeline lives in `training/` and implements an asynchronous, distributed AlphaZero loop. All shared state lives in S3 — workers and the trainer coordinate through file polling, with no direct communication.
+
+## Components
+
+### Workers (`training/worker.py`)
+
+Self-play workers run a continuous loop:
+
+1. Poll S3 for the latest model version
+2. Play `worker_batch_size` games using MCTS + the current model
+3. Flush the positions, policies, and outcomes as `.npz` files to S3
+4. Repeat
+
+Workers can run anywhere — local machines, cloud VMs, Docker containers, Kubernetes pods. They only need S3 credentials and enough CPU for MCTS search.
+
+### Trainer (`training/trainer_loop.py`)
+
+A single trainer process:
+
+1. Downloads recent `.npz` files from S3 (sliding window of `replay_buffer_size` positions)
+2. Trains the network for `steps_per_cycle` steps, sampling uniformly from the buffer
+3. Exports the updated model to ONNX
+4. Uploads the new model version to S3
+5. Repeats
+
+The trainer periodically re-scans S3 (every `reload_interval` steps) to pick up fresh data within a cycle.
+
+### Elo service (`training/elo_service.py`)
+
+A continuous rating service that:
+
+1. Maintains Elo ratings for all model versions
+2. Uses uncertainty-based matchmaking (prioritizes under-tested versions)
+3. Persists state to S3 (`state/elo.json`)
+4. LRU-caches player objects to bound memory
+
+## Bootstrap phase
+
+On first run (no model exists), the pipeline can't do self-play — a random network produces garbage games. Instead, it bootstraps with **minimax imitation learning**:
+
+1. Workers generate positions by playing games with random openings
+2. For each position, a minimax search produces move scores and a value estimate
+3. The network trains to imitate the minimax policy and value
+4. After `bootstrap_steps` (50,000), the network switches to self-play
+
+The imitation targets use `imitation_depth = 5` minimax with a softmax temperature of 200 to produce soft policy targets. A blend of sigmoid(eval) and game outcome provides value targets.
+
+The gate for switching from bootstrap to self-play is `min_positions_to_start = 1,000,000` positions.
+
+## Data flow
+
+```
+Workers → S3 (data/selfplay/v{N}/*.npz) → Trainer
+                                              │
+                                              ▼
+                                    S3 (models/latest.onnx)
+                                              │
+                                              ▼
+                                    Workers poll for updates
+```
+
+Position count is encoded in each `.npz` filename (`_n{count}`) so the trainer can count total positions via S3 LIST without downloading or opening files.
+
+## S3 bucket layout
+
+```
+models/
+  latest.onnx              # current model for inference
+  latest.meta.json         # {"version": N, "timestamp": "..."}
+  checkpoint.pt            # PyTorch training checkpoint
+  versions/{N}.onnx        # immutable version snapshots
+
+data/
+  selfplay/v{N}/{ts}_{rand}_n{count}.npz
+  imitation/{ts}_{rand}_n{count}.npz
+
+state/
+  elo.json                 # Elo ratings, pair results, player timing
+
+heartbeats/
+  {hostname}.json           # worker liveness + stats
+```
+
+## Training rate control
+
+The trainer uses a **KataGo-style token bucket** to throttle training relative to data production. The parameter `max_train_steps_per_new_data` (default 4.0) controls the target number of training passes per data point. If the trainer is outpacing data production, it sleeps rather than overfitting on stale data.
+
+## Key hyperparameters
+
+### Self-play
+
+| Parameter | Default | Effect |
+|-----------|---------|--------|
+| `num_simulations` | 500 | MCTS sims per move — strength vs throughput |
+| `temperature_threshold` | 60 | Move after which temperature drops |
+| `temperature_high` / `low` | 1.0 / 0.01 | Exploration vs clean endgame signals |
+| `dirichlet_alpha` / `epsilon` | 0.3 / 0.25 | Root noise for exploration |
+
+### Training
+
+| Parameter | Default | Effect |
+|-----------|---------|--------|
+| `batch_size` | 256 | Training batch size |
+| `learning_rate` | 0.001 | Adam learning rate |
+| `l2_regularization` | 1e-4 | Weight decay |
+| `replay_buffer_size` | 5,000,000 | Max positions in sliding window |
+| `steps_per_cycle` | 500 | Steps between model promotions |
+
+## Key dynamics
+
+**Worker throughput vs training speed**: Workers produce positions proportional to `num_simulations` and available CPUs. The trainer consumes them based on `steps_per_cycle` and GPU speed. The token bucket keeps them balanced.
+
+**Buffer size vs cycle length**: With a 5M buffer and 500 steps at batch size 256, each cycle trains on ~128K samples — about 2.5% of the buffer. Positions near the edge of the window get fewer passes before aging out.
+
+**Model version turnover**: Every `steps_per_cycle` steps, a new version is promoted. Workers poll for updates after each batch of games. The lag between promotion and adoption is a few minutes at most.

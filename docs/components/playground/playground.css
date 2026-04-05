@@ -1,0 +1,162 @@
+/* Playground container */
+.playground-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  padding: 1.5rem 0;
+}
+
+/* Board SVG */
+.hex-board-svg {
+  max-width: 100%;
+  height: auto;
+  filter: drop-shadow(0 4px 16px rgba(0, 0, 0, 0.25));
+}
+
+.hex-cell {
+  stroke: #8b8682;
+  stroke-width: 1;
+  cursor: pointer;
+  transition: fill 0.15s ease;
+}
+.hex-cell:hover {
+  filter: brightness(1.12);
+}
+
+.move-dot {
+  fill: rgba(0, 0, 0, 0.25);
+  pointer-events: none;
+}
+.move-capture-ring {
+  fill: none;
+  stroke: rgba(0, 0, 0, 0.25);
+  stroke-width: 3.5;
+  pointer-events: none;
+}
+
+.piece-symbol {
+  pointer-events: none;
+  user-select: none;
+  font-size: 28px;
+  dominant-baseline: central;
+  text-anchor: middle;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.4));
+}
+.piece-white {
+  fill: #ffffff;
+  stroke: #333333;
+  stroke-width: 0.5;
+}
+.piece-black {
+  fill: #1a1a1a;
+  stroke: #666666;
+  stroke-width: 0.5;
+}
+
+/* Status bar */
+.playground-status {
+  background: var(--fd-card, #f8f8f8);
+  border: 1px solid var(--fd-border, #e0e0e0);
+  border-radius: 0.5rem;
+  padding: 0.5rem 1.5rem;
+  text-align: center;
+  min-width: 280px;
+  font-weight: 500;
+}
+
+.status-check {
+  color: #e74c3c;
+  font-weight: 600;
+}
+.status-result {
+  color: #2ecc71;
+  font-weight: 600;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.thinking-pulse {
+  animation: pulse 1.2s ease-in-out infinite;
+  color: #f39c12;
+}
+
+/* Control buttons */
+.playground-controls {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.pg-btn {
+  padding: 0.4rem 1rem;
+  border: 1px solid var(--fd-border, #d0d0d0);
+  border-radius: 0.375rem;
+  background: var(--fd-card, #ffffff);
+  color: var(--fd-foreground, #333);
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.pg-btn:hover:not(:disabled) {
+  background: var(--fd-accent, #f0f0f0);
+}
+.pg-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.pg-btn-active {
+  background: var(--fd-primary, #333);
+  color: var(--fd-primary-foreground, #fff);
+  border-color: var(--fd-primary, #333);
+}
+.pg-btn-active:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.status-error {
+  color: #e74c3c;
+}
+
+/* Promotion picker overlay */
+.promotion-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+.promotion-dialog {
+  background: var(--fd-card, #ffffff);
+  border: 1px solid var(--fd-border, #d0d0d0);
+  border-radius: 0.75rem;
+  padding: 1.5rem;
+  text-align: center;
+}
+.promotion-title {
+  font-weight: 600;
+  margin-bottom: 0.75rem;
+}
+.promotion-options {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: center;
+}
+.promotion-btn {
+  width: 3.5rem;
+  height: 3.5rem;
+  font-size: 2rem;
+  border: 1px solid var(--fd-border, #d0d0d0);
+  border-radius: 0.5rem;
+  background: var(--fd-card, #ffffff);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.promotion-btn:hover {
+  background: var(--fd-accent, #f0f0f0);
+}

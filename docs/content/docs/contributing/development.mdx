@@ -1,0 +1,85 @@
+---
+title: Development guide
+description: Setting up a development environment and running tests
+---
+
+## Prerequisites
+
+- **Rust** (stable toolchain) — for the engine and bindings
+- **Node.js** (18+) — for the web frontend and docs site
+- **Python 3.11+** + **uv** — for the training pipeline
+- **wasm-pack** — for building WASM bindings
+
+## Setup
+
+```bash
+# Install Python dependencies and build Python bindings
+make setup
+
+# Run engine tests (~95 tests)
+make test
+
+# Run clippy + format check
+make lint
+
+# Run benchmarks
+make bench
+```
+
+## Project structure
+
+```
+engine/              Rust engine (single source of truth for game rules)
+  src/
+    board.rs         91-cell hex grid, axial coordinates, Zobrist hashing
+    movegen.rs       Move generation with precomputed tables
+    game.rs          GameState with apply/undo, status detection
+    mcts.rs          AlphaZero PUCT search, arena-allocated
+    serialization.rs Board-to-tensor encoding, move indexing
+    inference.rs     Evaluator trait + backends (ONNX, Tract, heuristic)
+    eval.rs          Material heuristic evaluation
+
+bindings/
+  wasm/              WASM bindings (wasm-bindgen, Tract inference)
+  python/            Python bindings (PyO3, ONNX Runtime inference)
+
+training/            AlphaZero self-play training pipeline
+docs/                Documentation site with interactive playground (Fumadocs)
+k8s/                 Kubernetes manifests
+```
+
+## Running tests
+
+```bash
+# All engine tests
+make test
+
+# Single test by name
+cargo test board::tests::test_name
+
+# With output
+cargo test -- --nocapture
+```
+
+## Building for different targets
+
+```bash
+# WASM (for browser)
+wasm-pack build --target web bindings/wasm
+
+# Python bindings
+uv run maturin develop --release -m bindings/python/Cargo.toml
+
+# Documentation site (includes interactive playground)
+make docs-dev    # dev server
+make docs-build  # production build
+```
+
+## Key conventions
+
+- Coordinates are always **axial `(q, r)`** — never doubled or offset coordinates
+- The `onnx` Cargo feature gates ONNX Runtime dependencies
+- **Move indices are immutable** — any change to the move table breaks all existing training data and models
+- Board tensor embedding: `col = q + 5, row = r + 5`
+- S3 key constants are defined in `training/storage.py` — use those, not raw strings
+- MCTS evaluations must use **at least 500 simulations** for meaningful results

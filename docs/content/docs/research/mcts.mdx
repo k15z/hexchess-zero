@@ -1,0 +1,79 @@
+---
+title: MCTS
+description: Monte Carlo Tree Search with neural network guidance
+---
+
+The MCTS implementation lives in `engine/src/mcts.rs` and follows the AlphaZero variant with PUCT (Predictor + Upper Confidence bounds applied to Trees).
+
+## How it works
+
+MCTS builds a search tree by repeatedly:
+
+1. **Select** — walk from the root to a leaf, choosing the child that maximizes `Q + U` where:
+   - `Q` = average value from previous simulations (exploitation)
+   - `U = c_puct * P * sqrt(N_parent) / (1 + N_child)` — exploration bonus scaled by the neural network's prior probability `P`
+2. **Expand** — at the leaf, evaluate the position with the neural network to get a policy vector and value estimate
+3. **Backup** — propagate the value back up the tree, updating visit counts and Q-values
+
+After the configured number of simulations, the move is selected based on visit counts at the root.
+
+## Arena allocation
+
+Nodes are stored in a `Vec<MctsNode>` and referenced by `usize` index rather than pointers. This avoids the overhead of heap allocation per node and improves cache locality during tree traversal.
+
+```rust
+pub struct MctsSearch {
+    nodes: Vec<MctsNode>,
+    evaluator: Box<dyn Evaluator>,
+    // ...
+}
+```
+
+The tree is reused across searches (growing the arena) and cleared between games.
+
+## Transposition table
+
+A hash map caches neural network evaluations keyed by Zobrist hash. When the same position is reached via different move orders, the cached evaluation is reused instead of running inference again.
+
+```rust
+// Cache: zobrist_hash → (policy, value)
+tt: HashMap<u64, (Vec<f32>, f32)>
+```
+
+This significantly reduces the number of inference calls during search, especially in positions with many transpositions.
+
+## Dirichlet noise
+
+At the root node, Dirichlet noise is mixed into the prior policy:
+
+```
+P_root = (1 - epsilon) * P_network + epsilon * Dir(alpha)
+```
+
+With defaults `epsilon = 0.25` and `alpha = 0.3`. This encourages exploration of moves the network hasn't learned to value yet, which is critical for discovering new ideas during self-play.
+
+## Temperature-based move selection
+
+After search completes, the move is selected from root visit counts:
+
+- **Temperature = 0** (greedy): always pick the most-visited move
+- **Temperature = 1** (proportional): sample proportional to `visits^(1/temperature)`
+
+During self-play, high temperature is used for the first ~60 moves (diverse openings), then near-zero temperature for the remainder (strong play for clean value signals).
+
+## Batched evaluation
+
+The MCTS search collects multiple leaf positions and evaluates them in a single batch call to the neural network. This is critical for throughput — GPU inference has high latency but scales well with batch size.
+
+The `batch_size` parameter controls how many positions are collected before calling `evaluate_batch()`. The default is 32.
+
+## Key parameters
+
+| Parameter | Default | Effect |
+|-----------|---------|--------|
+| `simulations` | 500 | Number of MCTS iterations per move. More = stronger but slower |
+| `c_puct` | 1.5 | Exploration vs exploitation tradeoff |
+| `batch_size` | 32 | Positions per inference batch |
+| `tt_capacity` | 500,000 | Max transposition table entries |
+
+**Important**: evaluations and tournaments should use at least 500 simulations. Lower counts (e.g. 200) produce misleading results because the neural network's learned policy advantage only compounds with sufficient search depth.
