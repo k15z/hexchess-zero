@@ -5,6 +5,26 @@ description: Distributed self-play training with S3 coordination
 
 The training pipeline lives in `training/` and implements an asynchronous, distributed AlphaZero loop. All shared state lives in S3 — workers and the trainer coordinate through file polling, with no direct communication.
 
+## Overview
+
+<Mermaid chart={`
+graph LR
+    W1["Worker 1"] --> S3["S3 Bucket"]
+    W2["Worker 2"] --> S3
+    W3["Worker N"] --> S3
+    S3 -->|.npz data| T["Trainer"]
+    T -->|new model| S3
+    S3 -->|latest.onnx| W1
+    S3 -->|latest.onnx| W2
+    S3 -->|latest.onnx| W3
+    S3 -->|model versions| E["Elo Service"]
+    E -->|ratings| S3
+
+    style S3 fill:#fdf2e9,stroke:#e67e22
+    style T fill:#e8f4f8,stroke:#2980b9
+    style E fill:#e8f8e8,stroke:#27ae60
+`} caption="Distributed training loop: workers generate self-play data, the trainer produces new models, and the Elo service rates them" />
+
 ## Components
 
 ### Workers (`training/worker.py`)
@@ -43,26 +63,36 @@ A continuous rating service that:
 
 On first run (no model exists), the pipeline can't do self-play — a random network produces garbage games. Instead, it bootstraps with **minimax imitation learning**:
 
-1. Workers generate positions by playing games with random openings
-2. For each position, a minimax search produces move scores and a value estimate
-3. The network trains to imitate the minimax policy and value
-4. After `bootstrap_steps` (50,000), the network switches to self-play
+<Mermaid chart={`
+graph TD
+    R["Random positions"] --> MM["Minimax search<br/>(depth 5)"]
+    MM --> Policy["Soft policy targets<br/>(softmax τ=200)"]
+    MM --> Value["Value targets<br/>(sigmoid + outcome blend)"]
+    Policy --> Train["Train network"]
+    Value --> Train
+    Train -->|50k steps| Gate{"≥1M positions?"}
+    Gate -->|No| R
+    Gate -->|Yes| SP["Switch to self-play"]
 
-The imitation targets use `imitation_depth = 5` minimax with a softmax temperature of 200 to produce soft policy targets. A blend of sigmoid(eval) and game outcome provides value targets.
-
-The gate for switching from bootstrap to self-play is `min_positions_to_start = 1,000,000` positions.
+    style Gate fill:#fdf2e9,stroke:#e67e22
+    style SP fill:#e8f8e8,stroke:#27ae60
+`} caption="Bootstrap phase: the network learns from minimax before transitioning to self-play" />
 
 ## Data flow
 
-```
-Workers → S3 (data/selfplay/v{N}/*.npz) → Trainer
-                                              │
-                                              ▼
-                                    S3 (models/latest.onnx)
-                                              │
-                                              ▼
-                                    Workers poll for updates
-```
+<Mermaid chart={`
+graph TD
+    SP["Self-play workers"] -->|".npz files"| SD["S3: data/selfplay/v{N}/"]
+    SD -->|sliding window| TB["Replay buffer<br/>(5M positions)"]
+    TB -->|sample batches| TL["Trainer loop"]
+    TL -->|export ONNX| SM["S3: models/latest.onnx"]
+    SM -->|poll| SP
+    TL -->|checkpoint| SC["S3: models/checkpoint.pt"]
+    TL -->|version snapshot| SV["S3: models/versions/{N}.onnx"]
+
+    style SD fill:#fdf2e9,stroke:#e67e22
+    style SM fill:#e8f4f8,stroke:#2980b9
+`} caption="Data and model flow through S3" />
 
 Position count is encoded in each `.npz` filename (`_n{count}`) so the trainer can count total positions via S3 LIST without downloading or opening files.
 
@@ -88,7 +118,13 @@ heartbeats/
 
 ## Training rate control
 
-The trainer uses a **KataGo-style token bucket** to throttle training relative to data production. The parameter `max_train_steps_per_new_data` (default 4.0) controls the target number of training passes per data point. If the trainer is outpacing data production, it sleeps rather than overfitting on stale data.
+The trainer uses a **KataGo-style token bucket** to throttle training relative to data production. The ratio is controlled by:
+
+$$
+R = \frac{\text{training steps}}{\text{new data points}} \leq R_{\max} = 4.0
+$$
+
+If the trainer is outpacing data production, it sleeps rather than overfitting on stale data.
 
 ## Key hyperparameters
 
@@ -97,7 +133,7 @@ The trainer uses a **KataGo-style token bucket** to throttle training relative t
 | Parameter | Default | Effect |
 |-----------|---------|--------|
 | `num_simulations` | 500 | MCTS sims per move — strength vs throughput |
-| `temperature_threshold` | 60 | Move after which temperature drops |
+| `temperature_threshold` | 60 | Move after which $\tau$ drops |
 | `temperature_high` / `low` | 1.0 / 0.01 | Exploration vs clean endgame signals |
 | `dirichlet_alpha` / `epsilon` | 0.3 / 0.25 | Root noise for exploration |
 
@@ -107,7 +143,7 @@ The trainer uses a **KataGo-style token bucket** to throttle training relative t
 |-----------|---------|--------|
 | `batch_size` | 256 | Training batch size |
 | `learning_rate` | 0.001 | Adam learning rate |
-| `l2_regularization` | 1e-4 | Weight decay |
+| `l2_regularization` | $10^{-4}$ | Weight decay |
 | `replay_buffer_size` | 5,000,000 | Max positions in sliding window |
 | `steps_per_cycle` | 500 | Steps between model promotions |
 

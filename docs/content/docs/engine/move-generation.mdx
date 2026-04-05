@@ -14,17 +14,23 @@ Move generation follows the standard chess engine pattern:
 
 This is simpler and faster than trying to generate only legal moves directly, especially on a hex board where pin/check detection is more complex.
 
+## Direction system
+
+The hex board has 12 directions, split into two groups:
+
+<DirectionSystem />
+
+| Direction type | Count | Used by | Offsets (dq, dr) |
+|---------------|-------|---------|-------------------|
+| Cardinal | 6 | Rook, Queen, King | $(1,0)$, $(-1,0)$, $(0,1)$, $(0,-1)$, $(1,-1)$, $(-1,1)$ |
+| Diagonal | 6 | Bishop, Queen, King | $(2,-1)$, $(-2,1)$, $(1,1)$, $(-1,-1)$, $(1,-2)$, $(-1,2)$ |
+| Knight jumps | 12 | Knight | See [rules](/docs/rules#knight-12-jump-destinations) |
+
 ## Precomputed tables
 
-Sliding piece moves (rooks, bishops, queens) use **precomputed ray tables** — for each cell and each of the 12 ray directions (6 cardinal + 6 diagonal), the table stores the ordered list of cells along that ray. Knight moves use a similar **precomputed jump table**.
+Sliding piece moves (rooks, bishops, queens) use **precomputed ray tables** — for each cell and each of the 12 ray directions, the table stores the ordered list of cells along that ray. Knight moves use a similar **precomputed jump table**.
 
 These tables are lazily initialized via `OnceLock` on first use.
-
-```
-6 cardinal directions → rook rays
-6 diagonal directions → bishop rays
-12 knight jumps       → knight table
-```
 
 ## MoveList: stack-allocated, no heap
 

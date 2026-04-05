@@ -1,0 +1,20 @@
+.hex-board-static {
+  max-width: 100%;
+  height: auto;
+  filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.15));
+}
+
+.hex-board-cell {
+  stroke: #8b8682;
+  stroke-width: 1;
+}
+
+.hex-board-coord {
+  font-size: 9px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  fill: rgba(0, 0, 0, 0.55);
+  text-anchor: middle;
+  dominant-baseline: central;
+  pointer-events: none;
+  user-select: none;
+}
