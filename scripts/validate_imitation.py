@@ -18,7 +18,6 @@ import sys
 import os
 import time
 from collections import Counter
-from concurrent.futures import ProcessPoolExecutor
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -70,10 +69,10 @@ def _play_one_game(cfg_depth):
     # Determine outcome from the last WDL
     if samples:
         wdl = samples[-1]["outcome"]
-        w, d, l = wdl[0], wdl[1], wdl[2]
-        if w > l + 0.1:
+        w, _, loss_prob = wdl[0], wdl[1], wdl[2]
+        if w > loss_prob + 0.1:
             return "white_advantage", len(samples)
-        elif l > w + 0.1:
+        elif loss_prob > w + 0.1:
             return "black_advantage", len(samples)
         else:
             return "balanced", len(samples)
@@ -82,8 +81,6 @@ def _play_one_game(cfg_depth):
 
 def validate_outcome_balance(n_games: int = 50) -> bool:
     """Generate games and check outcome distribution."""
-    from training.imitation import play_imitation_game
-    from training.config import AsyncConfig
     import hexchess
 
     print(f"\n{'='*60}")
@@ -209,7 +206,7 @@ def validate_strength_ordering(games_per_pair: int = 6) -> bool:
     player_names = [p.name for p in players]
     elo = compute_elo(player_names, results, anchor="Minimax-2")
 
-    print(f"\n  Elo Ratings:")
+    print("\n  Elo Ratings:")
     print(format_elo_table(elo))
 
     # Check monotonic ordering
@@ -239,7 +236,7 @@ if __name__ == "__main__":
     r3 = validate_strength_ordering()
 
     print(f"\n{'='*60}")
-    print(f"SUMMARY")
+    print("SUMMARY")
     print(f"{'='*60}")
     print(f"  Non-determinism:    {'PASS' if r1 else 'FAIL'}")
     print(f"  Outcome balance:    {'PASS' if r2 else 'FAIL'}")

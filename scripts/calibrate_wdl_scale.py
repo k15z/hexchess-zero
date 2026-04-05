@@ -37,10 +37,10 @@ if Path(env_file).exists():
             os.environ.setdefault(k.strip(), v.strip().strip('"'))
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from training import storage
+from training import storage  # noqa: E402
 
 # Also need hexchess for replaying games
-import hexchess
+import hexchess  # noqa: E402
 
 
 def download_imitation_data(max_files: int = 50) -> list[Path]:
@@ -151,17 +151,17 @@ def fit_scale_and_margin(scores: np.ndarray, outcomes: np.ndarray):
             return 1e12
         s = scores / scale
         w = expit(s - margin)
-        l = expit(-s - margin)
-        d = np.clip(1.0 - w - l, eps, None)
+        loss_prob = expit(-s - margin)
+        d = np.clip(1.0 - w - loss_prob, eps, None)
         w = np.clip(w, eps, None)
-        l = np.clip(l, eps, None)
+        loss_prob = np.clip(loss_prob, eps, None)
 
         win_mask = outcomes > 0.5
         loss_mask = outcomes < -0.5
         draw_mask = ~win_mask & ~loss_mask
 
         ll = (np.log(w[win_mask]).sum() +
-              np.log(l[loss_mask]).sum() +
+              np.log(loss_prob[loss_mask]).sum() +
               np.log(d[draw_mask]).sum())
         return -ll
 

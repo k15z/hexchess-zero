@@ -19,18 +19,17 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv
 load_dotenv()
 
-import numpy as np
-import torch
-import torch.optim as optim
-from torch.utils.data import DataLoader
-from loguru import logger
+import torch  # noqa: E402
+import torch.optim as optim  # noqa: E402
+from torch.utils.data import DataLoader  # noqa: E402
+from loguru import logger  # noqa: E402
 
-from training import storage
-from training.config import AsyncConfig
-from training.imitation import play_imitation_game
-from training.model import build_model
-from training.export import export_to_onnx
-from training.trainer_loop import ReplayBuffer
+from training import storage  # noqa: E402
+from training.config import AsyncConfig  # noqa: E402
+from training.imitation import play_imitation_game  # noqa: E402
+from training.model import build_model  # noqa: E402
+from training.export import export_to_onnx  # noqa: E402
+from training.trainer_loop import ReplayBuffer  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -211,12 +210,16 @@ def evaluate_model(onnx_path: str, cfg: AsyncConfig, games_per_pair: int = 6) ->
 
                 if result["outcome"] == "white":
                     winner = white.name
-                    if white.name == p1.name: a_wins += 1
-                    else: b_wins += 1
+                    if white.name == p1.name:
+                        a_wins += 1
+                    else:
+                        b_wins += 1
                 elif result["outcome"] == "black":
                     winner = black.name
-                    if black.name == p1.name: a_wins += 1
-                    else: b_wins += 1
+                    if black.name == p1.name:
+                        a_wins += 1
+                    else:
+                        b_wins += 1
                 else:
                     winner = "draw"
                     draws += 1
@@ -228,7 +231,7 @@ def evaluate_model(onnx_path: str, cfg: AsyncConfig, games_per_pair: int = 6) ->
     player_names = [p.name for p in players]
     elo = compute_elo(player_names, results, anchor="Minimax-2")
 
-    print(f"\n  Elo Ratings:")
+    print("\n  Elo Ratings:")
     print(format_elo_table(elo))
 
     nn_elo = elo.get("MCTS-NN", 0)

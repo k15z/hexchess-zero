@@ -4,7 +4,6 @@ Explores: masking, SE blocks, head sizing, pooling strategies, depth/width.
 """
 
 import argparse
-import math
 import time
 from pathlib import Path
 
