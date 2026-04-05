@@ -34,7 +34,7 @@ def collect_status(cfg: AsyncConfig) -> dict:
         "promoted_at": meta.get("timestamp"),
     }
 
-    # Elo
+    # Elo state (OpenSkill ratings + head-to-head)
     try:
         elo_state = storage.get_json(storage.ELO_STATE)
     except KeyError:
@@ -46,7 +46,6 @@ def collect_status(cfg: AsyncConfig) -> dict:
 
     sp_by_version: dict[str, dict] = {}
     for f in sp_files:
-        # Extract version from key: data/selfplay/v1/...
         parts = f["key"].split("/")
         v = parts[2] if len(parts) >= 3 else "unknown"
         if v not in sp_by_version:
@@ -71,6 +70,13 @@ def collect_status(cfg: AsyncConfig) -> dict:
         except KeyError:
             continue
 
+    # Recent game log (last 50 games)
+    try:
+        all_games = storage.get_jsonl(storage.ELO_GAMES_LOG)
+        recent_games = all_games[-50:]
+    except Exception:
+        recent_games = []
+
     status = {
         "model": model,
         "workers": heartbeats,
@@ -78,8 +84,11 @@ def collect_status(cfg: AsyncConfig) -> dict:
             "ratings": elo_state.get("ratings", {}),
             "total_games": elo_state.get("total_games", 0),
             "active_players": elo_state.get("active_players", []),
+            "retired_players": elo_state.get("retired_players", []),
             "player_stats": elo_state.get("player_stats", {}),
+            "pair_results": elo_state.get("pair_results", {}),
         },
+        "recent_games": recent_games,
         "data": {
             "selfplay": {
                 "total_files": len(sp_files),

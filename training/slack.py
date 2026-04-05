@@ -38,16 +38,29 @@ def notify_training_cycle(
 
 
 def notify_elo_update(
-    ratings: dict[str, int | float],
+    ratings: dict[str, dict],
     total_games: int,
     new_model: str | None = None,
 ) -> None:
-    """Send periodic Elo update or new-model-ranked notification."""
+    """Send periodic Elo update or new-model-ranked notification.
+
+    ratings: {name: {"mu": float, "sigma": float}}
+    """
     if not SLACK_WEBHOOK_URL:
         return
 
-    sorted_players = sorted(ratings.items(), key=lambda x: x[1], reverse=True)
-    lines = [f"{rank}. {name} ({elo:+d})" for rank, (name, elo) in enumerate(sorted_players, 1)]
+    from .elo import conservative_rating, to_elo_sigma
+
+    sorted_players = sorted(
+        ratings.items(),
+        key=lambda x: conservative_rating(x[1]["mu"], x[1]["sigma"]),
+        reverse=True,
+    )
+    lines = []
+    for rank, (name, r) in enumerate(sorted_players, 1):
+        elo = conservative_rating(r["mu"], r["sigma"])
+        sigma = to_elo_sigma(r["sigma"])
+        lines.append(f"{rank}. {name} ({elo:+d} ±{sigma})")
     table = "\n".join(lines)
 
     header = "*Hexchess Elo Update*"

@@ -41,6 +41,7 @@ VERSIONS_PREFIX = "models/versions/"
 SELFPLAY_PREFIX = "data/selfplay/"
 IMITATION_PREFIX = "data/imitation/"
 ELO_STATE = "state/elo.json"
+ELO_GAMES_LOG = "state/elo_games.jsonl"
 HEARTBEATS_PREFIX = "heartbeats/"
 
 # ---------------------------------------------------------------------------
@@ -224,6 +225,39 @@ def upload_npz(key: str, *, boards: np.ndarray, policies: np.ndarray,
     finally:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
+
+
+def append_jsonl(key: str, record: dict, max_records: int = 2000) -> None:
+    """Append a JSON record to a .jsonl file in S3.
+
+    Downloads existing content (if any), appends the new line, re-uploads.
+    Keeps at most max_records lines to bound file size.
+    """
+    try:
+        existing = get(key).decode()
+    except KeyError:
+        existing = ""
+    line = json.dumps(record, separators=(",", ":"))
+    lines = existing.split("\n") if existing else []
+    # Filter empty lines from trailing newline
+    lines = [l for l in lines if l]
+    lines.append(line)
+    if len(lines) > max_records:
+        lines = lines[-max_records:]
+    put(key, "\n".join(lines) + "\n")
+
+
+def get_jsonl(key: str) -> list[dict]:
+    """Download and parse a .jsonl file. Returns [] if not found."""
+    try:
+        data = get(key).decode()
+    except KeyError:
+        return []
+    records = []
+    for line in data.strip().split("\n"):
+        if line:
+            records.append(json.loads(line))
+    return records
 
 
 def key_basename(key: str) -> str:

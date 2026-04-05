@@ -3,87 +3,383 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>hexchess training</title>
+<title>hexchess // training</title>
 <style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=DM+Sans:wght@400;500;600;700&display=swap');
+
+  :root {
+    --bg-deep: #080b10;
+    --bg-base: #0c1018;
+    --bg-raised: #111822;
+    --bg-surface: #16202e;
+    --border-dim: #1a2535;
+    --border-mid: #243448;
+    --text-primary: #e2e8f0;
+    --text-secondary: #8494a7;
+    --text-dim: #4a5c72;
+    --accent-blue: #3b82f6;
+    --accent-cyan: #22d3ee;
+    --accent-green: #34d399;
+    --accent-amber: #f59e0b;
+    --accent-red: #ef4444;
+    --accent-purple: #a78bfa;
+    --win-green: #22c55e;
+    --loss-red: #ef4444;
+    --draw-gray: #64748b;
+    --mono: 'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
+    --sans: 'DM Sans', -apple-system, sans-serif;
+  }
+
   * { margin: 0; padding: 0; box-sizing: border-box; }
+
   body {
-    font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
-    background: #0d1117; color: #c9d1d9;
-    font-size: 13px; line-height: 1.5;
-    max-width: 640px; margin: 0 auto;
-    padding: 8px;
+    font-family: var(--mono);
+    background: var(--bg-deep);
+    color: var(--text-primary);
+    font-size: 12px;
+    line-height: 1.5;
+    min-height: 100vh;
   }
-  h2 { font-size: 14px; color: #58a6ff; margin: 16px 0 6px 0; text-transform: uppercase; letter-spacing: 1px; }
+
+  /* --- Subtle grid background --- */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(var(--border-dim) 1px, transparent 1px),
+      linear-gradient(90deg, var(--border-dim) 1px, transparent 1px);
+    background-size: 48px 48px;
+    opacity: 0.15;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .container {
+    position: relative;
+    z-index: 1;
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 0 16px 48px;
+  }
+
+  /* --- Header --- */
   .header {
-    position: sticky; top: 0; z-index: 10;
-    background: #0d1117; border-bottom: 1px solid #21262d;
-    padding: 8px 0; margin-bottom: 8px;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: var(--bg-deep);
+    border-bottom: 1px solid var(--border-mid);
+    padding: 12px 0;
+    margin-bottom: 20px;
+    backdrop-filter: blur(12px);
   }
-  .header-row { display: flex; justify-content: space-between; align-items: center; }
-  .model-ver { font-size: 18px; font-weight: bold; color: #f0f6fc; }
-  .kv { display: flex; justify-content: space-between; padding: 2px 0; }
-  .kv .k { color: #8b949e; }
-  .kv .v { color: #f0f6fc; }
-  table { width: 100%; border-collapse: collapse; margin: 4px 0; }
-  th { text-align: left; color: #8b949e; font-weight: normal; border-bottom: 1px solid #21262d; padding: 3px 6px; }
-  td { padding: 3px 6px; }
-  td.num { text-align: right; font-variant-numeric: tabular-nums; }
-  .empty { color: #484f58; font-style: italic; padding: 8px 0; }
-  .section { margin-bottom: 8px; }
-  .section summary { cursor: pointer; }
-  .section[open] summary { margin-bottom: 6px; }
-  .elo-bar { display: inline-block; height: 10px; background: #1f6feb; border-radius: 2px; }
-  .elo-neg .elo-bar { background: #f85149; }
-  .worker-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
-  .worker-dot.fresh { background: #3fb950; }
-  .worker-dot.stale { background: #d29922; }
-  .worker-dot.dead { background: #f85149; }
-  .last-refresh { font-size: 11px; color: #484f58; }
+
+  .header-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+  }
+
+  .header-left {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+  }
+
+  .logo {
+    font-family: var(--sans);
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    color: var(--text-primary);
+  }
+
+  .logo span { color: var(--text-dim); font-weight: 400; }
+
+  .model-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-mid);
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent-cyan);
+  }
+
+  .model-badge::before {
+    content: '';
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--accent-cyan);
+    box-shadow: 0 0 6px var(--accent-cyan);
+  }
+
+  .header-meta {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-align: right;
+  }
+
+  /* --- Section panels --- */
+  .panel {
+    background: var(--bg-base);
+    border: 1px solid var(--border-dim);
+    border-radius: 4px;
+    margin-bottom: 12px;
+    overflow: hidden;
+  }
+
+  .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    background: var(--bg-raised);
+    border-bottom: 1px solid var(--border-dim);
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.15s;
+  }
+
+  .panel-header:hover { background: var(--bg-surface); }
+
+  .panel-title {
+    font-family: var(--sans);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--text-secondary);
+  }
+
+  .panel-badge {
+    font-size: 10px;
+    color: var(--text-dim);
+    font-weight: 400;
+    padding: 1px 6px;
+    background: var(--bg-deep);
+    border-radius: 3px;
+    border: 1px solid var(--border-dim);
+  }
+
+  .panel-chevron {
+    color: var(--text-dim);
+    font-size: 10px;
+    transition: transform 0.2s;
+  }
+
+  .panel.collapsed .panel-chevron { transform: rotate(-90deg); }
+  .panel.collapsed .panel-body { display: none; }
+
+  .panel-body { padding: 10px 12px; }
+
+  /* --- Tables --- */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  th {
+    text-align: left;
+    font-size: 10px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--text-dim);
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--border-dim);
+    white-space: nowrap;
+  }
+
+  th.r, td.r { text-align: right; }
+
+  td {
+    padding: 4px 8px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    border-bottom: 1px solid rgba(26, 37, 53, 0.4);
+  }
+
+  tr:last-child td { border-bottom: none; }
+
+  /* --- Rating bars --- */
+  .rating-bar-track {
+    flex: 1;
+    height: 14px;
+    background: var(--bg-deep);
+    border-radius: 2px;
+    position: relative;
+    overflow: hidden;
+    min-width: 60px;
+  }
+
+  .rating-bar {
+    position: absolute;
+    top: 0; bottom: 0; left: 0;
+    border-radius: 2px;
+    transition: width 0.4s ease;
+    min-width: 2px;
+  }
+
+  .rating-bar-ci {
+    position: absolute;
+    top: 2px; bottom: 2px;
+    border-radius: 1px;
+    opacity: 0.25;
+  }
+
+  /* --- Group labels --- */
+  .group-label {
+    font-family: var(--sans);
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    padding: 8px 8px 3px;
+    border-bottom: 1px solid var(--border-dim);
+  }
+
+  .group-label:first-child { padding-top: 0; }
+
+  /* --- Worker dots --- */
+  .dot {
+    display: inline-block;
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    margin-right: 4px;
+  }
+
+  .dot.fresh { background: var(--accent-green); box-shadow: 0 0 4px var(--accent-green); }
+  .dot.stale { background: var(--accent-amber); }
+  .dot.dead { background: var(--accent-red); }
+
+  /* --- Head-to-head matrix --- */
+  .h2h-wrap { overflow-x: auto; }
+
+  .h2h-table th, .h2h-table td {
+    text-align: center;
+    padding: 3px 4px;
+    font-size: 10px;
+    min-width: 56px;
+  }
+
+  .h2h-table th {
+    font-size: 9px;
+    max-width: 64px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .h2h-table td.self {
+    background: var(--bg-surface);
+    color: var(--text-dim);
+  }
+
+  .h2h-cell {
+    border-radius: 2px;
+    padding: 2px 4px;
+    font-size: 10px;
+    font-weight: 500;
+  }
+
+  .h2h-cell.dominant { color: var(--win-green); }
+  .h2h-cell.losing { color: var(--loss-red); }
+  .h2h-cell.even { color: var(--text-dim); }
+  .h2h-cell.none { color: var(--text-dim); opacity: 0.3; }
+
+  /* --- Game log --- */
+  .game-outcome {
+    font-weight: 600;
+    font-size: 11px;
+  }
+
+  .game-outcome.w { color: var(--win-green); }
+  .game-outcome.b { color: var(--loss-red); }
+  .game-outcome.d { color: var(--draw-gray); }
+
+  /* --- KV pairs --- */
+  .kv-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 2px 0;
+  }
+
+  .kv-row .k { color: var(--text-dim); }
+  .kv-row .v { color: var(--text-primary); font-weight: 500; }
+
+  /* --- Misc --- */
+  .empty { color: var(--text-dim); font-style: italic; padding: 12px 0; }
+  .muted { color: var(--text-dim); }
+
+  /* --- Fade in --- */
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .initial .panel { animation: fadeUp 0.3s ease both; }
+  .initial .panel:nth-child(2) { animation-delay: 0.04s; }
+  .initial .panel:nth-child(3) { animation-delay: 0.08s; }
+  .initial .panel:nth-child(4) { animation-delay: 0.12s; }
+  .initial .panel:nth-child(5) { animation-delay: 0.16s; }
+  .initial .panel:nth-child(6) { animation-delay: 0.20s; }
+  .initial .panel:nth-child(7) { animation-delay: 0.24s; }
 </style>
 </head>
 <body>
+<div class="container">
 
 <div class="header">
   <div class="header-row">
-    <span class="model-ver" id="model-ver">—</span>
-    <span class="last-refresh" id="last-refresh"></span>
+    <div class="header-left">
+      <div class="logo">hexchess <span>// training</span></div>
+      <span class="model-badge" id="model-badge">—</span>
+    </div>
+    <div class="header-meta">
+      <div id="promoted-at"></div>
+      <div id="last-refresh"></div>
+    </div>
   </div>
-  <div id="promoted-at" style="font-size:11px;color:#8b949e"></div>
 </div>
 
-<details class="section" open>
-  <summary><h2>Workers</h2></summary>
-  <div id="workers-content" class="empty">Loading...</div>
-</details>
+<div id="panels"></div>
 
-<details class="section" open>
-  <summary><h2>Elo Ratings</h2></summary>
-  <div id="elo-content" class="empty">Loading...</div>
-</details>
-
-<details class="section" open>
-  <summary><h2>Data</h2></summary>
-  <div id="data-content" class="empty">Loading...</div>
-</details>
+</div>
 
 <script>
 const REFRESH_MS = 15000;
+const ELO_SIGMA_DEFAULT = 25.0 / 3.0;
+const ELO_SCALE = 400 / ELO_SIGMA_DEFAULT;
+const ELO_OFFSET = 1500 - 25 * ELO_SCALE;
+const CONSERVATIVE_Z = 2.0;
+const BASELINES = new Set(['Minimax-2', 'Minimax-3', 'Minimax-4', 'Heuristic']);
+
+function toElo(mu) { return Math.round(mu * ELO_SCALE + ELO_OFFSET); }
+function toEloSigma(sigma) { return Math.round(sigma * ELO_SCALE); }
+function conservRating(mu, sigma) { return toElo(mu - CONSERVATIVE_Z * sigma); }
 
 function ago(ts) {
   if (!ts) return '';
-  const diff = (Date.now() - new Date(ts).getTime()) / 1000;
-  if (diff < 60) return Math.floor(diff) + 's ago';
-  if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
-  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
-  return Math.floor(diff / 86400) + 'd ago';
+  const s = (Date.now() - new Date(ts).getTime()) / 1000;
+  if (s < 0) return 'just now';
+  if (s < 60) return Math.floor(s) + 's ago';
+  if (s < 3600) return Math.floor(s / 60) + 'm ago';
+  if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+  return Math.floor(s / 86400) + 'd ago';
 }
 
-function fmt(n, d) {
+function fmt(n) {
   if (n == null) return '—';
-  return typeof n === 'number' ? n.toLocaleString(undefined, {maximumFractionDigits: d || 0}) : n;
+  return typeof n === 'number' ? n.toLocaleString() : n;
 }
 
-function workerFreshness(ts) {
+function freshness(ts) {
   if (!ts) return 'dead';
   const age = (Date.now() - new Date(ts).getTime()) / 1000;
   if (age < 120) return 'fresh';
@@ -91,118 +387,289 @@ function workerFreshness(ts) {
   return 'dead';
 }
 
+function pairKey(a, b) { return [a, b].sort().join(':'); }
+
+// --- Panel collapse state ---
+const panelState = {};
+function togglePanel(id) {
+  panelState[id] = !panelState[id];
+  render(lastData);
+}
+
+let lastData = null;
+let firstRender = true;
+
+// --- Render helpers ---
+function panelHtml(id, title, badge, body, defaultOpen = true) {
+  const collapsed = panelState[id] !== undefined ? panelState[id] : !defaultOpen;
+  return `<div class="panel ${collapsed ? 'collapsed' : ''}" id="panel-${id}">
+    <div class="panel-header" onclick="togglePanel('${id}')">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span class="panel-title">${title}</span>
+        ${badge ? `<span class="panel-badge">${badge}</span>` : ''}
+      </div>
+      <span class="panel-chevron">&#9660;</span>
+    </div>
+    <div class="panel-body">${body}</div>
+  </div>`;
+}
+
+function renderRatingTable(players, ratings, playerStats, label) {
+  if (!players.length) return '';
+
+  const items = players
+    .filter(n => ratings[n])
+    .map(n => {
+      const r = ratings[n];
+      return { name: n, mu: r.mu, sigma: r.sigma, elo: conservRating(r.mu, r.sigma), eloSigma: toEloSigma(r.sigma) };
+    })
+    .sort((a, b) => b.elo - a.elo);
+
+  if (!items.length) return '';
+
+  const minElo = Math.min(...items.map(i => i.elo - i.eloSigma));
+  const maxElo = Math.max(...items.map(i => i.elo + i.eloSigma));
+  const range = Math.max(maxElo - minElo, 50);
+  const base = minElo - range * 0.05;
+  const span = range * 1.1;
+
+  let html = `<div class="group-label">${label}</div>`;
+  html += '<table><tr><th style="width:24px">#</th><th>player</th><th class="r">rating</th><th class="r" style="width:52px">±</th><th class="r" style="width:52px">s/mv</th><th style="min-width:100px"></th></tr>';
+
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    const ps = playerStats[it.name];
+    const avg = ps && ps.total_moves > 0 ? (ps.total_time / ps.total_moves).toFixed(2) : '—';
+
+    const barLeft = Math.max(0, ((it.elo - it.eloSigma) - base) / span * 100);
+    const barRight = Math.min(100, ((it.elo + it.eloSigma) - base) / span * 100);
+    const barCenter = ((it.elo) - base) / span * 100;
+
+    const color = BASELINES.has(it.name) ? 'var(--accent-purple)' : 'var(--accent-blue)';
+
+    html += `<tr>
+      <td class="r muted">${i + 1}</td>
+      <td>${it.name}</td>
+      <td class="r" style="font-weight:600;color:${it.elo >= 1500 ? 'var(--accent-green)' : it.elo >= 1200 ? 'var(--text-primary)' : 'var(--accent-red)'}">${it.elo > 0 ? '+' : ''}${it.elo}</td>
+      <td class="r muted">${it.eloSigma}</td>
+      <td class="r muted">${avg}</td>
+      <td>
+        <div class="rating-bar-track">
+          <div class="rating-bar-ci" style="left:${barLeft}%;width:${barRight - barLeft}%;background:${color}"></div>
+          <div class="rating-bar" style="left:${Math.max(0, (it.elo - base) / span * 100 - 0.5)}%;width:3px;background:${color}"></div>
+        </div>
+      </td>
+    </tr>`;
+  }
+  html += '</table>';
+  return html;
+}
+
 function renderHeader(data) {
   const m = data.model;
-  document.getElementById('model-ver').textContent = m.version ? `v${m.version}` : 'no model';
-  document.getElementById('promoted-at').textContent = m.promoted_at ? `promoted ${ago(m.promoted_at)}` : 'bootstrap pending';
-  document.getElementById('last-refresh').textContent = `updated ${ago(data.timestamp)}`;
+  document.getElementById('model-badge').textContent = m.version ? `v${m.version}` : 'no model';
+  document.getElementById('promoted-at').textContent = m.promoted_at ? `promoted ${ago(m.promoted_at)}` : 'bootstrap';
+  document.getElementById('last-refresh').textContent = `refreshed ${ago(data.timestamp)}`;
 }
 
-function renderWorkers(data) {
+function buildWorkers(data) {
   const w = data.workers || {};
-  const el = document.getElementById('workers-content');
-  const names = Object.keys(w);
+  const names = Object.keys(w).sort();
+  if (!names.length) return panelHtml('workers', 'Workers', null, '<div class="empty">No worker heartbeats</div>');
 
-  if (!names.length) {
-    el.className = 'empty';
-    el.textContent = 'No worker heartbeats';
-    return;
-  }
-
-  let html = `<table><tr><th></th><th>worker</th><th>model</th><th>games</th><th>positions</th><th>last seen</th></tr>`;
-  for (const name of names.sort()) {
+  let html = `<table><tr><th></th><th>worker</th><th>model</th><th class="r">games</th><th class="r">positions</th><th class="r">last seen</th></tr>`;
+  for (const name of names) {
     const hb = w[name];
-    const cls = workerFreshness(hb.timestamp);
+    const cls = freshness(hb.timestamp);
     html += `<tr>
-      <td><span class="worker-dot ${cls}"></span></td>
+      <td><span class="dot ${cls}"></span></td>
       <td>${name}</td>
       <td>v${hb.model_version || '?'}</td>
-      <td class="num">${fmt(hb.total_games)}</td>
-      <td class="num">${fmt(hb.total_positions)}</td>
-      <td class="num">${ago(hb.timestamp)}</td>
+      <td class="r">${fmt(hb.total_games)}</td>
+      <td class="r">${fmt(hb.total_positions)}</td>
+      <td class="r muted">${ago(hb.timestamp)}</td>
     </tr>`;
   }
   html += '</table>';
-  el.className = '';
-  el.innerHTML = html;
+  return panelHtml('workers', 'Workers', `${names.length}`, html);
 }
 
-function renderElo(data) {
+function buildRatings(data) {
   const e = data.elo;
-  const el = document.getElementById('elo-content');
+  const ratings = e.ratings || {};
+  const active = e.active_players || [];
+  const ps = e.player_stats || {};
 
-  if (!Object.keys(e.ratings).length) {
-    el.className = 'empty';
-    el.textContent = `No Elo ratings yet (${e.total_games} games played)`;
-    return;
+  if (!Object.keys(ratings).length) {
+    return panelHtml('ratings', 'Ratings', null,
+      `<div class="empty">No ratings yet (${e.total_games} games played)</div>`);
   }
 
-  const sorted = Object.entries(e.ratings).sort((a, b) => b[1] - a[1]);
-  const maxR = Math.max(...sorted.map(s => Math.abs(s[1])), 1);
+  const models = active.filter(n => !BASELINES.has(n));
+  const bases = active.filter(n => BASELINES.has(n));
 
+  let body = `<div class="kv-row"><span class="k">total games</span><span class="v">${fmt(e.total_games)}</span></div>`;
+  body += renderRatingTable(models, ratings, ps, 'Models');
+  body += renderRatingTable(bases, ratings, ps, 'Baselines');
+
+  return panelHtml('ratings', 'Ratings', `${active.length} players`, body);
+}
+
+function buildH2H(data) {
+  const e = data.elo;
+  const active = e.active_players || [];
+  const pairs = e.pair_results || {};
+
+  if (active.length < 2) {
+    return panelHtml('h2h', 'Head-to-Head', null, '<div class="empty">Not enough players</div>', false);
+  }
+
+  // Sort by rating
+  const ratings = e.ratings || {};
+  const sorted = [...active].sort((a, b) => {
+    const ra = ratings[a], rb = ratings[b];
+    if (!ra || !rb) return 0;
+    return conservRating(rb.mu, rb.sigma) - conservRating(ra.mu, ra.sigma);
+  });
+
+  let html = '<div class="h2h-wrap"><table class="h2h-table"><tr><th></th>';
+  for (const p of sorted) {
+    const short = p.length > 7 ? p.slice(0, 6) + '…' : p;
+    html += `<th title="${p}">${short}</th>`;
+  }
+  html += '</tr>';
+
+  for (const row of sorted) {
+    const shortRow = row.length > 7 ? row.slice(0, 6) + '…' : row;
+    html += `<tr><th title="${row}" style="text-align:right">${shortRow}</th>`;
+    for (const col of sorted) {
+      if (row === col) {
+        html += '<td class="self">—</td>';
+        continue;
+      }
+      const key = pairKey(row, col);
+      const pr = pairs[key];
+      if (!pr) {
+        html += '<td><span class="h2h-cell none">—</span></td>';
+        continue;
+      }
+      const a_name = key.split(':')[0];
+      const rowIsA = row === a_name;
+      const wins = rowIsA ? pr.a_wins : pr.b_wins;
+      const losses = rowIsA ? pr.b_wins : pr.a_wins;
+      const draws = pr.draws;
+      const total = wins + losses + draws;
+      const winRate = total > 0 ? wins / total : 0.5;
+
+      let cls = 'even';
+      if (total >= 3) {
+        if (winRate >= 0.6) cls = 'dominant';
+        else if (winRate <= 0.4) cls = 'losing';
+      }
+
+      html += `<td><span class="h2h-cell ${cls}" title="${row} vs ${col}: ${wins}W ${draws}D ${losses}L">${wins}-${draws}-${losses}</span></td>`;
+    }
+    html += '</tr>';
+  }
+  html += '</table></div>';
+
+  return panelHtml('h2h', 'Head-to-Head', `${Object.keys(pairs).length} pairs`, html, false);
+}
+
+function buildRetired(data) {
+  const e = data.elo;
+  const retired = e.retired_players || [];
+  const ratings = e.ratings || {};
   const ps = e.player_stats || {};
-  let html = `<div class="kv"><span class="k">games</span><span class="v">${fmt(e.total_games)}</span></div>`;
-  html += `<table><tr><th>#</th><th>player</th><th>elo</th><th>s/move</th><th></th></tr>`;
 
-  for (let i = 0; i < sorted.length; i++) {
-    const [name, rating] = sorted[i];
-    const barW = Math.max(2, Math.round(Math.abs(rating) / maxR * 120));
-    const neg = rating < 0 ? 'elo-neg' : '';
-    const st = ps[name];
-    const avgMove = st && st.total_moves > 0 ? (st.total_time / st.total_moves).toFixed(2) : '—';
+  if (!retired.length) return '';
+
+  const body = renderRatingTable(retired, ratings, ps, 'Retired Models');
+  if (!body) return '';
+  return panelHtml('retired', 'Retired', `${retired.length}`, body, false);
+}
+
+function buildGames(data) {
+  const games = data.recent_games || [];
+  if (!games.length) {
+    return panelHtml('games', 'Recent Games', null, '<div class="empty">No games recorded</div>');
+  }
+
+  const show = games.slice(-20).reverse();
+
+  let html = '<table><tr><th class="r">#</th><th>white</th><th>black</th><th>result</th><th class="r">moves</th><th class="r">when</th></tr>';
+  for (const g of show) {
+    let outcomeHtml;
+    if (g.outcome === 'white') outcomeHtml = `<span class="game-outcome w">1-0</span>`;
+    else if (g.outcome === 'black') outcomeHtml = `<span class="game-outcome b">0-1</span>`;
+    else outcomeHtml = `<span class="game-outcome d">½-½</span>`;
+
     html += `<tr>
-      <td class="num">${i + 1}</td>
-      <td>${name}</td>
-      <td class="num">${rating > 0 ? '+' : ''}${rating}</td>
-      <td class="num">${avgMove}</td>
-      <td class="${neg}"><span class="elo-bar" style="width:${barW}px"></span></td>
+      <td class="r muted">${g.game}</td>
+      <td>${g.white}</td>
+      <td>${g.black}</td>
+      <td>${outcomeHtml}</td>
+      <td class="r">${g.moves}</td>
+      <td class="r muted">${ago(g.timestamp)}</td>
     </tr>`;
   }
   html += '</table>';
 
-  el.className = '';
-  el.innerHTML = html;
+  return panelHtml('games', 'Recent Games', `${games.length}`, html);
 }
 
-function renderData(data) {
+function buildData(data) {
   const d = data.data;
-  const el = document.getElementById('data-content');
+  const sp = d.selfplay;
+  const im = d.imitation;
 
   let html = '';
+  html += `<div class="kv-row"><span class="k">self-play</span><span class="v">${fmt(sp.total_files)} files &middot; ${fmt(sp.total_positions)} positions</span></div>`;
 
-  // Self-play data
-  const sp = d.selfplay;
-  html += `<div class="kv"><span class="k">self-play</span><span class="v">${fmt(sp.total_files)} files, ${fmt(sp.total_positions)} positions</span></div>`;
-
-  if (Object.keys(sp.by_version || {}).length) {
-    html += `<table><tr><th>version</th><th>files</th><th>positions</th></tr>`;
-    for (const [ver, info] of Object.entries(sp.by_version)) {
-      html += `<tr><td>${ver}</td><td class="num">${info.count}</td><td class="num">${fmt(info.positions)}</td></tr>`;
+  const versions = Object.entries(sp.by_version || {});
+  if (versions.length) {
+    html += '<table><tr><th>version</th><th class="r">files</th><th class="r">positions</th></tr>';
+    for (const [ver, info] of versions) {
+      html += `<tr><td>${ver}</td><td class="r">${fmt(info.count)}</td><td class="r">${fmt(info.positions)}</td></tr>`;
     }
     html += '</table>';
   }
 
-  // Imitation data
-  const im = d.imitation;
-  html += `<div class="kv"><span class="k">imitation</span><span class="v">${fmt(im.total_files)} files, ${fmt(im.total_positions)} positions</span></div>`;
+  html += `<div class="kv-row" style="margin-top:6px"><span class="k">imitation</span><span class="v">${fmt(im.total_files)} files &middot; ${fmt(im.total_positions)} positions</span></div>`;
 
-  // Model snapshots
   if (d.models.length) {
-    html += `<div class="kv"><span class="k">model snapshots</span><span class="v">${d.models.length} versions</span></div>`;
+    html += `<div class="kv-row"><span class="k">snapshots</span><span class="v">${d.models.length} versions</span></div>`;
   }
 
-  el.className = '';
-  el.innerHTML = html || '<span class="empty">No data yet</span>';
+  return panelHtml('data', 'Training Data', null, html);
+}
+
+function render(data) {
+  if (!data) return;
+  lastData = data;
+  renderHeader(data);
+
+  const panels = document.getElementById('panels');
+  if (firstRender) panels.classList.add('initial');
+  panels.innerHTML = [
+    buildWorkers(data),
+    buildRatings(data),
+    buildH2H(data),
+    buildGames(data),
+    buildRetired(data),
+    buildData(data),
+  ].join('');
+  if (firstRender) {
+    firstRender = false;
+    setTimeout(() => panels.classList.remove('initial'), 500);
+  }
 }
 
 async function refresh() {
   try {
     const resp = await fetch('/api/status');
     const data = await resp.json();
-    renderHeader(data);
-    renderWorkers(data);
-    renderElo(data);
-    renderData(data);
+    render(data);
   } catch (e) {
     document.getElementById('last-refresh').textContent = `error: ${e.message}`;
   }

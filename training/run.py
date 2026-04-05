@@ -84,7 +84,6 @@ def main() -> None:
     elo_svc_parser = subparsers.add_parser("elo-service", help="Run continuous Elo rating service")
     elo_svc_parser.add_argument("--simulations", type=int, default=500, help="MCTS simulations per move")
     elo_svc_parser.add_argument("--max-versions", type=int, default=20, help="Max model versions in pool")
-    elo_svc_parser.add_argument("--recompute-interval", type=int, default=10, help="Games between Elo recomputation")
     elo_svc_parser.add_argument("--notify-interval", type=int, default=20, help="Games between Slack notifications")
 
     args = parser.parse_args()
@@ -111,7 +110,6 @@ def main() -> None:
         run_elo_service(
             simulations=args.simulations,
             max_versions=args.max_versions,
-            recompute_interval=args.recompute_interval,
             notify_interval=args.notify_interval,
         )
 

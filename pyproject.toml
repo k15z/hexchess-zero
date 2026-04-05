@@ -12,6 +12,7 @@ dependencies = [
     "loguru>=0.7",
     "boto3>=1.28",
     "python-dotenv>=1.0",
+    "openskill>=6.0",
 ]
 
 [dependency-groups]
