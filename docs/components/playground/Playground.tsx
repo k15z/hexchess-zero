@@ -208,9 +208,10 @@ export function Playground() {
   const stateRef = useRef<GameState>(INITIAL_STATE);
   const [state, setStateRaw] = useState<GameState>(INITIAL_STATE);
 
-  const setState = useCallback((update: Partial<GameState>) => {
+  const setState = useCallback((update: Partial<GameState> | ((prev: GameState) => Partial<GameState>)) => {
     setStateRaw(prev => {
-      const next = { ...prev, ...update };
+      const partial = typeof update === "function" ? update(prev) : update;
+      const next = { ...prev, ...partial };
       stateRef.current = next;
       return next;
     });
@@ -393,11 +394,11 @@ export function Playground() {
       try {
         const m = ai.bestMoveWithTemperature(game, 0.8);
         game.applyMove(m.from_q, m.from_r, m.to_q, m.to_r, m.promotion);
-        setState({
-          moveCount: stateRef.current.moveCount + 1,
+        setState(prev => ({
+          moveCount: prev.moveCount + 1,
           lastMove: { from_q: m.from_q, from_r: m.from_r, to_q: m.to_q, to_r: m.to_r },
           ...snapshot(game),
-        });
+        }));
         scheduleSelfPlayMoveRef.current();
       } catch (e) {
         console.error("Self-play error:", e);
