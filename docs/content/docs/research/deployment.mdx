@@ -7,7 +7,43 @@ The training pipeline is designed to run as a distributed system. All coordinati
 
 ## Infrastructure
 
-The production setup uses:
+<Mermaid chart={`
+graph TB
+    subgraph Hetzner["Hetzner k3s Cluster"]
+        W1["Worker Pod<br/>14Gi RAM"]
+        W2["Worker Pod<br/>14Gi RAM"]
+        WN["Worker Pod ×N"]
+        Elo["Elo Service<br/>8Gi RAM"]
+        Dash["Dashboard"]
+    end
+
+    subgraph GPU["GPU Node"]
+        T["Trainer<br/>GPU + CPU"]
+    end
+
+    subgraph S3["S3 (DigitalOcean Spaces / R2)"]
+        Models["models/"]
+        Data["data/"]
+        State["state/"]
+        HB["heartbeats/"]
+    end
+
+    W1 --> Data
+    W2 --> Data
+    WN --> Data
+    Data --> T
+    T --> Models
+    Models --> W1
+    Models --> W2
+    Models --> WN
+    Models --> Elo
+    Elo --> State
+    HB --> Dash
+
+    style S3 fill:#fdf2e9,stroke:#e67e22
+    style GPU fill:#e8f4f8,stroke:#2980b9
+    style Hetzner fill:#f5f5f5,stroke:#95a5a6
+`} caption="Production deployment topology" />
 
 | Component | Infrastructure | Resources |
 |-----------|---------------|-----------|

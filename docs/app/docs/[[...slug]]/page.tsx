@@ -7,6 +7,34 @@ import {
 } from "fumadocs-ui/page";
 import { notFound } from "next/navigation";
 import defaultMdxComponents from "fumadocs-ui/mdx";
+import {
+  HexBoard,
+  StartingPosition,
+  PromotionZones,
+  CoordinateBoard,
+  RookMovement,
+  BishopMovement,
+  KnightMovement,
+  KingMovement,
+  PawnMovement,
+  DirectionSystem,
+} from "@/components/hex-board";
+import { Mermaid } from "@/components/mermaid";
+
+const customComponents = {
+  ...defaultMdxComponents,
+  HexBoard,
+  StartingPosition,
+  PromotionZones,
+  CoordinateBoard,
+  RookMovement,
+  BishopMovement,
+  KnightMovement,
+  KingMovement,
+  PawnMovement,
+  DirectionSystem,
+  Mermaid,
+};
 
 export default async function Page(props: {
   params: Promise<{ slug?: string[] }>;
@@ -22,7 +50,7 @@ export default async function Page(props: {
       <DocsTitle>{page.data.title}</DocsTitle>
       <DocsDescription>{page.data.description}</DocsDescription>
       <DocsBody>
-        <MDX components={{ ...defaultMdxComponents }} />
+        <MDX components={customComponents} />
       </DocsBody>
     </DocsPage>
   );

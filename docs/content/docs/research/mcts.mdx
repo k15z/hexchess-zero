@@ -9,13 +9,28 @@ The MCTS implementation lives in `engine/src/mcts.rs` and follows the AlphaZero 
 
 MCTS builds a search tree by repeatedly:
 
-1. **Select** — walk from the root to a leaf, choosing the child that maximizes `Q + U` where:
-   - `Q` = average value from previous simulations (exploitation)
-   - `U = c_puct * P * sqrt(N_parent) / (1 + N_child)` — exploration bonus scaled by the neural network's prior probability `P`
+1. **Select** — walk from the root to a leaf, choosing the child that maximizes $Q + U$
 2. **Expand** — at the leaf, evaluate the position with the neural network to get a policy vector and value estimate
 3. **Backup** — propagate the value back up the tree, updating visit counts and Q-values
 
 After the configured number of simulations, the move is selected based on visit counts at the root.
+
+### PUCT selection formula
+
+At each internal node, the child with the highest score is selected:
+
+$$
+\text{score}(a) = Q(a) + c_{\text{puct}} \cdot P(a) \cdot \frac{\sqrt{N_{\text{parent}}}}{1 + N(a)}
+$$
+
+where:
+- $Q(a)$ is the mean value from simulations through action $a$ (exploitation)
+- $P(a)$ is the neural network's prior probability for action $a$
+- $N(a)$ is the visit count for action $a$
+- $N_{\text{parent}}$ is the total visit count at the parent node
+- $c_{\text{puct}} = 1.5$ balances exploration vs exploitation
+
+The $U$ term ensures that moves with high prior probability $P(a)$ are explored early, but as $N(a)$ grows, the term shrinks and $Q(a)$ dominates.
 
 ## Arena allocation
 
@@ -44,22 +59,26 @@ This significantly reduces the number of inference calls during search, especial
 
 ## Dirichlet noise
 
-At the root node, Dirichlet noise is mixed into the prior policy:
+At the root node, Dirichlet noise is mixed into the prior policy to encourage exploration:
 
-```
-P_root = (1 - epsilon) * P_network + epsilon * Dir(alpha)
-```
+$$
+P_{\text{root}}(a) = (1 - \varepsilon) \cdot P_{\text{network}}(a) + \varepsilon \cdot \text{Dir}(\alpha)
+$$
 
-With defaults `epsilon = 0.25` and `alpha = 0.3`. This encourages exploration of moves the network hasn't learned to value yet, which is critical for discovering new ideas during self-play.
+with $\varepsilon = 0.25$ and $\alpha = 0.3$. This is critical for discovering new ideas during self-play — without noise, the network would only ever reinforce its existing preferences.
 
 ## Temperature-based move selection
 
-After search completes, the move is selected from root visit counts:
+After search completes, the move is selected from root visit counts using a temperature parameter $\tau$:
 
-- **Temperature = 0** (greedy): always pick the most-visited move
-- **Temperature = 1** (proportional): sample proportional to `visits^(1/temperature)`
+$$
+\pi(a) \propto N(a)^{1/\tau}
+$$
 
-During self-play, high temperature is used for the first ~60 moves (diverse openings), then near-zero temperature for the remainder (strong play for clean value signals).
+- **$\tau = 0$** (greedy): always pick the most-visited move
+- **$\tau = 1$** (proportional): sample proportional to visit counts
+
+During self-play, high temperature ($\tau = 1$) is used for the first ~60 moves to create diverse openings, then near-zero temperature for the remainder to produce clean value signals.
 
 ## Batched evaluation
 
@@ -72,7 +91,7 @@ The `batch_size` parameter controls how many positions are collected before call
 | Parameter | Default | Effect |
 |-----------|---------|--------|
 | `simulations` | 500 | Number of MCTS iterations per move. More = stronger but slower |
-| `c_puct` | 1.5 | Exploration vs exploitation tradeoff |
+| $c_{\text{puct}}$ | 1.5 | Exploration vs exploitation tradeoff |
 | `batch_size` | 32 | Positions per inference batch |
 | `tt_capacity` | 500,000 | Max transposition table entries |
 

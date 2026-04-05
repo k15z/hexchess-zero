@@ -7,30 +7,31 @@ The neural network is defined in `training/model.py`. It's a convolutional resid
 
 ## Architecture overview
 
-```
-Input (19, 11, 11)
-    │
-    ▼
-Conv2d 3x3 → BN → ReLU          (19 → 192 channels)
-    │
-    ▼
-SE Residual Blocks × 10          (192 channels, with global pooling at blocks 3 & 6)
-    │
-    ├─────────────┐
-    ▼             ▼
-Policy Head    Value Head
-    │             │
-    ▼             ▼
-~4206 moves    WDL (3 logits)
-```
+<Mermaid chart={`
+graph TD
+    Input["Input (19, 11, 11)"] --> Conv["Conv2d 3×3 → BN → ReLU<br/>19 → 192 channels"]
+    Conv --> RB1["SE Residual Block ×3"]
+    RB1 --> GP1["SE Residual Block + Global Pooling"]
+    GP1 --> RB2["SE Residual Block ×2"]
+    RB2 --> GP2["SE Residual Block + Global Pooling"]
+    GP2 --> RB3["SE Residual Block ×3"]
+    RB3 --> PolicyHead["Policy Head"]
+    RB3 --> ValueHead["Value Head"]
+    PolicyHead --> PolicyOut["~4206 move logits"]
+    ValueHead --> ValueOut["WDL (3 logits)"]
+
+    style Input fill:#e8f4f8,stroke:#2980b9
+    style PolicyOut fill:#e8f8e8,stroke:#27ae60
+    style ValueOut fill:#fdf2e9,stroke:#e67e22
+`} caption="HexChessNet architecture: SE residual tower with global pooling at blocks 3 and 6, splitting into policy and value heads" />
 
 ## Input tensor
 
-The input is a `(19, 11, 11)` tensor — the 91-cell hex board embedded in an 11x11 grid with zero-padding for invalid cells:
+The input is a $(19, 11, 11)$ tensor — the 91-cell hex board embedded in an 11×11 grid with zero-padding for invalid cells:
 
 | Channels | Content |
 |----------|---------|
-| 0-11 | Piece planes (6 types x 2 colors) |
+| 0–11 | Piece planes (6 types $\times$ 2 colors) |
 | 12 | Side to move |
 | 13 | Fullmove number |
 | 14 | Halfmove clock |
@@ -43,42 +44,54 @@ The input is a `(19, 11, 11)` tensor — the 91-cell hex board embedded in an 11
 
 Each block follows the **Squeeze-and-Excitation** pattern (Leela Chess variant):
 
-```
-x → Conv 3x3 → BN → ReLU → Conv 3x3 → BN → SE → ReLU(out + x)
-```
+<Mermaid chart={`
+graph LR
+    X["x"] --> Conv1["Conv 3×3"] --> BN1["BN"] --> ReLU1["ReLU"] --> Conv2["Conv 3×3"] --> BN2["BN"] --> SE["SE Module"] --> Add["+ x"] --> ReLU2["ReLU"] --> Out["output"]
+    X --> Add
+`} caption="SE Residual Block: skip connection with squeeze-and-excitation" />
 
-The SE module:
-1. Global average pool → `(B, C)`
-2. FC → ReLU → FC → split into `scale` (sigmoid) and `bias`
-3. Output = `scale * x + bias`
+The SE module learns per-channel scaling:
+1. Global average pool → $(B, C)$
+2. FC → ReLU → FC → split into **scale** (sigmoid) and **bias**
+3. Output = $\text{scale} \odot x + \text{bias}$
 
 This gives each channel a learned, input-dependent scaling — the network can dynamically emphasize or suppress features based on the global position.
 
 ## KataGo-style global pooling
 
-At configured block positions (blocks 3 and 6), an additional **global pooling branch** injects board-wide context into the local convolutions:
+At blocks 3 and 6, an additional **global pooling branch** injects board-wide context:
 
-1. A parallel 1x1 conv computes `pool_channels` features
+1. A parallel 1×1 conv computes `pool_channels` features
 2. Three pooling operations: mean, scaled mean, max
 3. The pooled features are projected to a per-channel bias added before the second convolution
 
-This lets the network reason about global properties (material balance, king safety, piece counts) while still operating with local 3x3 convolutions.
+This lets the network reason about global properties (material balance, king safety, piece counts) while still operating with local 3×3 convolutions.
 
 ## Policy head
 
-```
-Conv 1x1 (192 → 8) → BN → ReLU → Flatten → Linear → 4206 outputs
-```
+$$
+\text{Conv}_{1\times1}(192 \to 8) \to \text{BN} \to \text{ReLU} \to \text{Flatten} \to \text{Linear} \to 4206 \text{ logits}
+$$
 
 Outputs logits over the deterministic move index table. During training, the target is the MCTS visit count distribution (after temperature). During inference, legal moves are masked and softmax is applied.
 
 ## Value head
 
-```
-Conv 1x1 (192 → 32) → BN → ReLU → Global Avg Pool → Linear → 3 WDL logits
-```
+$$
+\text{Conv}_{1\times1}(192 \to 32) \to \text{BN} \to \text{ReLU} \to \text{GAP} \to \text{Linear} \to 3 \text{ WDL logits}
+$$
 
-Outputs **Win/Draw/Loss** logits rather than a single scalar. This provides richer training signal (the network learns to distinguish wins from draws) and converts to a scalar via `W - L` for MCTS backup.
+Outputs **Win/Draw/Loss** logits rather than a single scalar. This provides richer training signal (the network learns to distinguish wins from draws) and converts to a scalar via $v = W - L$ for MCTS backup.
+
+## Training loss
+
+The combined loss function:
+
+$$
+\mathcal{L} = \underbrace{\text{CE}(\pi_\theta, \pi_{\text{MCTS}})}_{\text{policy loss}} + \underbrace{\text{CE}(v_\theta, z)}_{\text{value loss}} + \underbrace{c \|\theta\|^2}_{\text{L2 regularization}}
+$$
+
+where $\pi_{\text{MCTS}}$ is the search policy target, $z$ is the game outcome (WDL), and $c = 10^{-4}$.
 
 ## Architecture parameters
 
@@ -91,5 +104,3 @@ Outputs **Win/Draw/Loss** logits rather than a single scalar. This provides rich
 | `global_pool_blocks` | (3, 6) | Which blocks get global pooling |
 | `policy_channels` | 8 | Conv channels in policy head |
 | `value_channels` | 32 | Conv channels in value head |
-
-The architecture was validated through experiments comparing SE-only, global-pool-only, and combined configurations (see `training/experiments/`).

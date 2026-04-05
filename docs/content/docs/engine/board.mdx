@@ -9,15 +9,19 @@ The board is the core data structure of the engine, defined in `engine/src/board
 
 Every cell is addressed by an **axial coordinate** `(q, r)`. A coordinate is valid when:
 
-```
-max(|q|, |r|, |q + r|) <= 5
-```
+$$
+\max(|q|, |r|, |q + r|) \leq 5
+$$
 
 This gives exactly 91 valid cells. The center of the board is `(0, 0)`.
 
+<CoordinateBoard />
+
+The third axis $s = -(q + r)$ is implicit — any two of $(q, r, s)$ determine the third. The validity constraint is equivalent to requiring all three axes to be in $[-5, 5]$.
+
 ## Cell indexing
 
-For fast array access, each `(q, r)` coordinate maps to an integer index 0-90 via precomputed const lookup tables. This avoids hash maps in the hot path.
+For fast array access, each `(q, r)` coordinate maps to an integer index 0–90 via precomputed const lookup tables. This avoids hash maps in the hot path.
 
 ```rust
 // Coordinate → index (fast, const table)
@@ -48,4 +52,21 @@ The hash incorporates piece positions, side to move, and en passant state.
 
 ## Tensor encoding
 
-For neural network input, the board maps into an **11x11 grid** using `col = q + 5, row = r + 5`. Invalid cells (outside the hex) are zero-padded. The full tensor has shape `(19, 11, 11)` — see the [Python bindings](/docs/usage/python#board-encoding-for-training) for the channel layout.
+For neural network input, the board maps into an **11x11 grid** using `col = q + 5, row = r + 5`. Invalid cells (outside the hex) are zero-padded. The full tensor shape is:
+
+$$
+(19, 11, 11) = \text{channels} \times \text{rows} \times \text{cols}
+$$
+
+| Channels | Content |
+|----------|---------|
+| 0–11 | Piece planes (6 types $\times$ 2 colors) |
+| 12 | Side to move |
+| 13 | Fullmove number |
+| 14 | Halfmove clock |
+| 15 | En passant |
+| 16 | Repetition count |
+| 17 | Validity mask (1 for valid hex cells, 0 for padding) |
+| 18 | In-check flag |
+
+See the [Python bindings](/docs/usage/python#board-encoding-for-training) for usage.
