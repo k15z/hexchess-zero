@@ -2,9 +2,10 @@
 
 Each iteration:
 1. Polls for new model versions (models/versions/*.onnx in S3)
-2. Picks the most uncertain pair (fewest games played)
-3. Plays one game, records the result
-4. Periodically recomputes Elo and notifies Slack
+2. Picks the pair with highest uncertainty (largest sigma sum)
+3. Plays one game, updates ratings incrementally (OpenSkill)
+4. Logs every game to an append-only record
+5. Periodically notifies Slack
 
 Usage:
     python -m training elo-service
@@ -12,7 +13,6 @@ Usage:
 
 from __future__ import annotations
 
-import math
 import random
 import time
 from collections import OrderedDict
@@ -27,15 +27,21 @@ from .elo import (
     MinimaxPlayer,
     Player,
     baselines,
-    compute_elo,
+    conservative_rating,
     format_elo_table,
+    new_rating,
     play_game,
+    replay_results,
+    update_ratings,
 )
 
 try:
     import hexchess
 except ImportError:
     hexchess = None
+
+
+BASELINE_NAMES = frozenset({"Minimax-2", "Minimax-3", "Minimax-4", "Heuristic"})
 
 
 # ---------------------------------------------------------------------------
@@ -49,24 +55,52 @@ def _pair_key(a: str, b: str) -> str:
 
 def _default_state() -> dict:
     return {
-        "version": 1,
+        "version": 2,
         "active_players": [],
         "retired_players": [],
-        "pair_results": {},
-        "ratings": {},
-        "player_stats": {},
+        "ratings": {},  # {name: {"mu": float, "sigma": float}}
+        "pair_results": {},  # {pair_key: {"a_wins": int, "b_wins": int, "draws": int, "a_as_white": int, "b_as_white": int}}
+        "player_stats": {},  # {name: {"total_time": float, "total_moves": int}}
         "total_games": 0,
-        "last_recompute_game": 0,
         "last_slack_game": 0,
     }
+
+
+def _migrate_v1(state: dict) -> dict:
+    """Migrate v1 state (MLE Elo) to v2 (OpenSkill).
+
+    TODO: Remove this once all deployments are on v2 state format.
+
+    Replays pair_results to build OpenSkill ratings from scratch.
+    """
+    logger.info("Migrating v1 state to v2 (OpenSkill)...")
+    new = _default_state()
+    new["active_players"] = state.get("active_players", [])
+    new["retired_players"] = state.get("retired_players", [])
+    new["pair_results"] = state.get("pair_results", {})
+    new["player_stats"] = state.get("player_stats", {})
+    new["total_games"] = state.get("total_games", 0)
+    new["last_slack_game"] = state.get("last_slack_game", 0)
+
+    # Initialize ratings for all known players and replay history
+    all_players = set(new["active_players"]) | set(new["retired_players"])
+    for name in all_players:
+        new["ratings"][name] = new_rating()
+
+    replay_results(new["ratings"], new["pair_results"])
+
+    logger.info("Migration complete: {} players rated", len(new["ratings"]))
+    return new
 
 
 def _load_state() -> dict:
     """Load state from S3, or return default if not found."""
     try:
         state = storage.get_json(storage.ELO_STATE)
-        if state.get("version") == 1:
+        if state.get("version") == 2:
             return state
+        if state.get("version") == 1:
+            return _migrate_v1(state)
         logger.warning("Unknown state version {}, starting fresh", state.get("version"))
     except KeyError as e:
         logger.info("No existing elo state: {}", e)
@@ -114,7 +148,6 @@ class PlayerCache:
             depth = int(name.split("-")[1])
             player = MinimaxPlayer(name=name, depth=depth)
         else:
-            # Download model from S3 to local cache
             local_path = self.cache_dir / f"{name}.onnx"
             if not local_path.exists() and s3_model_key:
                 storage.get_file(s3_model_key, local_path)
@@ -162,27 +195,29 @@ def _sync_player_pool(
     max_versions: int,
 ) -> tuple[dict[str, str | None], list[str]]:
     """Update active players with new models from S3."""
-    baseline_names = {"Minimax-2", "Minimax-3", "Minimax-4", "Heuristic"}
     versions = _discover_versions()
     all_version_names = {f"v{v}" for v, _ in versions}
     version_keys = {f"v{v}": key for v, key in versions}
 
-    for name in baseline_names:
+    for name in BASELINE_NAMES:
         if name not in state["active_players"]:
             state["active_players"].append(name)
+        if name not in state["ratings"]:
+            state["ratings"][name] = new_rating()
 
     new_models = []
     for v, key in versions:
         name = f"v{v}"
         if name not in state["active_players"] and name not in state["retired_players"]:
             state["active_players"].append(name)
+            state["ratings"][name] = new_rating()
             new_models.append(name)
             logger.info("New model discovered: {}", name)
 
     # Retire old versions
     model_players = [
         n for n in state["active_players"]
-        if n not in baseline_names and n in all_version_names
+        if n not in BASELINE_NAMES and n in all_version_names
     ]
     if len(model_players) > max_versions:
         model_players.sort(key=lambda n: int(n[1:]))
@@ -194,7 +229,7 @@ def _sync_player_pool(
             logger.info("Retired old model: {}", name)
 
     for name in list(state["active_players"]):
-        if name not in baseline_names and name not in all_version_names:
+        if name not in BASELINE_NAMES and name not in all_version_names:
             state["active_players"].remove(name)
             if name not in state["retired_players"]:
                 state["retired_players"].append(name)
@@ -208,7 +243,7 @@ def _sync_player_pool(
 
 
 # ---------------------------------------------------------------------------
-# Matchmaking
+# Matchmaking (uncertainty-based via OpenSkill sigma)
 # ---------------------------------------------------------------------------
 
 
@@ -221,32 +256,46 @@ def _is_lopsided(result: dict, min_games: int = 30, threshold: float = 0.85) -> 
 
 
 def _select_pair(state: dict) -> tuple[str, str] | None:
+    """Select the pair that would benefit most from another game.
+
+    Uses OpenSkill sigma (uncertainty) of both players plus closeness of
+    ratings to prioritize informative matchups.
+    """
     players = state["active_players"]
     if len(players) < 2:
         raise ValueError("Need at least 2 active players")
 
+    ratings = state["ratings"]
     candidates = []
+
     for i in range(len(players)):
         for j in range(i + 1, len(players)):
             a, b = players[i], players[j]
             key = _pair_key(a, b)
             result = state["pair_results"].get(key)
-            if result is None:
-                games = 0
-            else:
-                games = result["a_wins"] + result["b_wins"] + result["draws"]
-                if _is_lopsided(result):
-                    logger.debug("Skipping lopsided pair: {}", key)
-                    continue
 
-            uncertainty = float("inf") if games == 0 else 1.0 / math.sqrt(games)
-            candidates.append((uncertainty, key))
+            if result is not None and _is_lopsided(result):
+                logger.debug("Skipping lopsided pair: {}", key)
+                continue
+
+            ra = ratings.get(a, new_rating())
+            rb = ratings.get(b, new_rating())
+
+            # Combined uncertainty: higher sigma = more to learn
+            uncertainty = ra["sigma"] + rb["sigma"]
+
+            # Closeness bonus: similar-rated pairs give more information
+            mu_diff = abs(ra["mu"] - rb["mu"])
+            closeness = 1.0 / (1.0 + mu_diff)
+
+            score = uncertainty * (1.0 + closeness)
+            candidates.append((score, key))
 
     if not candidates:
         return None
 
-    max_uncertainty = max(u for u, _ in candidates)
-    top_pairs = [key for u, key in candidates if u == max_uncertainty]
+    max_score = max(s for s, _ in candidates)
+    top_pairs = [key for s, key in candidates if s >= max_score * 0.95]
     chosen = random.choice(top_pairs)
     a, b = chosen.split(":")
     return a, b
@@ -272,8 +321,10 @@ def _assign_colors(state: dict, pair_key: str, a: str, b: str) -> tuple[str, str
 
 
 def _record_result(
-    state: dict, pair_key: str, white_name: str, outcome: str
+    state: dict, pair_key: str, white_name: str, outcome: str,
+    move_count: int,
 ) -> None:
+    """Record game result: update pair counts, OpenSkill ratings, and game log."""
     a, b = pair_key.split(":")
 
     if pair_key not in state["pair_results"]:
@@ -289,39 +340,44 @@ def _record_result(
     else:
         result["b_as_white"] += 1
 
+    # Determine outcome in terms of a/b
     if outcome == "draw":
         result["draws"] += 1
+        os_outcome = "draw"
     elif outcome == "white":
         if white_name == a:
             result["a_wins"] += 1
+            os_outcome = "a_wins"
         else:
             result["b_wins"] += 1
+            os_outcome = "b_wins"
     elif outcome == "black":
         if white_name == a:
             result["b_wins"] += 1
+            os_outcome = "b_wins"
         else:
             result["a_wins"] += 1
+            os_outcome = "a_wins"
 
+    # Update OpenSkill ratings incrementally
+    ra = state["ratings"].get(a, new_rating())
+    rb = state["ratings"].get(b, new_rating())
+    state["ratings"][a], state["ratings"][b] = update_ratings(ra, rb, os_outcome)
 
-def _recompute_elo(state: dict) -> None:
-    active = state["active_players"]
-    if len(active) < 2:
-        return
-
-    results = []
-    for key, r in state["pair_results"].items():
-        a, b = key.split(":")
-        if a in active and b in active:
-            results.append({
-                "a": a, "b": b,
-                "a_wins": r["a_wins"], "b_wins": r["b_wins"], "draws": r["draws"],
-            })
-
-    if not results:
-        return
-
-    state["ratings"] = compute_elo(active, results)
-    state["last_recompute_game"] = state["total_games"]
+    # Append to game log
+    black_name = b if white_name == a else a
+    game_record = {
+        "game": state["total_games"] + 1,
+        "white": white_name,
+        "black": black_name,
+        "outcome": outcome,
+        "moves": move_count,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        storage.append_jsonl(storage.ELO_GAMES_LOG, game_record)
+    except Exception as e:
+        logger.warning("Failed to append game log: {}", e)
 
 
 def _pair_game_count(state: dict, pair_key: str) -> int:
@@ -339,7 +395,6 @@ def _pair_game_count(state: dict, pair_key: str) -> int:
 def run_elo_service(
     simulations: int = 500,
     max_versions: int = 20,
-    recompute_interval: int = 10,
     notify_interval: int = 20,
 ) -> None:
     """Run the continuous Elo rating service."""
@@ -396,8 +451,8 @@ def run_elo_service(
             white_name, w_avg, black_name, b_avg,
         )
 
-        # 6. Record result and timing
-        _record_result(state, pair_key, white_name, outcome)
+        # 6. Record result, update ratings, log game
+        _record_result(state, pair_key, white_name, outcome, result["moves"])
         state["total_games"] += 1
 
         player_stats = state.setdefault("player_stats", {})
@@ -407,19 +462,17 @@ def run_elo_service(
             ps["total_time"] = round(ps["total_time"] + t, 2)
             ps["total_moves"] += m
 
-        # 7. Maybe recompute Elo
-        games_since_recompute = state["total_games"] - state["last_recompute_game"]
-        if games_since_recompute >= recompute_interval:
-            _recompute_elo(state)
-            logger.info("Elo updated (game {}):\n{}", state["total_games"],
+        # 7. Log ratings after every game (no batch recompute needed)
+        if state["total_games"] % 10 == 0:
+            logger.info("Ratings (game {}):\n{}", state["total_games"],
                         format_elo_table(state["ratings"]))
 
-            for model_name in pending_notifications:
-                if model_name in state["ratings"]:
-                    _notify_new_model(state, model_name)
-            pending_notifications = []
+        # 8. Notify for new models and periodic Slack updates
+        for model_name in pending_notifications:
+            if model_name in state["ratings"]:
+                _notify_new_model(state, model_name)
+        pending_notifications = []
 
-        # 8. Maybe notify Slack
         games_since_slack = state["total_games"] - state["last_slack_game"]
         if games_since_slack >= notify_interval:
             _notify_slack(state)

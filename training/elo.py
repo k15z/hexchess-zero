@@ -1,15 +1,46 @@
-"""Shared Elo types, game play, and rating computation."""
+"""Shared rating types, game play, and OpenSkill rating computation."""
 
 from __future__ import annotations
 
-import math
 import time
 from typing import Protocol
+
+from openskill.models import PlackettLuce
 
 try:
     import hexchess
 except ImportError:
     hexchess = None
+
+
+# ---------------------------------------------------------------------------
+# Rating model (module-level singleton)
+# ---------------------------------------------------------------------------
+
+_model = PlackettLuce()
+
+# Conservative rating: mu - Z * sigma
+CONSERVATIVE_Z = 2.0
+
+# Rescale OpenSkill (mu=25, sigma=8.33) to Elo-like numbers for display.
+# Maps default mu=25 -> 1500, with ~400 points per sigma-equivalent.
+ELO_SCALE = 400 / _model.rating().sigma  # ~48
+ELO_OFFSET = 1500 - 25 * ELO_SCALE
+
+
+def to_elo(mu: float) -> int:
+    """Convert OpenSkill mu to Elo-like scale."""
+    return round(mu * ELO_SCALE + ELO_OFFSET)
+
+
+def to_elo_sigma(sigma: float) -> int:
+    """Convert OpenSkill sigma to Elo-like scale."""
+    return round(sigma * ELO_SCALE)
+
+
+def conservative_rating(mu: float, sigma: float) -> int:
+    """Conservative rating estimate: mu - Z*sigma, in Elo scale."""
+    return to_elo(mu - CONSERVATIVE_Z * sigma)
 
 
 # ---------------------------------------------------------------------------
@@ -63,7 +94,7 @@ def play_game(white: Player, black: Player, max_moves: int = 300,
     """Play one game. Returns dict with outcome and per-player timing stats.
 
     If random_opening_plies > 0, plays that many random moves before handing
-    off to the players. Randomizes ±1 ply so both sides get an equal chance
+    off to the players. Randomizes +/-1 ply so both sides get an equal chance
     of making the first non-random move.
     """
     import random
@@ -123,85 +154,118 @@ def play_game(white: Player, black: Player, max_moves: int = 300,
 
 
 # ---------------------------------------------------------------------------
-# Elo computation (maximum likelihood)
+# OpenSkill rating helpers
 # ---------------------------------------------------------------------------
+
+
+def new_rating() -> dict:
+    """Create a fresh rating as a serializable dict."""
+    r = _model.rating()
+    return {"mu": r.mu, "sigma": r.sigma}
+
+
+def update_ratings(
+    a_rating: dict, b_rating: dict, outcome: str,
+) -> tuple[dict, dict]:
+    """Update ratings for a 1v1 result. Returns new (a_rating, b_rating).
+
+    outcome: "a_wins", "b_wins", or "draw"
+    """
+    ra = _model.rating(mu=a_rating["mu"], sigma=a_rating["sigma"])
+    rb = _model.rating(mu=b_rating["mu"], sigma=b_rating["sigma"])
+
+    if outcome == "a_wins":
+        ranks = [1, 2]
+    elif outcome == "b_wins":
+        ranks = [2, 1]
+    else:
+        ranks = [1, 1]
+
+    [[new_a], [new_b]] = _model.rate(teams=[[ra], [rb]], ranks=ranks)
+    return (
+        {"mu": new_a.mu, "sigma": new_a.sigma},
+        {"mu": new_b.mu, "sigma": new_b.sigma},
+    )
+
+
+def replay_results(
+    ratings: dict[str, dict],
+    pair_results: dict[str, dict],
+) -> None:
+    """Replay pairwise results to build ratings. Mutates ratings in place.
+
+    pair_results: {pair_key: {"a_wins": int, "b_wins": int, "draws": int, ...}}
+    where pair_key is "a:b" (sorted names).
+    """
+    for pair_key, result in pair_results.items():
+        a, b = pair_key.split(":")
+        if a not in ratings or b not in ratings:
+            continue
+        for _ in range(result.get("a_wins", 0)):
+            ratings[a], ratings[b] = update_ratings(ratings[a], ratings[b], "a_wins")
+        for _ in range(result.get("b_wins", 0)):
+            ratings[a], ratings[b] = update_ratings(ratings[a], ratings[b], "b_wins")
+        for _ in range(result.get("draws", 0)):
+            ratings[a], ratings[b] = update_ratings(ratings[a], ratings[b], "draw")
 
 
 def compute_elo(
     players: list[str],
     results: list[dict],
     anchor: str = "Minimax-2",
-    anchor_elo: float = 1500.0,
-    iterations: int = 100,
-    prior_games: float = 4.0,
-) -> dict[str, float]:
-    """Compute Elo ratings from pairwise results via iterative MLE.
+) -> dict[str, int]:
+    """Compute ratings from batch pairwise results. Returns {name: conservative_elo}.
 
-    Anchors one player at a fixed rating to set the scale.
-    Uses a Bayesian prior that adds ``prior_games`` virtual draws against
-    a 1500-rated opponent to stabilize estimates with few games.
+    This is a convenience wrapper for scripts that run round-robin tournaments.
+    It replays all results through OpenSkill and returns conservative ratings
+    on the Elo scale.
+
+    results: [{"a": str, "b": str, "a_wins": int, "b_wins": int, "draws": int}, ...]
     """
-    elo = {p: 1500.0 for p in players}
-    if anchor in elo:
-        elo[anchor] = anchor_elo
+    ratings = {p: new_rating() for p in players}
 
-    scores: dict[tuple[str, str], tuple[float, int]] = {}
+    # Convert list-of-dicts to pair_results format (keyed by sorted names)
+    pair_results = {}
     for r in results:
         a, b = r["a"], r["b"]
-        total = r["a_wins"] + r["b_wins"] + r["draws"]
-        if total == 0:
-            continue
-        a_score = r["a_wins"] + r["draws"] * 0.5
-        b_score = r["b_wins"] + r["draws"] * 0.5
-        scores[(a, b)] = (a_score, total)
-        scores[(b, a)] = (b_score, total)
+        key = ":".join(sorted([a, b]))
+        # If sorting swapped the names, swap a_wins/b_wins to match
+        if sorted([a, b]) == [a, b]:
+            pair_results[key] = r
+        else:
+            pair_results[key] = {
+                "a_wins": r["b_wins"], "b_wins": r["a_wins"], "draws": r["draws"],
+            }
 
-    prior_elo = 1500.0
+    replay_results(ratings, pair_results)
 
-    for _ in range(iterations):
-        for p in players:
-            if p == anchor:
-                continue
-            actual_total = 0.0
-            expected_total = 0.0
-            games_total = 0
-
-            for opp in players:
-                if opp == p:
-                    continue
-                key = (p, opp)
-                if key not in scores:
-                    continue
-                actual, n_games = scores[key]
-                expected_score = n_games / (1 + 10 ** ((elo[opp] - elo[p]) / 400))
-                actual_total += actual
-                expected_total += expected_score
-                games_total += n_games
-
-            # Bayesian prior: virtual draws against a 1500-rated opponent
-            actual_total += prior_games * 0.5
-            expected_prior = prior_games / (1 + 10 ** ((prior_elo - elo[p]) / 400))
-            expected_total += expected_prior
-            games_total += prior_games
-
-            if games_total == 0 or expected_total == 0:
-                continue
-            ratio = max(0.1, min(10.0, actual_total / expected_total))
-            elo[p] += 400 * math.log10(ratio) * 0.5  # damped update
-
-    # Re-anchor
-    if anchor in elo:
-        offset = anchor_elo - elo[anchor]
-        for p in elo:
-            elo[p] += offset
-
-    return {p: round(elo[p]) for p in players}
+    return {p: conservative_rating(ratings[p]["mu"], ratings[p]["sigma"]) for p in players}
 
 
-def format_elo_table(ratings: dict[str, int | float]) -> str:
-    """Format Elo ratings as a ranked table string."""
+def format_elo_table(ratings: dict) -> str:
+    """Format ratings as a ranked table string.
+
+    Accepts either:
+      {name: {"mu": float, "sigma": float}}  (OpenSkill, from elo_service)
+      {name: int}                             (scalar, from compute_elo)
+    """
     lines = []
-    sorted_players = sorted(ratings.items(), key=lambda x: x[1], reverse=True)
-    for rank, (name, elo) in enumerate(sorted_players, 1):
-        lines.append(f"  {rank}. {name:<20s} {elo:>+6d}")
+
+    # Detect format
+    sample = next(iter(ratings.values()), None)
+    if isinstance(sample, dict):
+        sorted_players = sorted(
+            ratings.items(),
+            key=lambda x: conservative_rating(x[1]["mu"], x[1]["sigma"]),
+            reverse=True,
+        )
+        for rank, (name, r) in enumerate(sorted_players, 1):
+            elo = conservative_rating(r["mu"], r["sigma"])
+            sigma_elo = to_elo_sigma(r["sigma"])
+            lines.append(f"  {rank}. {name:<20s} {elo:>+6d}  (+/-{sigma_elo})")
+    else:
+        sorted_players = sorted(ratings.items(), key=lambda x: x[1], reverse=True)
+        for rank, (name, elo) in enumerate(sorted_players, 1):
+            lines.append(f"  {rank}. {name:<20s} {elo:>+6d}")
+
     return "\n".join(lines)
