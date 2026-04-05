@@ -66,41 +66,12 @@ def _default_state() -> dict:
     }
 
 
-def _migrate_v1(state: dict) -> dict:
-    """Migrate v1 state (MLE Elo) to v2 (OpenSkill).
-
-    TODO: Remove this once all deployments are on v2 state format.
-
-    Replays pair_results to build OpenSkill ratings from scratch.
-    """
-    logger.info("Migrating v1 state to v2 (OpenSkill)...")
-    new = _default_state()
-    new["active_players"] = state.get("active_players", [])
-    new["retired_players"] = state.get("retired_players", [])
-    new["pair_results"] = state.get("pair_results", {})
-    new["player_stats"] = state.get("player_stats", {})
-    new["total_games"] = state.get("total_games", 0)
-    new["last_slack_game"] = state.get("last_slack_game", 0)
-
-    # Initialize ratings for all known players and replay history
-    all_players = set(new["active_players"]) | set(new["retired_players"])
-    for name in all_players:
-        new["ratings"][name] = new_rating()
-
-    replay_results(new["ratings"], new["pair_results"])
-
-    logger.info("Migration complete: {} players rated", len(new["ratings"]))
-    return new
-
-
 def _load_state() -> dict:
     """Load state from S3, or return default if not found."""
     try:
         state = storage.get_json(storage.ELO_STATE)
         if state.get("version") == 2:
             return state
-        if state.get("version") == 1:
-            return _migrate_v1(state)
         logger.warning("Unknown state version {}, starting fresh", state.get("version"))
     except KeyError as e:
         logger.info("No existing elo state: {}", e)
