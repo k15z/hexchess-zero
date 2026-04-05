@@ -1,5 +1,5 @@
 [project]
-name = "hexchess-zero"
+name = "hexchess-trainer"
 version = "0.1.0"
 description = "AlphaZero-style training pipeline for hexagonal chess"
 requires-python = ">=3.11,<3.14"
