@@ -203,7 +203,7 @@ export const HexBoard = memo(function HexBoard({
                 key={`piece-${key}`}
                 x={x}
                 y={y + yOffset}
-                className={`piece-symbol piece-${p.color}`}
+                className={`hex-board-cell-piece hex-board-piece-${p.color}`}
               >
                 {symbol}
               </text>
@@ -296,8 +296,36 @@ const KING_HIGHLIGHTS: CellHighlight[] = highlight([
   [2,-1],[-2,1],[1,1],[-1,-1],[1,-2],[-1,2],
 ], HIGHLIGHT_YELLOW);
 
-const CENTER_PIECE = (piece: BoardPiece["piece"]): BoardPiece[] =>
-  [{ q: 0, r: 0, piece, color: "white" }];
+// Hoisted piece/arrow arrays so preset components pass stable references to memo'd HexBoard
+
+const CENTER_ROOK: BoardPiece[] = [{ q: 0, r: 0, piece: "rook", color: "white" }];
+const CENTER_BISHOP: BoardPiece[] = [{ q: 0, r: 0, piece: "bishop", color: "white" }];
+const CENTER_KNIGHT: BoardPiece[] = [{ q: 0, r: 0, piece: "knight", color: "white" }];
+const CENTER_KING: BoardPiece[] = [{ q: 0, r: 0, piece: "king", color: "white" }];
+const CENTER_PAWN: BoardPiece[] = [{ q: 0, r: 0, piece: "pawn", color: "white" }];
+const CENTER_QUEEN: BoardPiece[] = [{ q: 0, r: 0, piece: "queen", color: "white" }];
+
+const PAWN_ARROWS: Arrow[] = [
+  { from: [0, 0], to: [0, 1], color: ARROW_GREEN },
+  { from: [0, 0], to: [0, 2], color: ARROW_GREEN },
+  { from: [0, 0], to: [-1, 1], color: ARROW_RED },
+  { from: [0, 0], to: [1, 0], color: ARROW_RED },
+];
+
+const DIRECTION_ARROWS: Arrow[] = [
+  { from: [0, 0], to: [2, 0], color: ARROW_RED },
+  { from: [0, 0], to: [-2, 0], color: ARROW_RED },
+  { from: [0, 0], to: [0, 2], color: ARROW_RED },
+  { from: [0, 0], to: [0, -2], color: ARROW_RED },
+  { from: [0, 0], to: [2, -2], color: ARROW_RED },
+  { from: [0, 0], to: [-2, 2], color: ARROW_RED },
+  { from: [0, 0], to: [3, -1], color: ARROW_GREEN },
+  { from: [0, 0], to: [-3, 1], color: ARROW_GREEN },
+  { from: [0, 0], to: [2, 2], color: ARROW_GREEN },
+  { from: [0, 0], to: [-2, -2], color: ARROW_GREEN },
+  { from: [0, 0], to: [2, -4], color: ARROW_GREEN },
+  { from: [0, 0], to: [-2, 4], color: ARROW_GREEN },
+];
 
 // ---------------------------------------------------------------------------
 // Preset components
@@ -336,7 +364,7 @@ export function CoordinateBoard() {
 export function RookMovement() {
   return (
     <HexBoard
-      pieces={CENTER_PIECE("rook")}
+      pieces={CENTER_ROOK}
       highlights={ROOK_HIGHLIGHTS}
       size="md"
       caption="Rook movement: 6 cardinal directions through cell edges"
@@ -347,7 +375,7 @@ export function RookMovement() {
 export function BishopMovement() {
   return (
     <HexBoard
-      pieces={CENTER_PIECE("bishop")}
+      pieces={CENTER_BISHOP}
       highlights={BISHOP_HIGHLIGHTS}
       size="md"
       caption="Bishop movement: 6 diagonal directions through cell vertices. Bishops stay on one cell color."
@@ -358,7 +386,7 @@ export function BishopMovement() {
 export function KnightMovement() {
   return (
     <HexBoard
-      pieces={CENTER_PIECE("knight")}
+      pieces={CENTER_KNIGHT}
       highlights={KNIGHT_HIGHLIGHTS}
       size="md"
       caption="Knight movement: 12 possible jump destinations from center (vs 8 in standard chess)"
@@ -369,7 +397,7 @@ export function KnightMovement() {
 export function KingMovement() {
   return (
     <HexBoard
-      pieces={CENTER_PIECE("king")}
+      pieces={CENTER_KING}
       highlights={KING_HIGHLIGHTS}
       size="sm"
       caption="King movement: one step in any of 12 directions"
@@ -380,13 +408,8 @@ export function KingMovement() {
 export function PawnMovement() {
   return (
     <HexBoard
-      pieces={CENTER_PIECE("pawn")}
-      arrows={[
-        { from: [0, 0], to: [0, 1], color: ARROW_GREEN },
-        { from: [0, 0], to: [0, 2], color: ARROW_GREEN },
-        { from: [0, 0], to: [-1, 1], color: ARROW_RED },
-        { from: [0, 0], to: [1, 0], color: ARROW_RED },
-      ]}
+      pieces={CENTER_PAWN}
+      arrows={PAWN_ARROWS}
       size="sm"
       caption="White pawn: advances in +r (green), captures diagonally (red). Double advance from starting position only."
     />
@@ -396,21 +419,8 @@ export function PawnMovement() {
 export function DirectionSystem() {
   return (
     <HexBoard
-      pieces={CENTER_PIECE("queen")}
-      arrows={[
-        { from: [0, 0], to: [2, 0], color: ARROW_RED },
-        { from: [0, 0], to: [-2, 0], color: ARROW_RED },
-        { from: [0, 0], to: [0, 2], color: ARROW_RED },
-        { from: [0, 0], to: [0, -2], color: ARROW_RED },
-        { from: [0, 0], to: [2, -2], color: ARROW_RED },
-        { from: [0, 0], to: [-2, 2], color: ARROW_RED },
-        { from: [0, 0], to: [3, -1], color: ARROW_GREEN },
-        { from: [0, 0], to: [-3, 1], color: ARROW_GREEN },
-        { from: [0, 0], to: [2, 2], color: ARROW_GREEN },
-        { from: [0, 0], to: [-2, -2], color: ARROW_GREEN },
-        { from: [0, 0], to: [2, -4], color: ARROW_GREEN },
-        { from: [0, 0], to: [-2, 4], color: ARROW_GREEN },
-      ]}
+      pieces={CENTER_QUEEN}
+      arrows={DIRECTION_ARROWS}
       size="md"
       caption="Red = 6 cardinal directions (rook), Green = 6 diagonal directions (bishop). The queen uses all 12."
     />
