@@ -13,27 +13,15 @@
 ## Training pipeline
 
 - **Surprise weighting for replay buffer sampling** — KataGo and Lc0 both upweight positions where the net's raw evaluation disagrees with the MCTS search result (policy KL divergence, value squared error). The intuition: these are positions where the net has the most to learn. KataGo stores per-position `targetWeight` in `.npz` files during self-play (`policySurpriseDataWeight`, `valueSurpriseDataWeight`). Lc0 calls it "diff-focus" (`diff_focus_q_weight`, `diff_focus_pol_scale`). Implementation: compute surprise weights in the worker (raw net output vs MCTS result), store as `sample_weights` in `.npz`, use in `ReplayBuffer` sampling.
-- **Training rate limiting** — KataGo-style credit system: each new position earns N training credits, each step consumes `batch_size` credits. When credits hit 0, the trainer sleeps until workers produce more data. Prevents overfitting when worker throughput is low. Recount positions on buffer reload (every `reload_interval` steps). Exempt bootstrap mode.
-- Scale up network size (more residual blocks / filters) once baseline model quality stabilizes
-
-## Web UI
-
-- Bundle a trained ONNX model (via tract) so the browser opponent uses the NN instead of random rollouts
 
 ## Packaging / distribution
 
 - npm package for WASM bindings
 - PyPI package for Python bindings
 
-## CI
-
-- GitHub Actions: Rust tests + clippy, Python bindings build + test, WASM build
-- Training pipeline tests (pytest) and linting (ruff)
-
 ## Testing
 
 - Property-based tests (fuzz movegen, verify apply/undo round-trips)
-- Perft test suite — no published perft tables exist for Glinski, so cross-validate against `scottbedard/hexchess` at shallow depths and encode confirmed-correct behavior into regression tests
 
 ## Evaluator API cleanup
 
