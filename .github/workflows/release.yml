@@ -88,6 +88,10 @@ jobs:
           working-directory: bindings/python
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux }}
+          # ort-sys build script pulls in openssl-sys via ureq's default native-tls
+          # feature; install OpenSSL dev headers in the manylinux container so the
+          # build script can find them.
+          before-script-linux: dnf install -y openssl-devel perl-IPC-Cmd
           args: --release --out dist
           sccache: 'true'
       - uses: actions/upload-artifact@v4
