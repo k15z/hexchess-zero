@@ -1,5 +1,5 @@
 ---
-title: Research overview
+title: Overview
 description: AlphaZero-style reinforcement learning for hexagonal chess
 ---
 
@@ -31,8 +31,8 @@ The training pipeline has three asynchronous components:
 | Component | Role | Where it runs |
 |-----------|------|---------------|
 | [MCTS search](/docs/research/mcts) | Position evaluation during self-play | Workers (CPU) |
-| [Neural network](/docs/research/model) | Policy and value prediction | Trainer (GPU) |
-| [Training loop](/docs/research/training) | Data generation, training, model promotion | Distributed (S3-coordinated) |
+| [Model](/docs/research/model) | Policy and value prediction | Trainer (GPU) |
+| [Training](/docs/research/training) | Data generation, training, model promotion | Distributed (S3-coordinated) |
 | [Deployment](/docs/research/deployment) | Kubernetes orchestration, scaling | k3s cluster |
 
 All shared state lives in **S3** (DigitalOcean Spaces / Cloudflare R2). Workers can run anywhere — local machines, cloud VMs, Docker containers — and coordinate purely through S3 polling.

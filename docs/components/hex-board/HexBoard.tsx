@@ -9,6 +9,7 @@ import {
   PIECE_SYMBOLS,
   type CellData,
 } from "../playground/hex-geometry";
+import { toNotation } from "./notation";
 import "./hex-board.css";
 
 // ---------------------------------------------------------------------------
@@ -38,7 +39,7 @@ export interface HexBoardProps {
   pieces?: BoardPiece[];
   highlights?: CellHighlight[];
   arrows?: Arrow[];
-  showCoordinates?: boolean;
+  labels?: "axial" | "notation";
   size?: "sm" | "md" | "lg";
   caption?: string;
 }
@@ -63,6 +64,14 @@ const ARROW_GREEN = "#2ecc71";
 
 const CELL_MAP = new Map<string, CellData>();
 for (const c of CELL_DATA) CELL_MAP.set(c.key, c);
+
+// Precomputed cell labels (built once at module load — CELL_DATA is static).
+const AXIAL_LABELS = new Map<string, string>();
+const NOTATION_LABELS = new Map<string, string>();
+for (const c of CELL_DATA) {
+  AXIAL_LABELS.set(c.key, `${c.q},${c.r}`);
+  NOTATION_LABELS.set(c.key, toNotation(c.q, c.r));
+}
 
 function highlight(cells: [number, number][], color: string): CellHighlight[] {
   return cells.map(([q, r]) => ({ q, r, color }));
@@ -124,7 +133,7 @@ export const HexBoard = memo(function HexBoard({
   pieces = [],
   highlights = [],
   arrows = [],
-  showCoordinates = false,
+  labels,
   size = "md",
   caption,
 }: HexBoardProps) {
@@ -171,11 +180,12 @@ export const HexBoard = memo(function HexBoard({
           })}
         </g>
 
-        {/* Coordinate labels */}
-        {showCoordinates && (
+        {/* Cell labels */}
+        {labels && (
           <g>
-            {CELL_DATA.map(({ q, r, x, y, key }) => {
+            {CELL_DATA.map(({ x, y, key }) => {
               const hasPiece = pieceMap.has(key);
+              const label = (labels === "notation" ? NOTATION_LABELS : AXIAL_LABELS).get(key);
               return (
                 <text
                   key={`coord-${key}`}
@@ -183,7 +193,7 @@ export const HexBoard = memo(function HexBoard({
                   y={hasPiece ? y + HEX_SIZE * 0.52 : y + 1}
                   className="hex-board-coord"
                 >
-                  {q},{r}
+                  {label}
                 </text>
               );
             })}
@@ -197,7 +207,7 @@ export const HexBoard = memo(function HexBoard({
             if (!p) return null;
             const symbol = PIECE_SYMBOLS[p.color]?.[p.piece];
             if (!symbol) return null;
-            const yOffset = showCoordinates ? -HEX_SIZE * 0.15 : 1;
+            const yOffset = labels ? -HEX_SIZE * 0.15 : 1;
             return (
               <text
                 key={`piece-${key}`}
@@ -354,9 +364,19 @@ export function PromotionZones() {
 export function CoordinateBoard() {
   return (
     <HexBoard
-      showCoordinates
+      labels="axial"
       size="lg"
       caption="The 91-cell hex board with axial coordinates (q, r). The center cell is (0, 0)."
+    />
+  );
+}
+
+export function NotationBoard() {
+  return (
+    <HexBoard
+      labels="notation"
+      size="lg"
+      caption="The 91-cell hex board labeled with Glinski notation. Files a–l (skipping j), ranks 1–11. The center cell is f6; white's king starts on g1."
     />
   );
 }

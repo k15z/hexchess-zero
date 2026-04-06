@@ -1,9 +1,11 @@
 ---
-title: Training pipeline
+title: Training
 description: Distributed self-play training with S3 coordination
 ---
 
 The training pipeline lives in `training/` and implements an asynchronous, distributed AlphaZero loop. All shared state lives in S3 — workers and the trainer coordinate through file polling, with no direct communication.
+
+You'd run this pipeline if you want to train a stronger network from scratch (or resume training an existing one). The end product is an ONNX model file that the engine can load via the [Python](/docs/usage/python) or [TypeScript](/docs/usage/typescript) bindings. To run it locally end-to-end, see [Deployment](/docs/research/deployment) — `make docker-up` is the shortest path.
 
 ## Overview
 

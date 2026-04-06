@@ -3,6 +3,7 @@ export {
   StartingPosition,
   PromotionZones,
   CoordinateBoard,
+  NotationBoard,
   RookMovement,
   BishopMovement,
   KnightMovement,

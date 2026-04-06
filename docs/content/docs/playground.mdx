@@ -5,7 +5,7 @@ description: Play hexagonal chess in your browser against the AI
 
 import { Playground } from "@/components/playground"
 
-Play hexagonal chess right here. Click a piece to select it, then click a highlighted cell to move. The AI (heuristic MCTS, 500 simulations) responds automatically.
+Play hexagonal chess right here. Click a piece to select it, then click a highlighted cell to move. The AI responds automatically using [MCTS](/docs/research/mcts) at 500 simulations per move with a hand-coded material heuristic — the in-browser build doesn't ship the trained network.
 
 <Playground />
 

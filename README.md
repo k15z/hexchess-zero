@@ -1,4 +1,4 @@
-# Hexchess
+# Hexchess Zero
 
 Hexagonal chess engine (Glinski variant) in Rust with AlphaZero-style self-play training.
 
