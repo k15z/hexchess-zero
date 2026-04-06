@@ -36,7 +36,18 @@ All positions use **axial coordinates** `(q, r)`. A cell is valid when `max(|q|,
 
 For tensor encoding, hex cells map into an 11x11 grid via `col = q + 5, row = r + 5`. Invalid cells are zero-padded.
 
-## Quick start
+## Install
+
+Prebuilt packages are published under the name **`hexchess-zero`**:
+
+```bash
+pip install hexchess-zero       # Python — imports as `hexchess`
+npm install hexchess-zero       # JavaScript / WASM
+```
+
+Python wheels cover Linux, macOS, and Windows on Python 3.9–3.13. The npm package bundles the WASM binary and JS loader, so no separate build step is needed. See [Python](/docs/usage/python) or [JavaScript/WASM](/docs/usage/javascript) for API usage.
+
+## Developing locally
 
 ```bash
 # Run engine tests
@@ -45,7 +56,7 @@ make test
 # Documentation site with interactive playground
 make docs-dev
 
-# Set up Python bindings for training
+# Build Python bindings from source (for training / engine work)
 make setup
 ```
 

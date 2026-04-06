@@ -5,10 +5,12 @@ description: Using the hexchess engine via JavaScript or Python bindings
 
 The engine is written in Rust, but you don't need to know Rust to use it. Two sets of bindings expose the engine to higher-level languages:
 
-| Binding | Package | Inference | Use case |
-|---------|---------|-----------|----------|
-| **JavaScript/WASM** | `hexchess-wasm` | Tract (pure Rust) | Browser apps, play against AI |
-| **Python** | `hexchess` | ONNX Runtime | Training, analysis, research |
+| Binding | Package | Install | Inference | Use case |
+|---------|---------|---------|-----------|----------|
+| **JavaScript/WASM** | [`hexchess-zero`](https://www.npmjs.com/package/hexchess-zero) (npm) | `npm install hexchess-zero` | Tract (pure Rust) | Browser apps, play against AI |
+| **Python** | [`hexchess-zero`](https://pypi.org/project/hexchess-zero/) (PyPI) | `pip install hexchess-zero` | ONNX Runtime | Training, analysis, research |
+
+Prebuilt wheels are published for Linux, macOS, and Windows (Python 3.9–3.13); the npm package ships the WASM binary and JS loader. The PyPI distribution is named `hexchess-zero` but imports as `hexchess`.
 
 Both bindings expose the same core concepts:
 

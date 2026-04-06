@@ -5,21 +5,36 @@ description: Using the hexchess engine in the browser via WebAssembly
 
 The WASM bindings let you run the full hexchess engine in the browser — including AI move search with a neural network model.
 
-## Setup
+## Installation
 
-Build the WASM package:
+Install the prebuilt package from npm:
+
+```bash
+npm install hexchess-zero
+# or
+pnpm add hexchess-zero
+yarn add hexchess-zero
+```
+
+The package ships the compiled WASM binary alongside the JS loader. Import it and initialize before use:
+
+```js
+import init, { Game, AiPlayer } from "hexchess-zero";
+
+await init(); // initialize WASM module
+```
+
+Works in any modern browser, and in bundlers (Vite, webpack, Next.js) that support WebAssembly imports. For Node.js, use `import init from "hexchess-zero"` with a Node-compatible target.
+
+### Building from source
+
+If you want to hack on the engine, build the WASM package locally from the repo:
 
 ```bash
 wasm-pack build --target web bindings/wasm
 ```
 
-This produces a `bindings/wasm/pkg/` directory you can import from your web app.
-
-```js
-import init, { Game, AiPlayer } from "hexchess-wasm";
-
-await init(); // initialize WASM module
-```
+This produces a `bindings/wasm/pkg/` directory you can import directly.
 
 ## Game class
 
@@ -112,7 +127,7 @@ const move = ai.bestMoveWithTemperature(game, 0.3);
 ## Full example
 
 ```js
-import init, { Game, AiPlayer } from "hexchess-wasm";
+import init, { Game, AiPlayer } from "hexchess-zero";
 
 await init();
 

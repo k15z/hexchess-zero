@@ -2,6 +2,17 @@
 
 Hexagonal chess engine (Glinski variant) in Rust with AlphaZero-style self-play training.
 
+## Install
+
+Prebuilt packages are published to PyPI and npm under the name **`hexchess-zero`**:
+
+```bash
+pip install hexchess-zero       # Python (imports as `hexchess`)
+npm install hexchess-zero       # JavaScript / WASM
+```
+
+Python wheels are available for Linux, macOS, and Windows (3.9–3.13); the npm package bundles the WASM binary. See [`docs/content/docs/usage/`](docs/content/docs/usage/) for API documentation, or the published docs site for interactive examples.
+
 ## Structure
 
 - **`engine/`** — Rust engine: board representation (91-cell hex grid, axial coordinates), move generation, MCTS search, and neural network inference
