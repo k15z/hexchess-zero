@@ -215,15 +215,50 @@ def _is_lopsided(result: dict, min_games: int = 30, threshold: float = 0.85) -> 
     return winner_wins / games >= threshold
 
 
+def _sentinel_pair(state: dict) -> tuple[str, str] | None:
+    """Return (latest_model, latest_model - SENTINEL_LOOKBACK) if both are active.
+
+    Used to force a recurring head-to-head matchup that tracks the strength
+    delta between the current model and a fixed-distance ancestor. This is
+    the only metric that meaningfully answers "is the model still improving?"
+    in self-play RL — training loss is unreliable when target distributions
+    shift, and Elo MLE over many sparse pairings is too noisy.
+    """
+    versions = sorted(
+        int(n[1:]) for n in state["active_players"]
+        if n.startswith("v") and n[1:].isdigit()
+    )
+    if len(versions) < SENTINEL_LOOKBACK + 1:
+        return None
+    latest = versions[-1]
+    ancestor = latest - SENTINEL_LOOKBACK
+    a, b = f"v{latest}", f"v{ancestor}"
+    if a in state["active_players"] and b in state["active_players"]:
+        return a, b
+    return None
+
+
 def _select_pair(state: dict, exclude: set[str] | None = None) -> tuple[str, str] | None:
     """Select the pair that would benefit most from another game.
 
-    Uses OpenSkill sigma (uncertainty) of both players plus closeness of
-    ratings to prioritize informative matchups.
+    With probability SENTINEL_PROBABILITY, returns the sentinel pair
+    (latest model vs latest - SENTINEL_LOOKBACK) instead — this guarantees
+    fresh data on the strength-delta matchup we care most about, regardless
+    of how the OpenSkill uncertainty heuristic ranks it.
+
+    Otherwise uses OpenSkill sigma (uncertainty) of both players plus
+    closeness of ratings to prioritize informative matchups.
     """
     players = state["active_players"]
     if len(players) < 2:
         raise ValueError("Need at least 2 active players")
+
+    if random.random() < SENTINEL_PROBABILITY:
+        sp = _sentinel_pair(state)
+        if sp is not None:
+            sp_key = _pair_key(*sp)
+            if not exclude or sp_key not in exclude:
+                return sp
 
     ratings = state["ratings"]
     candidates = []
@@ -392,10 +427,16 @@ SYNC_INTERVAL_SECONDS = 300
 # so state only needs to be consistent on restart.
 SAVE_EVERY_N_GAMES = 5
 
+# Sentinel matchmaking: fraction of dispatches forced to (latest, latest-K)
+# instead of uncertainty-driven selection. Gives a real strength-delta signal
+# even when many model versions are active and pair_results are sparse.
+SENTINEL_LOOKBACK = 4
+SENTINEL_PROBABILITY = 0.33
+
 
 def run_elo_service(
     simulations: int = 500,
-    max_versions: int = 20,
+    max_versions: int = 5,
     notify_interval: int = 20,
     num_workers: int = 2,
 ) -> None:
