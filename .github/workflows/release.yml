@@ -1,0 +1,184 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump'
+        type: choice
+        required: true
+        options: [patch, minor, major]
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      tag: ${{ steps.bump.outputs.tag }}
+      sha: ${{ steps.bump.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-edit
+        run: cargo install cargo-edit --locked
+      - name: Run tests
+        run: cargo test --workspace
+      - name: Lint
+        run: cargo clippy --workspace -- -D warnings && cargo fmt --all -- --check
+      - name: Compute next version and tag
+        id: bump
+        run: |
+          set -euo pipefail
+          # Find the most recent release tag; default to 0.0.0 if none exist.
+          LATEST=$(git tag --list 'v*' --sort=-v:refname | head -n1 || true)
+          if [ -z "$LATEST" ]; then
+            CURRENT="0.0.0"
+          else
+            CURRENT="${LATEST#v}"
+          fi
+          echo "Current released version: $CURRENT"
+
+          # Bump Cargo.toml in-place on this detached workspace (not committed to main).
+          cargo set-version --workspace "$CURRENT"
+          cargo set-version --workspace --bump "${{ inputs.bump }}"
+          NEW=$(cargo pkgid -p hexchess-engine | sed -E 's/.*[#@]([0-9]+\.[0-9]+\.[0-9]+)$/\1/')
+          echo "New version: $NEW"
+
+          cargo update -w
+
+          # Create a detached tag commit; do NOT push to main.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Release v$NEW"
+          git tag -a "v$NEW" -m "v$NEW"
+          git push origin "v$NEW"
+
+          echo "version=$NEW" >> "$GITHUB_OUTPUT"
+          echo "tag=v$NEW" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  build-wheels:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64
+          - os: macos-latest
+            target: universal2-apple-darwin
+          - os: windows-latest
+            target: x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: bindings/python
+          target: ${{ matrix.target }}
+          args: --release --out dist --zig
+          sccache: 'true'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}-${{ matrix.target }}
+          path: bindings/python/dist
+
+  build-sdist:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: bindings/python
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: bindings/python/dist
+
+  build-wasm:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      - name: Build wasm package
+        run: wasm-pack build bindings/wasm --target web --release
+      - name: Rename npm package to hexchess-zero
+        run: |
+          cd bindings/wasm/pkg
+          node -e "const f='package.json';const p=require('./'+f);p.name='hexchess-zero';require('fs').writeFileSync(f,JSON.stringify(p,null,2))"
+          cat package.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wasm-pkg
+          path: bindings/wasm/pkg
+
+  publish-pypi:
+    needs: [validate, build-wheels, build-sdist]
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: 'wheels-*'
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  publish-npm:
+    needs: [validate, build-wasm]
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: wasm-pkg
+          path: pkg
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Publish to npm
+        working-directory: pkg
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  github-release:
+    needs: [validate, publish-pypi, publish-npm]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ needs.validate.outputs.tag }}" --generate-notes --target "${{ needs.validate.outputs.sha }}"

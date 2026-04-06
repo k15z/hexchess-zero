@@ -55,6 +55,7 @@ impl PyEvalWeights {
         king_safety=0, bishop_color_bonus=30, pawn_connected=7, pawn_isolated=-10,
         passed_pawn=3, king_tropism=2
     ))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         material: i32,
         mobility: i32,
