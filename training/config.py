@@ -33,7 +33,7 @@ class _BaseConfig:
     learning_rate: float = 0.001
     momentum: float = 0.9
     l2_regularization: float = 1e-4
-    replay_buffer_size: int = 5_000_000
+    replay_buffer_size: int = 1_000_000
 
     # --- Network architecture ---
     num_residual_blocks: int = 10
