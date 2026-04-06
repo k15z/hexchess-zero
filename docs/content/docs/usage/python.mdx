@@ -7,16 +7,30 @@ The Python bindings give you full access to the engine, MCTS search, board encod
 
 ## Installation
 
-```bash
-# Install dependencies and build bindings
-make setup
+Install the prebuilt package from PyPI:
 
-# Or manually:
+```bash
+pip install hexchess-zero
+# or
+uv add hexchess-zero
+```
+
+Wheels are available for Linux, macOS, and Windows on Python 3.9–3.13. The distribution is named `hexchess-zero` but imports as `hexchess`:
+
+```python
+import hexchess
+```
+
+### Building from source
+
+If you want to hack on the engine itself, clone the repo and build the bindings locally:
+
+```bash
+make setup
+# or manually:
 uv sync --group dev
 uv run maturin develop --release -m bindings/python/Cargo.toml
 ```
-
-This compiles the Rust engine with ONNX Runtime support and installs the `hexchess` Python module.
 
 ## Game class
 
