@@ -83,8 +83,17 @@ impl HexCoord {
         }
         let file_char = bytes[0] as char;
         let q: i8 = match file_char {
-            'a' => -5, 'b' => -4, 'c' => -3, 'd' => -2, 'e' => -1,
-            'f' => 0, 'g' => 1, 'h' => 2, 'i' => 3, 'k' => 4, 'l' => 5,
+            'a' => -5,
+            'b' => -4,
+            'c' => -3,
+            'd' => -2,
+            'e' => -1,
+            'f' => 0,
+            'g' => 1,
+            'h' => 2,
+            'i' => 3,
+            'k' => 4,
+            'l' => 5,
             _ => return None,
         };
         let rank: i16 = std::str::from_utf8(&bytes[1..]).ok()?.parse().ok()?;
@@ -785,8 +794,17 @@ mod tests {
     fn test_notation_file_counts() {
         // Each file should have the expected number of cells.
         let expected = [
-            ('a', 6), ('b', 7), ('c', 8), ('d', 9), ('e', 10),
-            ('f', 11), ('g', 10), ('h', 9), ('i', 8), ('k', 7), ('l', 6),
+            ('a', 6),
+            ('b', 7),
+            ('c', 8),
+            ('d', 9),
+            ('e', 10),
+            ('f', 11),
+            ('g', 10),
+            ('h', 9),
+            ('i', 8),
+            ('k', 7),
+            ('l', 6),
         ];
         for (file, count) in expected {
             let n = all_coords()
