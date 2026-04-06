@@ -24,8 +24,9 @@ jobs:
       version: ${{ steps.bump.outputs.version }}
       tag: ${{ steps.bump.outputs.tag }}
       sha: ${{ steps.bump.outputs.sha }}
+      staging_ref: ${{ steps.bump.outputs.staging_ref }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
@@ -36,11 +37,10 @@ jobs:
         run: cargo test --workspace
       - name: Lint
         run: cargo clippy --workspace -- -D warnings && cargo fmt --all -- --check
-      - name: Compute next version and tag
+      - name: Compute next version and stage release commit
         id: bump
         run: |
           set -euo pipefail
-          # Find the most recent release tag; default to 0.0.0 if none exist.
           LATEST=$(git tag --list 'v*' --sort=-v:refname | head -n1 || true)
           if [ -z "$LATEST" ]; then
             CURRENT="0.0.0"
@@ -49,7 +49,7 @@ jobs:
           fi
           echo "Current released version: $CURRENT"
 
-          # Bump Cargo.toml in-place on this detached workspace (not committed to main).
+          # Bump Cargo.toml in-place on the runner (never committed to main).
           cargo set-version --workspace "$CURRENT"
           cargo set-version --workspace --bump "${{ inputs.bump }}"
           NEW=$(cargo pkgid -p hexchess-engine | sed -E 's/.*[#@]([0-9]+\.[0-9]+\.[0-9]+)$/\1/')
@@ -57,17 +57,20 @@ jobs:
 
           cargo update -w
 
-          # Create a detached tag commit; do NOT push to main.
+          # Stage the bump on a temporary branch. The tag is only created after
+          # publish succeeds, so failed releases don't burn version numbers.
+          STAGING="release-staging/v$NEW"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$STAGING"
           git add -A
           git commit -m "Release v$NEW"
-          git tag -a "v$NEW" -m "v$NEW"
-          git push origin "v$NEW"
+          git push -f origin "$STAGING"
 
           echo "version=$NEW" >> "$GITHUB_OUTPUT"
           echo "tag=v$NEW" >> "$GITHUB_OUTPUT"
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "staging_ref=$STAGING" >> "$GITHUB_OUTPUT"
 
   build-wheels:
     needs: validate
@@ -78,20 +81,24 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             manylinux: '2_28'
+            before-script-linux: 'dnf install -y openssl-devel perl-IPC-Cmd'
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
-          ref: ${{ needs.validate.outputs.tag }}
+          ref: ${{ needs.validate.outputs.staging_ref }}
       - uses: PyO3/maturin-action@v1
         with:
           working-directory: bindings/python
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux }}
-          # ort-sys build script pulls in openssl-sys via ureq's default native-tls
-          # feature; install OpenSSL dev headers in the manylinux container so the
-          # build script can find them.
-          before-script-linux: dnf install -y openssl-devel perl-IPC-Cmd
+          before-script-linux: ${{ matrix.before-script-linux }}
           args: --release --out dist
           sccache: 'true'
       - uses: actions/upload-artifact@v4
@@ -103,9 +110,9 @@ jobs:
     needs: validate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
-          ref: ${{ needs.validate.outputs.tag }}
+          ref: ${{ needs.validate.outputs.staging_ref }}
       - uses: PyO3/maturin-action@v1
         with:
           working-directory: bindings/python
@@ -120,9 +127,9 @@ jobs:
     needs: validate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
-          ref: ${{ needs.validate.outputs.tag }}
+          ref: ${{ needs.validate.outputs.staging_ref }}
       - uses: dtolnay/rust-toolchain@stable
       - name: Install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
@@ -173,14 +180,34 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-  github-release:
+  finalize:
     needs: [validate, publish-pypi, publish-npm]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Create GitHub release
+      - name: Create tag and GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ needs.validate.outputs.tag }}" --generate-notes --target "${{ needs.validate.outputs.sha }}"
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.validate.outputs.tag }}
+          SHA: ${{ needs.validate.outputs.sha }}
+          STAGING: ${{ needs.validate.outputs.staging_ref }}
+        run: |
+          set -euo pipefail
+          # Create the annotated tag via the GitHub API, pointing at the staged
+          # commit. This runs only after PyPI and npm publish have succeeded.
+          gh api "repos/$REPO/git/refs" -f ref="refs/tags/$TAG" -f sha="$SHA"
+          gh release create "$TAG" --generate-notes --target "$SHA"
+          # Clean up the staging branch.
+          gh api -X DELETE "repos/$REPO/git/refs/heads/$STAGING" || true
+
+  cleanup-on-failure:
+    needs: [validate, build-wheels, build-sdist, build-wasm, publish-pypi, publish-npm, finalize]
+    if: failure() && needs.validate.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete staging branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          STAGING: ${{ needs.validate.outputs.staging_ref }}
+        run: gh api -X DELETE "repos/$REPO/git/refs/heads/$STAGING" || true
