@@ -76,11 +76,8 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            target: x86_64
-          - os: macos-latest
-            target: universal2-apple-darwin
-          - os: windows-latest
-            target: x64
+            target: x86_64-unknown-linux-gnu
+            manylinux: '2_28'
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -90,7 +87,8 @@ jobs:
         with:
           working-directory: bindings/python
           target: ${{ matrix.target }}
-          args: --release --out dist --zig
+          manylinux: ${{ matrix.manylinux }}
+          args: --release --out dist
           sccache: 'true'
       - uses: actions/upload-artifact@v4
         with:
