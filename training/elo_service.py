@@ -1,22 +1,13 @@
-"""Continuous Elo rating service with uncertainty-based matchmaking.
-
-Each iteration:
-1. Polls for new model versions (models/versions/*.onnx in S3)
-2. Picks the pair with highest uncertainty (largest sigma sum)
-3. Plays one game, updates ratings incrementally (OpenSkill)
-4. Logs every game to an append-only record
-5. Periodically notifies Slack
-
-Usage:
-    python -m training elo-service
-"""
+"""Continuous Elo rating service with uncertainty-based matchmaking."""
 
 from __future__ import annotations
 
 import random
 import time
 from collections import OrderedDict
+from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from datetime import datetime, timezone
+from pathlib import Path
 
 from loguru import logger
 
@@ -89,7 +80,7 @@ def _save_state(state: dict) -> None:
 class PlayerCache:
     """LRU cache for Player objects. Evicts least-recently-used when full."""
 
-    def __init__(self, simulations: int, cache_dir, max_size: int = 10):
+    def __init__(self, simulations: int, cache_dir, max_size: int = 6):
         self.simulations = simulations
         self.cache_dir = cache_dir
         self.max_size = max(max_size, 4)
@@ -224,7 +215,7 @@ def _is_lopsided(result: dict, min_games: int = 30, threshold: float = 0.85) -> 
     return winner_wins / games >= threshold
 
 
-def _select_pair(state: dict) -> tuple[str, str] | None:
+def _select_pair(state: dict, exclude: set[str] | None = None) -> tuple[str, str] | None:
     """Select the pair that would benefit most from another game.
 
     Uses OpenSkill sigma (uncertainty) of both players plus closeness of
@@ -242,6 +233,9 @@ def _select_pair(state: dict) -> tuple[str, str] | None:
             a, b = players[i], players[j]
             key = _pair_key(a, b)
             result = state["pair_results"].get(key)
+
+            if exclude and key in exclude:
+                continue
 
             if result is not None and _is_lopsided(result):
                 logger.debug("Skipping lopsided pair: {}", key)
@@ -357,97 +351,192 @@ def _pair_game_count(state: dict, pair_key: str) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Worker process: plays games in a subprocess with its own PlayerCache
+# ---------------------------------------------------------------------------
+
+
+_worker_cache: PlayerCache | None = None
+
+
+def _worker_init(simulations: int, cache_dir_str: str, cache_size: int) -> None:
+    """Initializer for ProcessPoolExecutor workers."""
+    global _worker_cache
+    _worker_cache = PlayerCache(simulations, Path(cache_dir_str), max_size=cache_size)
+
+
+def _worker_play(
+    white_name: str,
+    black_name: str,
+    path_map: dict[str, str | None],
+) -> dict:
+    assert _worker_cache is not None, "Worker not initialized"
+    white = _worker_cache.get(white_name, path_map.get(white_name))
+    black = _worker_cache.get(black_name, path_map.get(black_name))
+    return play_game(white, black)
+
+
+# ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
+
+
+# Peak ONNX session memory: num_workers * WORKER_CACHE_SIZE * ~800MB.
+# With defaults (2 workers, 6 slots) that's ~10 GB, fitting a 16Gi pod.
+WORKER_CACHE_SIZE = 6
+
+# Throttle S3 LIST of model versions. New models appear on the scale of
+# hours; polling every game is wasteful.
+SYNC_INTERVAL_SECONDS = 300
+
+# Throttle S3 PUT of state/elo.json. elo_games.jsonl is the durable record,
+# so state only needs to be consistent on restart.
+SAVE_EVERY_N_GAMES = 5
 
 
 def run_elo_service(
     simulations: int = 500,
     max_versions: int = 20,
     notify_interval: int = 20,
+    num_workers: int = 2,
 ) -> None:
-    """Run the continuous Elo rating service."""
+    """Run the continuous Elo rating service with parallel game workers."""
     cfg = AsyncConfig()
     cfg.ensure_cache_dirs()
 
     state = _load_state()
-    cache = PlayerCache(simulations, cfg.model_cache_dir / "elo")
+    cache_dir = cfg.model_cache_dir / "elo"
+    cache_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info("Elo service starting ({} games in state)", state["total_games"])
+    logger.info(
+        "Elo service starting ({} games in state, {} workers)",
+        state["total_games"], num_workers,
+    )
 
-    while True:
-        # 1. Sync player pool from S3
-        path_map, new_models = _sync_player_pool(state, max_versions)
+    executor = ProcessPoolExecutor(
+        max_workers=num_workers,
+        initializer=_worker_init,
+        initargs=(simulations, str(cache_dir), WORKER_CACHE_SIZE),
+    )
 
-        if len(state["active_players"]) < 2:
-            logger.info("Waiting for models... ({} players)", len(state["active_players"]))
-            time.sleep(60)
-            continue
+    in_flight: dict[Future, tuple[str, str, str]] = {}
+    in_flight_keys: set[str] = set()
+    pending_notifications: list[str] = []
+    last_sync_ts = 0.0
+    path_map: dict[str, str | None] = {}
+    games_since_save = 0
 
-        pending_notifications = new_models
+    try:
+        while True:
+            now = time.monotonic()
+            if now - last_sync_ts >= SYNC_INTERVAL_SECONDS or not path_map:
+                path_map, new_models = _sync_player_pool(state, max_versions)
+                pending_notifications.extend(new_models)
+                last_sync_ts = now
 
-        # 2. Select most uncertain pair
-        pair = _select_pair(state)
-        if pair is None:
-            logger.info("All pairs resolved, waiting for new models...")
-            time.sleep(60)
-            continue
-        a, b = pair
-        pair_key = _pair_key(a, b)
+            if len(state["active_players"]) < 2:
+                logger.info(
+                    "Waiting for models... ({} players)",
+                    len(state["active_players"]),
+                )
+                time.sleep(60)
+                continue
 
-        # 3. Assign colors
-        white_name, black_name = _assign_colors(state, pair_key, a, b)
+            while len(in_flight) < num_workers:
+                pair = _select_pair(state, exclude=in_flight_keys)
+                if pair is None:
+                    break
+                a, b = pair
+                pair_key = _pair_key(a, b)
+                white_name, black_name = _assign_colors(state, pair_key, a, b)
 
-        # 4. Get player objects
-        white_player = cache.get(white_name, path_map.get(white_name))
-        black_player = cache.get(black_name, path_map.get(black_name))
+                pair_games = _pair_game_count(state, pair_key)
+                logger.info(
+                    "Dispatch game {}: {} (W) vs {} (B) [pair has {} prior games]",
+                    state["total_games"] + len(in_flight) + 1,
+                    white_name, black_name, pair_games,
+                )
+                fut = executor.submit(
+                    _worker_play, white_name, black_name, path_map,
+                )
+                in_flight[fut] = (pair_key, white_name, black_name)
+                in_flight_keys.add(pair_key)
 
-        # 5. Play game
-        pair_games = _pair_game_count(state, pair_key)
-        logger.info(
-            "Game {}: {} (W) vs {} (B) [pair has {} prior games]",
-            state["total_games"] + 1, white_name, black_name, pair_games,
-        )
+            if not in_flight:
+                logger.info("No dispatchable pairs, waiting for new models...")
+                time.sleep(60)
+                continue
 
-        result = play_game(white_player, black_player)
-        outcome = result["outcome"]
+            done, _pending = wait(
+                list(in_flight.keys()), return_when=FIRST_COMPLETED,
+            )
 
-        w_avg = result["white_time"] / max(result["white_moves"], 1)
-        b_avg = result["black_time"] / max(result["black_moves"], 1)
-        logger.info(
-            "  Result: {} ({} moves) | {} {:.2f}s/move | {} {:.2f}s/move",
-            outcome, result["moves"],
-            white_name, w_avg, black_name, b_avg,
-        )
+            for fut in done:
+                pair_key, white_name, black_name = in_flight.pop(fut)
+                in_flight_keys.discard(pair_key)
+                try:
+                    result = fut.result()
+                except Exception as e:
+                    logger.error(
+                        "Game {} vs {} failed: {}", white_name, black_name, e,
+                    )
+                    continue
 
-        # 6. Record result, update ratings, log game
-        _record_result(state, pair_key, white_name, outcome, result["moves"])
-        state["total_games"] += 1
+                outcome = result["outcome"]
+                w_avg = result["white_time"] / max(result["white_moves"], 1)
+                b_avg = result["black_time"] / max(result["black_moves"], 1)
+                logger.info(
+                    "  Result: {} ({} moves) | {} {:.2f}s/move | {} {:.2f}s/move",
+                    outcome, result["moves"],
+                    white_name, w_avg, black_name, b_avg,
+                )
 
-        player_stats = state.setdefault("player_stats", {})
-        for name, t, m in [(white_name, result["white_time"], result["white_moves"]),
-                           (black_name, result["black_time"], result["black_moves"])]:
-            ps = player_stats.setdefault(name, {"total_time": 0.0, "total_moves": 0})
-            ps["total_time"] = round(ps["total_time"] + t, 2)
-            ps["total_moves"] += m
+                # OpenSkill updates must stay serial for reproducibility.
+                _record_result(
+                    state, pair_key, white_name, outcome, result["moves"],
+                )
+                state["total_games"] += 1
+                games_since_save += 1
 
-        # 7. Log ratings after every game (no batch recompute needed)
-        if state["total_games"] % 10 == 0:
-            logger.info("Ratings (game {}):\n{}", state["total_games"],
-                        format_elo_table(state["ratings"]))
+                player_stats = state.setdefault("player_stats", {})
+                for name, t, m in [
+                    (white_name, result["white_time"], result["white_moves"]),
+                    (black_name, result["black_time"], result["black_moves"]),
+                ]:
+                    ps = player_stats.setdefault(
+                        name, {"total_time": 0.0, "total_moves": 0},
+                    )
+                    ps["total_time"] = round(ps["total_time"] + t, 2)
+                    ps["total_moves"] += m
 
-        # 8. Notify for new models and periodic Slack updates
-        for model_name in pending_notifications:
-            if model_name in state["ratings"]:
-                _notify_new_model(state, model_name)
-        pending_notifications = []
+                if state["total_games"] % 10 == 0:
+                    logger.info(
+                        "Ratings (game {}):\n{}",
+                        state["total_games"],
+                        format_elo_table(state["ratings"]),
+                    )
 
-        games_since_slack = state["total_games"] - state["last_slack_game"]
-        if games_since_slack >= notify_interval:
-            _notify_slack(state)
+            still_pending = []
+            for model_name in pending_notifications:
+                if model_name in state["ratings"]:
+                    _notify_new_model(state, model_name)
+                else:
+                    still_pending.append(model_name)
+            pending_notifications = still_pending
 
-        # 9. Save state to S3
-        _save_state(state)
+            games_since_slack = state["total_games"] - state["last_slack_game"]
+            if games_since_slack >= notify_interval:
+                _notify_slack(state)
+
+            if games_since_save >= SAVE_EVERY_N_GAMES:
+                _save_state(state)
+                games_since_save = 0
+    finally:
+        if games_since_save > 0:
+            try:
+                _save_state(state)
+            except Exception as e:
+                logger.warning("Final state save failed: {}", e)
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _notify_slack(state: dict) -> None:

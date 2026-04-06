@@ -86,6 +86,7 @@ def main() -> None:
     elo_svc_parser.add_argument("--simulations", type=int, default=500, help="MCTS simulations per move")
     elo_svc_parser.add_argument("--max-versions", type=int, default=20, help="Max model versions in pool")
     elo_svc_parser.add_argument("--notify-interval", type=int, default=20, help="Games between Slack notifications")
+    elo_svc_parser.add_argument("--num-workers", type=int, default=2, help="Concurrent game worker processes")
 
     args = parser.parse_args()
 
@@ -112,6 +113,7 @@ def main() -> None:
             simulations=args.simulations,
             max_versions=args.max_versions,
             notify_interval=args.notify_interval,
+            num_workers=args.num_workers,
         )
 
 
