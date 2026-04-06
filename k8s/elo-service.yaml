@@ -21,18 +21,19 @@ spec:
             - secretRef:
                 name: hexchess-env
           env:
-            # Each game worker uses ~3 CPU for MCTS + ORT intra-op threading.
-            # With num_workers=2 that's 6 CPU total, matching the pod request.
+            # Each game worker uses ~4 CPU for MCTS + ORT intra-op threading.
+            # With num_workers=2 that's 8 CPU total, matching the pod request.
+            # 3 threads per worker was too few for ONNX to scale — games were 2x slower.
             - name: OMP_NUM_THREADS
-              value: "3"
+              value: "4"
             - name: ORT_NUM_THREADS
-              value: "3"
+              value: "4"
             - name: RAYON_NUM_THREADS
-              value: "3"
+              value: "4"
           resources:
             requests:
-              cpu: "6"
+              cpu: "8"
               memory: "16Gi"
             limits:
-              cpu: "6"
+              cpu: "8"
               memory: "16Gi"
