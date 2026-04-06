@@ -1,5 +1,5 @@
 ---
-title: JavaScript / WASM
+title: TypeScript
 description: Using the hexchess engine in the browser via WebAssembly
 ---
 
@@ -122,6 +122,21 @@ Use `bestMoveWithTemperature` for non-deterministic play:
 // temperature=0: always pick the best move (greedy)
 // temperature=1: sample proportional to visit counts
 const move = ai.bestMoveWithTemperature(game, 0.3);
+```
+
+## Notation helpers
+
+Moves and board cells use `(q, r)` coordinates throughout the API. To display them with human-readable [Glinski notation](/docs/rules#notation) — for move history, UI labels, PGN-style export, etc. — use the built-in helpers:
+
+```js
+import { toNotation, fromNotation } from "hexchess-zero";
+
+toNotation(0, 0);     // "f6"  (center)
+toNotation(1, -5);    // "g1"  (white king start)
+
+fromNotation("f6");   // Int8Array [0, 0]
+fromNotation("g1");   // Int8Array [1, -5]
+fromNotation("xx");   // throws
 ```
 
 ## Full example

@@ -1,14 +1,14 @@
 ---
-title: Usage overview
-description: Using the hexchess engine via JavaScript or Python bindings
+title: Overview
+description: Using the hexchess engine via TypeScript or Python bindings
 ---
 
 The engine is written in Rust, but you don't need to know Rust to use it. Two sets of bindings expose the engine to higher-level languages:
 
 | Binding | Package | Install | Inference | Use case |
 |---------|---------|---------|-----------|----------|
-| **JavaScript/WASM** | [`hexchess-zero`](https://www.npmjs.com/package/hexchess-zero) (npm) | `npm install hexchess-zero` | Tract (pure Rust) | Browser apps, play against AI |
 | **Python** | [`hexchess-zero`](https://pypi.org/project/hexchess-zero/) (PyPI) | `pip install hexchess-zero` | ONNX Runtime | Training, analysis, research |
+| **TypeScript / WASM** | [`hexchess-zero`](https://www.npmjs.com/package/hexchess-zero) (npm) | `npm install hexchess-zero` | Tract (pure Rust) | Browser apps, play against AI |
 
 Prebuilt wheels are published for Linux, macOS, and Windows (Python 3.9–3.13); the npm package ships the WASM binary and JS loader. The PyPI distribution is named `hexchess-zero` but imports as `hexchess`.
 
@@ -17,9 +17,9 @@ Both bindings expose the same core concepts:
 - **`Game`** — a game state that you can query (legal moves, board state, status) and mutate (apply/undo moves)
 - **AI search** — MCTS-based move selection with configurable strength (simulation count) and optional neural network model
 
-## Coordinate system
+## Move format
 
-All coordinates use the **axial system** `(q, r)`. Moves are represented as `(from_q, from_r, to_q, to_r)` with an optional `promotion` field for pawn promotions (`"queen"`, `"rook"`, `"bishop"`, or `"knight"`).
+Moves are represented as `(from_q, from_r, to_q, to_r)` with an optional `promotion` field (`"queen"`, `"rook"`, `"bishop"`, or `"knight"`). The `(q, r)` pair is the engine's internal cell address; use `to_notation` / `from_notation` (see the per-language pages) to convert to/from human-readable [Glinski notation](/docs/rules#notation).
 
 ## Game status
 
@@ -34,5 +34,5 @@ The `status()` method returns one of:
 
 Choose your language to get started:
 
-- [JavaScript/WASM](/docs/usage/javascript) — for browser applications
 - [Python](/docs/usage/python) — for training, analysis, and scripting
+- [TypeScript](/docs/usage/typescript) — for browser applications

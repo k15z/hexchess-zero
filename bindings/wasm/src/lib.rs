@@ -172,6 +172,26 @@ impl Game {
 }
 
 // ---------------------------------------------------------------------------
+// Glinski notation helpers (free functions)
+// ---------------------------------------------------------------------------
+
+/// Convert axial `(q, r)` to Glinski notation like `"f6"`.
+#[wasm_bindgen(js_name = "toNotation")]
+pub fn to_notation(q: i8, r: i8) -> Result<String, JsError> {
+    board::HexCoord::new(q, r)
+        .to_notation()
+        .ok_or_else(|| JsError::new(&format!("invalid cell: ({q},{r})")))
+}
+
+/// Parse Glinski notation like `"f6"` into `[q, r]`.
+#[wasm_bindgen(js_name = "fromNotation")]
+pub fn from_notation(s: &str) -> Result<Vec<i8>, JsError> {
+    board::HexCoord::from_notation(s)
+        .map(|c| vec![c.q, c.r])
+        .ok_or_else(|| JsError::new(&format!("invalid notation: {s}")))
+}
+
+// ---------------------------------------------------------------------------
 // AiPlayer class
 // ---------------------------------------------------------------------------
 

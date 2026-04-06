@@ -7,7 +7,7 @@ Hexchess Zero is a hexagonal chess engine implementing the [Glinski variant](htt
 
 - **Complete Glinski rules** — move generation, check/checkmate/stalemate detection, draw conditions (threefold repetition, 50-move rule, insufficient material)
 - **AlphaZero-style MCTS** — Monte Carlo Tree Search with neural network evaluation for strong play
-- **JavaScript/WASM bindings** — play in the browser with a bundled AI opponent
+- **TypeScript / WASM bindings** — play in the browser with a bundled AI opponent
 - **Python bindings** — full access to the engine, MCTS, board encoding, and minimax search for training and research
 
 ## Architecture
@@ -30,22 +30,16 @@ The engine compiles to three targets:
 | WASM | Tract | Browser play |
 | Python (PyO3) | ONNX Runtime | Training pipeline |
 
-## Coordinate system
-
-All positions use **axial coordinates** `(q, r)`. A cell is valid when `max(|q|, |r|, |q+r|) <= 5`, giving exactly 91 cells. The center of the board is `(0, 0)`.
-
-For tensor encoding, hex cells map into an 11x11 grid via `col = q + 5, row = r + 5`. Invalid cells are zero-padded.
-
 ## Install
 
 Prebuilt packages are published under the name **`hexchess-zero`**:
 
 ```bash
 pip install hexchess-zero       # Python — imports as `hexchess`
-npm install hexchess-zero       # JavaScript / WASM
+npm install hexchess-zero       # TypeScript / WASM
 ```
 
-Python wheels cover Linux, macOS, and Windows on Python 3.9–3.13. The npm package bundles the WASM binary and JS loader, so no separate build step is needed. See [Python](/docs/usage/python) or [JavaScript/WASM](/docs/usage/javascript) for API usage.
+Python wheels cover Linux, macOS, and Windows on Python 3.9–3.13. The npm package bundles the WASM binary and JS loader, so no separate build step is needed. See [Python](/docs/usage/python) or [TypeScript](/docs/usage/typescript) for API usage.
 
 ## Developing locally
 
@@ -60,4 +54,4 @@ make docs-dev
 make setup
 ```
 
-See the [Usage](/docs/usage) section for JS and Python API guides, or the [Research](/docs/research) section for details on the training pipeline and MCTS implementation.
+See the [Usage](/docs/usage) section for TypeScript and Python API guides, or the [Research](/docs/research) section for details on the training pipeline and MCTS implementation.

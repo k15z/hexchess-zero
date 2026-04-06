@@ -60,6 +60,44 @@ impl HexCoord {
     pub const fn offset(self, dq: i8, dr: i8) -> Self {
         Self::new(self.q + dq, self.r + dr)
     }
+
+    /// Glinski human-readable notation for this cell, e.g. `f6` (center) or
+    /// `g1` (white king starting square). Returns `None` for off-board
+    /// coordinates. See the docs `rules` page for the full mapping.
+    pub fn to_notation(&self) -> Option<String> {
+        if !self.is_valid() {
+            return None;
+        }
+        const FILES: [char; 11] = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'k', 'l'];
+        let file = FILES[(self.q + 5) as usize];
+        let rank = self.r as i16 + 6 + (self.q as i16).min(0);
+        Some(format!("{}{}", file, rank))
+    }
+
+    /// Parse Glinski notation like `f6` or `g1` back into axial coordinates.
+    /// Returns `None` if the string is malformed or off-board.
+    pub fn from_notation(s: &str) -> Option<Self> {
+        let bytes = s.as_bytes();
+        if bytes.len() < 2 {
+            return None;
+        }
+        let file_char = bytes[0] as char;
+        let q: i8 = match file_char {
+            'a' => -5, 'b' => -4, 'c' => -3, 'd' => -2, 'e' => -1,
+            'f' => 0, 'g' => 1, 'h' => 2, 'i' => 3, 'k' => 4, 'l' => 5,
+            _ => return None,
+        };
+        let rank: i16 = std::str::from_utf8(&bytes[1..]).ok()?.parse().ok()?;
+        if !(1..=11).contains(&rank) {
+            return None;
+        }
+        let r = rank - 6 - (q as i16).min(0);
+        if !(-5..=5).contains(&r) {
+            return None;
+        }
+        let coord = Self::new(q, r as i8);
+        if coord.is_valid() { Some(coord) } else { None }
+    }
 }
 
 impl fmt::Display for HexCoord {
@@ -694,6 +732,78 @@ impl fmt::Display for Board {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- Glinski notation -----------------------------------------------------
+
+    #[test]
+    fn test_notation_known_squares() {
+        // Center
+        assert_eq!(HexCoord::new(0, 0).to_notation().unwrap(), "f6");
+        // White starting pieces (Glinski standard layout)
+        assert_eq!(HexCoord::new(1, -5).to_notation().unwrap(), "g1"); // king
+        assert_eq!(HexCoord::new(-1, -4).to_notation().unwrap(), "e1"); // queen
+        assert_eq!(HexCoord::new(-3, -2).to_notation().unwrap(), "c1"); // rook
+        assert_eq!(HexCoord::new(3, -5).to_notation().unwrap(), "i1"); // rook
+        assert_eq!(HexCoord::new(-2, -3).to_notation().unwrap(), "d1"); // knight
+        assert_eq!(HexCoord::new(2, -5).to_notation().unwrap(), "h1"); // knight
+        assert_eq!(HexCoord::new(0, -5).to_notation().unwrap(), "f1"); // bishop
+        assert_eq!(HexCoord::new(0, -4).to_notation().unwrap(), "f2");
+        assert_eq!(HexCoord::new(0, -3).to_notation().unwrap(), "f3");
+        // Pawns form a V: b1, c2, d3, e4, f5, g4, h3, i2, k1
+        assert_eq!(HexCoord::new(-4, -1).to_notation().unwrap(), "b1");
+        assert_eq!(HexCoord::new(-3, -1).to_notation().unwrap(), "c2");
+        assert_eq!(HexCoord::new(0, -1).to_notation().unwrap(), "f5");
+        assert_eq!(HexCoord::new(2, -3).to_notation().unwrap(), "h3");
+        assert_eq!(HexCoord::new(4, -5).to_notation().unwrap(), "k1");
+        // Top of center file
+        assert_eq!(HexCoord::new(0, 5).to_notation().unwrap(), "f11");
+        // Black king starting square
+        assert_eq!(HexCoord::new(-1, 5).to_notation().unwrap(), "e10");
+    }
+
+    #[test]
+    fn test_notation_roundtrip_all_cells() {
+        for (_, c) in all_coords() {
+            let s = c.to_notation().expect("valid coord");
+            let parsed = HexCoord::from_notation(&s).expect("roundtrip");
+            assert_eq!(parsed, c, "{} -> {} -> {:?}", c, s, parsed);
+        }
+    }
+
+    #[test]
+    fn test_notation_all_unique() {
+        let mut names: Vec<String> = all_coords()
+            .map(|(_, c)| c.to_notation().unwrap())
+            .collect();
+        names.sort();
+        let n = names.len();
+        names.dedup();
+        assert_eq!(names.len(), n, "duplicate notation labels");
+    }
+
+    #[test]
+    fn test_notation_file_counts() {
+        // Each file should have the expected number of cells.
+        let expected = [
+            ('a', 6), ('b', 7), ('c', 8), ('d', 9), ('e', 10),
+            ('f', 11), ('g', 10), ('h', 9), ('i', 8), ('k', 7), ('l', 6),
+        ];
+        for (file, count) in expected {
+            let n = all_coords()
+                .filter(|(_, c)| c.to_notation().unwrap().starts_with(file))
+                .count();
+            assert_eq!(n, count, "file {}", file);
+        }
+    }
+
+    #[test]
+    fn test_notation_invalid_inputs() {
+        assert!(HexCoord::from_notation("").is_none());
+        assert!(HexCoord::from_notation("j1").is_none()); // j is skipped
+        assert!(HexCoord::from_notation("a7").is_none()); // off-board
+        assert!(HexCoord::from_notation("f12").is_none());
+        assert!(HexCoord::from_notation("z3").is_none());
+    }
 
     // -- Coordinate validation ------------------------------------------------
 

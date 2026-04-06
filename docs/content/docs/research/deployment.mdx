@@ -5,6 +5,8 @@ description: Running the training pipeline on Kubernetes
 
 The training pipeline is designed to run as a distributed system. All coordination happens through S3, so components can run on any mix of hardware.
 
+For experimentation on a single machine, `make docker-up` brings up workers, trainer, Elo service, and dashboard against a local or remote S3 bucket — see the [Docker](#docker) section. The Kubernetes setup below is what's used for actual long-running training; it scales the same components across a Hetzner k3s cluster plus a separate GPU node for the trainer.
+
 ## Infrastructure
 
 <Mermaid chart={`

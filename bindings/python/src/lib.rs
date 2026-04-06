@@ -516,6 +516,26 @@ fn minimax_search_with_policy<'py>(
 }
 
 // ---------------------------------------------------------------------------
+// Glinski notation helpers
+// ---------------------------------------------------------------------------
+
+/// Convert axial (q, r) to Glinski notation like "f6".
+#[pyfunction]
+fn to_notation(q: i8, r: i8) -> PyResult<String> {
+    HexCoord::new(q, r)
+        .to_notation()
+        .ok_or_else(|| PyValueError::new_err(format!("invalid cell: ({q},{r})")))
+}
+
+/// Parse Glinski notation like "f6" into (q, r). Raises ValueError on bad input.
+#[pyfunction]
+fn from_notation(s: &str) -> PyResult<(i8, i8)> {
+    HexCoord::from_notation(s)
+        .map(|c| (c.q, c.r))
+        .ok_or_else(|| PyValueError::new_err(format!("invalid notation: {s}")))
+}
+
+// ---------------------------------------------------------------------------
 // Module definition
 // ---------------------------------------------------------------------------
 
@@ -532,6 +552,8 @@ fn hexchess(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(minimax_search, m)?)?;
     m.add_function(wrap_pyfunction!(minimax_search_all, m)?)?;
     m.add_function(wrap_pyfunction!(minimax_search_with_policy, m)?)?;
+    m.add_function(wrap_pyfunction!(to_notation, m)?)?;
+    m.add_function(wrap_pyfunction!(from_notation, m)?)?;
 
     // TENSOR_SHAPE constant
     let tensor_shape = (

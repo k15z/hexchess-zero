@@ -201,3 +201,17 @@ hexchess.num_move_indices()  # ~4206
 ```
 
 The move index table is deterministic — any change would break compatibility with existing training data and models.
+
+## Notation helpers
+
+Moves and board cells use `(q, r)` coordinates throughout the API. To display them with human-readable [Glinski notation](/docs/rules#notation) — for move history, UI labels, PGN-style export, etc. — use the built-in helpers:
+
+```python
+hexchess.to_notation(0, 0)      # "f6"  (center)
+hexchess.to_notation(1, -5)     # "g1"  (white king start)
+
+hexchess.from_notation("f6")    # (0, 0)
+hexchess.from_notation("g1")    # (1, -5)
+```
+
+`from_notation` raises `ValueError` on malformed or off-board input.
