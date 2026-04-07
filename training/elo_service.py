@@ -154,51 +154,54 @@ def _sync_player_pool(
     state: dict,
     max_versions: int,
 ) -> tuple[dict[str, str | None], list[str]]:
-    """Update active players with new models from S3."""
+    """Reconcile active_players with the desired set: baselines + latest N models.
+
+    Deterministic — computes the desired set from S3 + max_versions and forces
+    state["active_players"] to match. Old incremental add-then-retire logic
+    sometimes left the pool bloated in long-running processes (cause never
+    fully diagnosed); this version is bulletproof regardless of prior state
+    shape because it always recomputes the target.
+    """
     versions = _discover_versions()
-    all_version_names = {f"v{v}" for v, _ in versions}
     version_keys = {f"v{v}": key for v, key in versions}
 
-    for name in BASELINE_NAMES:
-        if name not in state["active_players"]:
-            state["active_players"].append(name)
+    # Desired model set: latest N versions (numerically sorted).
+    sorted_version_names = [f"v{v}" for v, _ in sorted(versions)]
+    desired_models = sorted_version_names[-max_versions:] if max_versions > 0 else []
+    desired = list(BASELINE_NAMES) + desired_models
+    desired_set = set(desired)
+
+    # Ensure ratings exist for everything in the desired set.
+    for name in desired:
         if name not in state["ratings"]:
             state["ratings"][name] = new_rating()
 
-    new_models = []
-    for v, key in versions:
-        name = f"v{v}"
-        if name not in state["active_players"] and name not in state["retired_players"]:
-            state["active_players"].append(name)
-            state["ratings"][name] = new_rating()
-            new_models.append(name)
-            logger.info("New model discovered: {}", name)
-
-    # Retire old versions
-    model_players = [
-        n for n in state["active_players"]
-        if n not in BASELINE_NAMES and n in all_version_names
+    # Detect newly-introduced models for notifications.
+    old_active_set = set(state["active_players"])
+    new_models = [
+        m for m in desired_models
+        if m not in old_active_set and m not in state["retired_players"]
     ]
-    if len(model_players) > max_versions:
-        model_players.sort(key=lambda n: int(n[1:]))
-        to_retire = model_players[:-max_versions]
-        for name in to_retire:
-            state["active_players"].remove(name)
-            if name not in state["retired_players"]:
-                state["retired_players"].append(name)
-            logger.info("Retired old model: {}", name)
+    for m in new_models:
+        logger.info("New model discovered: {}", m)
 
+    # Anything currently active that should no longer be: retire it.
+    # Baselines are never retired.
     for name in list(state["active_players"]):
-        if name not in BASELINE_NAMES and name not in all_version_names:
-            state["active_players"].remove(name)
+        if name in BASELINE_NAMES:
+            continue
+        if name not in desired_set:
             if name not in state["retired_players"]:
                 state["retired_players"].append(name)
-            logger.info("Retired missing model: {}", name)
+                logger.info("Retired old model: {}", name)
 
-    path_map: dict[str, str | None] = {}
-    for name in state["active_players"]:
-        path_map[name] = version_keys.get(name)
+    # Replace active_players wholesale with the desired set, ordered with
+    # baselines first then models in chronological order.
+    state["active_players"] = list(desired)
 
+    path_map: dict[str, str | None] = {
+        name: version_keys.get(name) for name in state["active_players"]
+    }
     return path_map, new_models
 
 
