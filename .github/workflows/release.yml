@@ -22,6 +22,13 @@ permissions:
   contents: write
   id-token: write
 
+# We do NOT push a "staging branch" with the version bump committed:
+# GITHUB_TOKEN refuses to push branches that include workflow file commits
+# (a hard GitHub restriction; would require a PAT with `workflows:write`).
+# Instead, the version bump is applied in-place inside each build job, and
+# the git tag at the end points at main HEAD. The version only exists in
+# the published artifacts — not in any tracked git history.
+
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -29,20 +36,17 @@ jobs:
       version: ${{ steps.bump.outputs.version }}
       tag: ${{ steps.bump.outputs.tag }}
       sha: ${{ steps.bump.outputs.sha }}
-      staging_ref: ${{ steps.bump.outputs.staging_ref }}
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Install cargo-edit
-        run: cargo install cargo-edit --locked
       - name: Run tests
         run: cargo test --workspace
       - name: Lint
         run: cargo clippy --workspace -- -D warnings && cargo fmt --all -- --check
-      - name: Compute next version and stage release commit
+      - name: Compute next version
         id: bump
         run: |
           set -euo pipefail
@@ -52,30 +56,18 @@ jobs:
           else
             CURRENT="${LATEST#v}"
           fi
+          IFS=. read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          case "${{ inputs.bump }}" in
+            patch) PATCH=$((PATCH + 1)) ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+          esac
+          NEW="$MAJOR.$MINOR.$PATCH"
           echo "Current released version: $CURRENT"
-
-          # Bump Cargo.toml in-place on the runner (never committed to main).
-          cargo set-version --workspace "$CURRENT"
-          cargo set-version --workspace --bump "${{ inputs.bump }}"
-          NEW=$(cargo pkgid -p hexchess-engine | sed -E 's/.*[#@]([0-9]+\.[0-9]+\.[0-9]+)$/\1/')
           echo "New version: $NEW"
-
-          cargo update -w
-
-          # Stage the bump on a temporary branch. The tag is only created after
-          # publish succeeds, so failed releases don't burn version numbers.
-          STAGING="release-staging/v$NEW"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$STAGING"
-          git add -A
-          git commit -m "Release v$NEW"
-          git push -f origin "$STAGING"
-
           echo "version=$NEW" >> "$GITHUB_OUTPUT"
           echo "tag=v$NEW" >> "$GITHUB_OUTPUT"
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "staging_ref=$STAGING" >> "$GITHUB_OUTPUT"
 
   build-wheels:
     needs: validate
@@ -110,8 +102,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
-        with:
-          ref: ${{ needs.validate.outputs.staging_ref }}
+      - name: Bump workspace version
+        shell: bash
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: python3 .github/workflows/_set_workspace_version.py
       - uses: PyO3/maturin-action@v1
         with:
           working-directory: bindings/python
@@ -130,8 +125,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-        with:
-          ref: ${{ needs.validate.outputs.staging_ref }}
+      - name: Bump workspace version
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: python3 .github/workflows/_set_workspace_version.py
       - uses: PyO3/maturin-action@v1
         with:
           working-directory: bindings/python
@@ -147,9 +144,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-        with:
-          ref: ${{ needs.validate.outputs.staging_ref }}
       - uses: dtolnay/rust-toolchain@stable
+      - name: Bump workspace version
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: python3 .github/workflows/_set_workspace_version.py
       - name: Install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
       - name: Build wasm package
@@ -238,37 +237,10 @@ jobs:
           REPO: ${{ github.repository }}
           TAG: ${{ needs.validate.outputs.tag }}
           SHA: ${{ needs.validate.outputs.sha }}
-          STAGING: ${{ needs.validate.outputs.staging_ref }}
         run: |
           set -euo pipefail
-          # Create the annotated tag via the GitHub API, pointing at the staged
-          # commit. This runs only after PyPI and npm publish have succeeded.
+          # Tag main HEAD (the SHA validate ran against) only after PyPI and
+          # npm publish have succeeded — failed releases don't burn version
+          # numbers.
           gh api "repos/$REPO/git/refs" -f ref="refs/tags/$TAG" -f sha="$SHA"
           gh release create "$TAG" --generate-notes --target "$SHA"
-          # Clean up the staging branch.
-          gh api -X DELETE "repos/$REPO/git/refs/heads/$STAGING" || true
-
-  cleanup-on-failure:
-    needs: [validate, build-wheels, build-sdist, build-wasm, publish-pypi, publish-npm, finalize]
-    if: failure() && needs.validate.result == 'success'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Delete staging branch
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          STAGING: ${{ needs.validate.outputs.staging_ref }}
-        run: gh api -X DELETE "repos/$REPO/git/refs/heads/$STAGING" || true
-
-  cleanup-dry-run:
-    # Dry runs skip finalize (which owns the branch-cleanup), so tidy up here.
-    needs: [validate, build-wheels, build-sdist, build-wasm]
-    if: ${{ inputs.dry_run && needs.validate.result == 'success' }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Delete staging branch
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          STAGING: ${{ needs.validate.outputs.staging_ref }}
-        run: gh api -X DELETE "repos/$REPO/git/refs/heads/$STAGING" || true
