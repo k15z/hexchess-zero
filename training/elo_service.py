@@ -35,10 +35,14 @@ from .elo import (
     format_elo_table,
     new_rating,
     play_game,
+    predict_draw,
     update_ratings,
 )
 
-BASELINE_NAMES = frozenset({"Minimax-2", "Minimax-3", "Minimax-4", "Heuristic"})
+# Tuple, not set: ordering matters for `active != state["active_players"]`
+# equality checks (frozenset iteration order is stable within a process but
+# a hidden invariant we'd rather make explicit).
+BASELINE_NAMES: tuple[str, ...] = ("Heuristic", "Minimax-2", "Minimax-3", "Minimax-4")
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +216,7 @@ def _finalize_active(state: dict, active_players: list[str]) -> None:
             ratings[name] = new_rating()
     state["active_players"] = list(active_players)
     state["retired_players"] = sorted(
-        set(ratings.keys()) - set(active_players) - BASELINE_NAMES,
+        set(ratings.keys()) - set(active_players) - set(BASELINE_NAMES),
     )
 
 
@@ -276,70 +280,68 @@ class GameRecordStore:
 # ---------------------------------------------------------------------------
 
 
-def _is_lopsided(result: dict, min_games: int = 30, threshold: float = 0.85) -> bool:
-    games = result["a_wins"] + result["b_wins"] + result["draws"]
-    if games < min_games:
-        return False
-    winner_wins = max(result["a_wins"], result["b_wins"])
-    return winner_wins / games >= threshold
+# Stop dispatching pairs that already have this many games — diminishing
+# returns on additional samples, the OpenSkill posterior is tight by then.
+SATURATION_THRESHOLD = 30
 
 
-def _sentinel_pair(state: dict) -> tuple[str, str] | None:
-    versions = sorted(
-        int(n[1:]) for n in state["active_players"]
-        if n.startswith("v") and n[1:].isdigit()
-    )
-    if len(versions) < SENTINEL_LOOKBACK + 1:
+def _pair_game_count(state: dict, a: str, b: str) -> int:
+    r = state["pair_results"].get(_pair_key(a, b))
+    if r is None:
+        return 0
+    return r["a_wins"] + r["b_wins"] + r["draws"]
+
+
+def _placement_pair(state: dict) -> tuple[str, str] | None:
+    """Force a brand-new model to play one game vs each baseline first.
+
+    Returns (model, baseline) if any active model has zero prior games against
+    one or more baselines; this anchors the new model's rating against the
+    fixed reference points before it enters general matchmaking. Without this
+    the predict_draw heuristic actively avoids new-model-vs-baseline pairings
+    (large |Δμ| → low draw probability) and the new model only ever plays
+    other near-mu peers, leaving its rating poorly calibrated.
+    """
+    candidates: list[tuple[str, str]] = []
+    for name in state["active_players"]:
+        if name in BASELINE_NAMES:
+            continue
+        for baseline in BASELINE_NAMES:
+            if baseline not in state["active_players"]:
+                continue
+            if _pair_game_count(state, name, baseline) == 0:
+                candidates.append((name, baseline))
+    if not candidates:
         return None
-    latest = versions[-1]
-    ancestor = latest - SENTINEL_LOOKBACK
-    a, b = f"v{latest}", f"v{ancestor}"
-    if a in state["active_players"] and b in state["active_players"]:
-        return a, b
-    return None
+    return random.choice(candidates)
 
 
 def _select_pair(state: dict) -> tuple[str, str] | None:
-    """Select the pair that would benefit most from another game."""
+    """Placement first, then sample uniformly from the top-5% predict_draw pairs."""
     players = state["active_players"]
     if len(players) < 2:
         return None
 
-    if random.random() < SENTINEL_PROBABILITY:
-        sp = _sentinel_pair(state)
-        if sp is not None:
-            return sp
+    pair = _placement_pair(state)
+    if pair is not None:
+        return pair
 
     ratings = state["ratings"]
-    candidates = []
-
+    candidates: list[tuple[float, str, str]] = []
     for i in range(len(players)):
         for j in range(i + 1, len(players)):
             a, b = players[i], players[j]
-            key = _pair_key(a, b)
-            result = state["pair_results"].get(key)
-
-            if result is not None and _is_lopsided(result):
+            if _pair_game_count(state, a, b) >= SATURATION_THRESHOLD:
                 continue
-
-            ra = ratings[a]
-            rb = ratings[b]
-
-            uncertainty = ra["sigma"] + rb["sigma"]
-            mu_diff = abs(ra["mu"] - rb["mu"])
-            closeness = 1.0 / (1.0 + mu_diff)
-
-            score = uncertainty * (1.0 + closeness)
-            candidates.append((score, key))
+            score = predict_draw(ratings[a], ratings[b])
+            candidates.append((score, a, b))
 
     if not candidates:
         return None
 
-    max_score = max(s for s, _ in candidates)
-    top_pairs = [key for s, key in candidates if s >= max_score * 0.95]
-    chosen = random.choice(top_pairs)
-    a, b = chosen.split(":")
-    return a, b
+    max_score = max(s for s, _, _ in candidates)
+    top = [(a, b) for s, a, b in candidates if s >= max_score * 0.95]
+    return random.choice(top)
 
 
 def _assign_colors(state: dict, a: str, b: str) -> tuple[str, str]:
@@ -398,16 +400,15 @@ def migrate_legacy_jsonl() -> int:
 
 PLAYER_CACHE_SIZE = 6
 
-# How often to re-LIST per-game objects + re-discover model versions.
-SYNC_INTERVAL_SECONDS = 300
+# How often to re-LIST per-game objects from S3 to absorb peer replica writes.
+# Active player set is recomputed inline every iteration (cheap S3 LIST), so
+# this only governs the more expensive peer-record sync + full state replay.
+PEER_SYNC_INTERVAL_SECONDS = 300
 
 # How often a replica writes the derived state/elo.json projection for the
 # dashboard. Races across replicas are fine because the projection is a pure
 # function of the game log.
 PROJECTION_INTERVAL_SECONDS = 120
-
-SENTINEL_LOOKBACK = 4
-SENTINEL_PROBABILITY = 0.33
 
 
 def run_elo_service(
@@ -443,29 +444,31 @@ def run_elo_service(
         state["total_games"], len(state["active_players"]),
     )
 
-    last_sync_ts = time.monotonic()
+    last_peer_sync_ts = time.monotonic()
     last_projection_ts = 0.0
 
     while True:
-        now = time.monotonic()
+        # Active player set is cheap to recompute (one S3 LIST) and we want
+        # to pick up newly-promoted models without waiting for the peer sync.
+        active, version_keys = _desired_active(max_versions)
+        if active != state["active_players"]:
+            _finalize_active(state, active)
 
-        # Periodically pick up games written by peer replicas and newly
-        # promoted models. Full replay only when something actually changed.
-        if now - last_sync_ts >= SYNC_INTERVAL_SECONDS:
+        # Periodically pick up games written by peer replicas. Full replay
+        # only when peer records actually arrived.
+        if time.monotonic() - last_peer_sync_ts >= PEER_SYNC_INTERVAL_SECONDS:
             try:
                 added = records.refresh()
-                new_active, version_keys = _desired_active(max_versions)
-                if added or new_active != state["active_players"]:
-                    state = _build_state(records.all_records(), new_active)
-                    if added:
-                        logger.info(
-                            "Sync: merged {} peer records ({} total, {} active)",
-                            added, state["total_games"],
-                            len(state["active_players"]),
-                        )
-                last_sync_ts = now
+                if added:
+                    state = _build_state(records.all_records(), active)
+                    logger.info(
+                        "Sync: merged {} peer records ({} total, {} active)",
+                        added, state["total_games"],
+                        len(state["active_players"]),
+                    )
+                last_peer_sync_ts = time.monotonic()
             except Exception as e:
-                logger.warning("Sync failed: {}", e)
+                logger.warning("Peer sync failed: {}", e)
 
         if len(state["active_players"]) < 2:
             logger.info(
@@ -483,15 +486,10 @@ def run_elo_service(
 
         a, b = pair
         white_name, black_name = _assign_colors(state, a, b)
-        pair_result = state["pair_results"].get(_pair_key(a, b))
-        pair_games = (
-            pair_result["a_wins"] + pair_result["b_wins"] + pair_result["draws"]
-            if pair_result else 0
-        )
-
         logger.info(
             "Dispatch game {}: {} (W) vs {} (B) [pair has {} prior games]",
-            state["total_games"] + 1, white_name, black_name, pair_games,
+            state["total_games"] + 1, white_name, black_name,
+            _pair_game_count(state, a, b),
         )
 
         try:
