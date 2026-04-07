@@ -38,12 +38,6 @@ from .elo import (
     update_ratings,
 )
 
-try:
-    import hexchess
-except ImportError:
-    hexchess = None
-
-
 BASELINE_NAMES = frozenset({"Minimax-2", "Minimax-3", "Minimax-4", "Heuristic"})
 
 
@@ -163,17 +157,17 @@ def _empty_state() -> dict:
     }
 
 
-def _apply_record(state: dict, rec: dict) -> bool:
-    """Fold a single game record into ``state`` in place. Returns True on success.
+def _apply_record(state: dict, rec: dict) -> None:
+    """Fold a single game record into ``state`` in place.
 
-    Callable both from the full replay path (``_build_state``) and incrementally
+    Called both from the full replay path (``_build_state``) and incrementally
     after a local game, so the rating math lives in exactly one place.
     """
     white = rec.get("white")
     black = rec.get("black")
     outcome = rec.get("outcome")
     if not white or not black or outcome not in ("white", "black", "draw"):
-        return False
+        return
 
     ratings = state["ratings"]
     for name in (white, black):
@@ -208,7 +202,6 @@ def _apply_record(state: dict, rec: dict) -> bool:
         ps["total_moves"] += int(rec.get(m_key, 0))
 
     state["total_games"] += 1
-    return True
 
 
 def _finalize_active(state: dict, active_players: list[str]) -> None:
@@ -255,39 +248,27 @@ class GameRecordStore:
 
     def refresh(self) -> int:
         """Fetch any new per-game objects from S3. Returns number added."""
-        remote = set(storage.list_game_record_keys())
-        new_keys = sorted(remote - self._records.keys())
-        added = _fetch_records_parallel(new_keys, self._records)
-        for k in list(self._records.keys()):
-            if k not in remote:
-                self._records.pop(k, None)
+        remote = storage.list_game_record_keys()
+        new_keys = [k for k in remote if k not in self._records]
+        if not new_keys:
+            return 0
+        # S3 GETs are I/O-bound; serial fetches of thousands of records on
+        # cold start were the service's startup bottleneck.
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _fetch(k: str) -> tuple[str, dict | None]:
+            try:
+                return k, storage.get_json(k)
+            except KeyError:
+                return k, None
+
+        added = 0
+        with ThreadPoolExecutor(max_workers=16) as ex:
+            for k, rec in ex.map(_fetch, new_keys):
+                if rec is not None:
+                    self._records[k] = rec
+                    added += 1
         return added
-
-
-def _fetch_records_parallel(
-    keys: list[str], into: dict[str, dict], max_workers: int = 16,
-) -> int:
-    """Parallel GET of JSON objects. S3 GETs are I/O-bound; serial fetches of
-    thousands of records on cold start are the service's startup bottleneck.
-    """
-    if not keys:
-        return 0
-    from concurrent.futures import ThreadPoolExecutor
-
-    added = 0
-    with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        for k, rec in zip(keys, ex.map(_safe_get_json, keys)):
-            if rec is not None:
-                into[k] = rec
-                added += 1
-    return added
-
-
-def _safe_get_json(key: str) -> dict | None:
-    try:
-        return storage.get_json(key)
-    except KeyError:
-        return None
 
 
 # ---------------------------------------------------------------------------
@@ -319,11 +300,7 @@ def _sentinel_pair(state: dict) -> tuple[str, str] | None:
 
 
 def _select_pair(state: dict) -> tuple[str, str] | None:
-    """Select the pair that would benefit most from another game.
-
-    No in-flight exclusion: cross-replica collisions just add more samples on
-    a high-uncertainty matchup, which is fine.
-    """
+    """Select the pair that would benefit most from another game."""
     players = state["active_players"]
     if len(players) < 2:
         return None
@@ -345,8 +322,8 @@ def _select_pair(state: dict) -> tuple[str, str] | None:
             if result is not None and _is_lopsided(result):
                 continue
 
-            ra = ratings.get(a, new_rating())
-            rb = ratings.get(b, new_rating())
+            ra = ratings[a]
+            rb = ratings[b]
 
             uncertainty = ra["sigma"] + rb["sigma"]
             mu_diff = abs(ra["mu"] - rb["mu"])
@@ -365,8 +342,8 @@ def _select_pair(state: dict) -> tuple[str, str] | None:
     return a, b
 
 
-def _assign_colors(state: dict, pair_key: str, a: str, b: str) -> tuple[str, str]:
-    result = state["pair_results"].get(pair_key)
+def _assign_colors(state: dict, a: str, b: str) -> tuple[str, str]:
+    result = state["pair_results"].get(_pair_key(a, b))
     if result is None:
         return (a, b) if random.random() < 0.5 else (b, a)
 
@@ -376,13 +353,6 @@ def _assign_colors(state: dict, pair_key: str, a: str, b: str) -> tuple[str, str
     if a_as_white <= b_as_white:
         return a, b
     return b, a
-
-
-def _pair_game_count(state: dict, pair_key: str) -> int:
-    r = state["pair_results"].get(pair_key)
-    if r is None:
-        return 0
-    return r["a_wins"] + r["b_wins"] + r["draws"]
 
 
 # ---------------------------------------------------------------------------
@@ -439,10 +409,6 @@ PROJECTION_INTERVAL_SECONDS = 120
 SENTINEL_LOOKBACK = 4
 SENTINEL_PROBABILITY = 0.33
 
-# Slack notifications should fire from at most one replica. Gate behind an
-# env var the operator sets on exactly one pod (or zero — they're optional).
-SLACK_LEADER_ENV = "ELO_SLACK_LEADER"
-
 
 def run_elo_service(
     simulations: int = 500,
@@ -459,7 +425,9 @@ def run_elo_service(
     players_cache = PlayerCache(simulations, cache_dir, max_size=PLAYER_CACHE_SIZE)
     records = GameRecordStore()
 
-    slack_leader = os.environ.get(SLACK_LEADER_ENV) == "1"
+    # Slack notifications should fire from at most one replica; gate on an
+    # env var the operator sets on exactly one pod.
+    slack_leader = os.environ.get("ELO_SLACK_LEADER") == "1"
     last_slack_game = 0
 
     logger.info(
@@ -467,7 +435,6 @@ def run_elo_service(
         simulations, max_versions, slack_leader,
     )
 
-    # Initial full sync: pull all records + discover models + build state.
     records.refresh()
     active, version_keys = _desired_active(max_versions)
     state = _build_state(records.all_records(), active)
@@ -482,19 +449,21 @@ def run_elo_service(
     while True:
         now = time.monotonic()
 
-        # Periodic full rebuild from S3: picks up games written by peer replicas
-        # and newly-promoted models.
+        # Periodically pick up games written by peer replicas and newly
+        # promoted models. Full replay only when something actually changed.
         if now - last_sync_ts >= SYNC_INTERVAL_SECONDS:
             try:
                 added = records.refresh()
-                active, version_keys = _desired_active(max_versions)
-                state = _build_state(records.all_records(), active)
+                new_active, version_keys = _desired_active(max_versions)
+                if added or new_active != state["active_players"]:
+                    state = _build_state(records.all_records(), new_active)
+                    if added:
+                        logger.info(
+                            "Sync: merged {} peer records ({} total, {} active)",
+                            added, state["total_games"],
+                            len(state["active_players"]),
+                        )
                 last_sync_ts = now
-                if added:
-                    logger.info(
-                        "Sync: merged {} peer records ({} total, {} active)",
-                        added, state["total_games"], len(state["active_players"]),
-                    )
             except Exception as e:
                 logger.warning("Sync failed: {}", e)
 
@@ -513,9 +482,12 @@ def run_elo_service(
             continue
 
         a, b = pair
-        pair_key = _pair_key(a, b)
-        white_name, black_name = _assign_colors(state, pair_key, a, b)
-        pair_games = _pair_game_count(state, pair_key)
+        white_name, black_name = _assign_colors(state, a, b)
+        pair_result = state["pair_results"].get(_pair_key(a, b))
+        pair_games = (
+            pair_result["a_wins"] + pair_result["b_wins"] + pair_result["draws"]
+            if pair_result else 0
+        )
 
         logger.info(
             "Dispatch game {}: {} (W) vs {} (B) [pair has {} prior games]",

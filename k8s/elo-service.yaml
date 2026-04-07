@@ -4,11 +4,8 @@ metadata:
   name: elo-service
   namespace: hexchess
 spec:
-  # Horizontally scalable: each replica plays one game at a time and writes
-  # race-free per-game objects to state/elo_games/. Bump replicas for more
-  # throughput — no coordination required. Set ELO_SLACK_LEADER=1 on at most
-  # one replica if Slack notifications are desired (use a patch, not this
-  # template, or gate it behind a separate Deployment).
+  # Each replica plays one game at a time; bump for throughput. Set
+  # ELO_SLACK_LEADER=1 on at most one replica if Slack notifications are wanted.
   replicas: 4
   selector:
     matchLabels:
