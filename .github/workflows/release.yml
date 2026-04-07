@@ -231,6 +231,8 @@ jobs:
     needs: [validate, publish-pypi, publish-npm]
     runs-on: ubuntu-latest
     steps:
+      # `gh release create` shells out to git, so it needs a working tree.
+      - uses: actions/checkout@v5
       - name: Create tag and GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -241,6 +243,15 @@ jobs:
           set -euo pipefail
           # Tag main HEAD (the SHA validate ran against) only after PyPI and
           # npm publish have succeeded — failed releases don't burn version
-          # numbers.
-          gh api "repos/$REPO/git/refs" -f ref="refs/tags/$TAG" -f sha="$SHA"
-          gh release create "$TAG" --generate-notes --target "$SHA"
+          # numbers. Idempotent: if the tag/release already exists from an
+          # earlier attempt, don't fail.
+          if ! gh api "repos/$REPO/git/refs/tags/$TAG" >/dev/null 2>&1; then
+            gh api "repos/$REPO/git/refs" -f ref="refs/tags/$TAG" -f sha="$SHA"
+          else
+            echo "::notice::tag $TAG already exists, skipping creation"
+          fi
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --generate-notes --target "$SHA"
+          else
+            echo "::notice::release $TAG already exists, skipping creation"
+          fi
