@@ -1,7 +1,7 @@
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use numpy::ndarray::{Array1, Array3, Array4};
+use numpy::ndarray::{Array3, Array4};
 use numpy::{IntoPyArray, PyArray3, PyArray4};
 
 use hexchess_engine::board::{self, HexCoord, PieceKind};
@@ -250,9 +250,12 @@ struct PyMctsResult {
 #[pymethods]
 impl PyMctsResult {
     /// Policy vector as a numpy array of length `num_move_indices()`.
+    ///
+    /// Copies once into numpy-owned memory; repeated access re-copies, so
+    /// bind to a local variable if you need it more than once.
     #[getter]
     fn policy<'py>(&self, py: Python<'py>) -> Bound<'py, numpy::PyArray1<f32>> {
-        Array1::from_vec(self.policy.clone()).into_pyarray(py)
+        numpy::PyArray1::from_slice(py, &self.policy)
     }
 
     fn __repr__(&self) -> String {
