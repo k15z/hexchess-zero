@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 # Stage 1: Build Rust PyO3 bindings
 FROM python:3.13-slim AS builder
 
@@ -7,15 +8,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PATH="/root/.cargo/bin:${PATH}"
+ENV CARGO_HOME=/usr/local/cargo
 
-RUN pip install --no-cache-dir maturin
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install maturin
 
 WORKDIR /build
 COPY Cargo.toml Cargo.lock README.md LICENSE ./
 COPY engine/ engine/
 COPY bindings/ bindings/
 
-RUN cd bindings/python && maturin build --release -o /build/wheels
+# Cache cargo registry/git + target dir across builds. With buildx + the
+# gha cache exporter (mode=max) these mounts persist between CI runs, so
+# incremental rebuilds only recompile changed crates instead of the whole
+# dep graph each time.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/build/target,sharing=locked \
+    cd bindings/python && maturin build --release -o /build/wheels
 
 # Stage 2: Runtime
 FROM python:3.13-slim
@@ -25,11 +35,13 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY training/ training/
 
-RUN pip install --no-cache-dir . \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install . \
     --index-url https://download.pytorch.org/whl/cpu \
     --extra-index-url https://pypi.org/simple
 
 COPY --from=builder /build/wheels/*.whl /tmp/
-RUN pip install /tmp/*.whl && rm /tmp/*.whl
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install /tmp/*.whl && rm /tmp/*.whl
 
 ENTRYPOINT ["python", "-m", "training"]
