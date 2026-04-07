@@ -61,6 +61,46 @@ impl Move {
             is_en_passant: true,
         }
     }
+
+    /// Human-readable Glinski notation for this move, e.g. `f5-f6` or
+    /// `f10-f11=Q`. Only uses `from`/`to`/`promotion` — independent of
+    /// capture/ep metadata. Returns `None` if either endpoint is off-board.
+    pub fn to_notation(&self) -> Option<String> {
+        let from = self.from.to_notation()?;
+        let to = self.to.to_notation()?;
+        Some(match self.promotion {
+            Some(kind) => format!("{}-{}={}", from, to, kind.symbol()),
+            None => format!("{}-{}", from, to),
+        })
+    }
+
+    /// Parse a move from Glinski notation like `f5-f6` or `f10-f11=Q`.
+    /// Accepts promotion suffixes `=Q`/`=R`/`=B`/`=N` (case-insensitive).
+    /// Returns `(from, to, promotion)` — does not validate against any
+    /// position, so `captured` / `is_en_passant` are left for the caller.
+    pub fn parse_notation(s: &str) -> Option<(HexCoord, HexCoord, Option<PieceKind>)> {
+        let s = s.trim();
+        // Split off promotion suffix if present.
+        let (core, promo) = match s.find('=') {
+            Some(eq) => {
+                let tail = &s[eq + 1..];
+                let kind = match tail.trim().chars().next()?.to_ascii_uppercase() {
+                    'Q' => PieceKind::Queen,
+                    'R' => PieceKind::Rook,
+                    'B' => PieceKind::Bishop,
+                    'N' => PieceKind::Knight,
+                    _ => return None,
+                };
+                (&s[..eq], Some(kind))
+            }
+            None => (s, None),
+        };
+        // Split from-to on '-'.
+        let dash = core.find('-')?;
+        let from = HexCoord::from_notation(core[..dash].trim())?;
+        let to = HexCoord::from_notation(core[dash + 1..].trim())?;
+        Some((from, to, promo))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -611,6 +651,56 @@ pub fn generate_legal_moves(board: &Board) -> MoveList {
 mod tests {
     use super::*;
     use crate::board::*;
+
+    #[test]
+    fn test_move_notation_roundtrip_plain() {
+        let mv = Move::new(HexCoord::new(0, -1), HexCoord::new(0, 0), None);
+        let s = mv.to_notation().unwrap();
+        assert_eq!(s, "f5-f6");
+        let (from, to, promo) = Move::parse_notation(&s).unwrap();
+        assert_eq!(from, mv.from);
+        assert_eq!(to, mv.to);
+        assert_eq!(promo, None);
+    }
+
+    #[test]
+    fn test_move_notation_roundtrip_promotion() {
+        let mv = Move::new(HexCoord::new(0, 4), HexCoord::new(0, 5), None)
+            .with_promotion(PieceKind::Queen);
+        let s = mv.to_notation().unwrap();
+        assert_eq!(s, "f10-f11=Q");
+        let (from, to, promo) = Move::parse_notation(&s).unwrap();
+        assert_eq!(from, mv.from);
+        assert_eq!(to, mv.to);
+        assert_eq!(promo, Some(PieceKind::Queen));
+    }
+
+    #[test]
+    fn test_move_parse_notation_accepts_all_promotions() {
+        for (c, kind) in [
+            ('Q', PieceKind::Queen),
+            ('R', PieceKind::Rook),
+            ('B', PieceKind::Bishop),
+            ('N', PieceKind::Knight),
+        ] {
+            let s = format!("f10-f11={}", c);
+            let (_, _, promo) = Move::parse_notation(&s).unwrap();
+            assert_eq!(promo, Some(kind));
+            // lowercase also allowed
+            let lower = s.to_ascii_lowercase();
+            let (_, _, promo) = Move::parse_notation(&lower).unwrap();
+            assert_eq!(promo, Some(kind));
+        }
+    }
+
+    #[test]
+    fn test_move_parse_notation_rejects_garbage() {
+        assert!(Move::parse_notation("").is_none());
+        assert!(Move::parse_notation("f5f6").is_none());
+        assert!(Move::parse_notation("z9-f6").is_none());
+        assert!(Move::parse_notation("f5-z9").is_none());
+        assert!(Move::parse_notation("f5-f6=X").is_none());
+    }
 
     /// Create an empty board with kings placed at the given positions.
     fn board_with_kings(wk: (i8, i8), bk: (i8, i8)) -> Board {
