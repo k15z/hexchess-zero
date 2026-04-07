@@ -46,65 +46,93 @@ const game = new Game();
 
 ### Get legal moves
 
-```js
+```ts
 const moves = game.legalMoves();
-// [{from_q: 0, from_r: -4, to_q: 0, to_r: -3, promotion: null}, ...]
+// [{from_q: -4, from_r: -1, to_q: -4, to_r: 0, promotion: null, notation: "b1-b2"}, ...]
 ```
 
-Each move has `from_q`, `from_r`, `to_q`, `to_r`, and an optional `promotion` field.
+Each move is a typed `JsMove` with `from_q`, `from_r`, `to_q`, `to_r`, `promotion`, and a pre-computed Glinski `notation` string.
 
 ### Apply a move
 
-```js
-game.applyMove(0, -4, 0, -3, null);
+```ts
+// Preferred: pass a Move from legalMoves(), or Glinski notation directly.
+game.apply(moves[0]);
+game.applyNotation("f5-f6");
+game.applyNotation("f10-f11=Q");  // promotion
 
-// For pawn promotion:
+// Low-level positional form is still supported:
+game.applyMove(0, -4, 0, -3, null);
 game.applyMove(0, 4, 0, 5, "queen");
 ```
 
-The method throws if the move is illegal.
+These methods throw if the move is illegal.
 
-### Undo a move
+### Undo and clone
 
-```js
-game.undoMove(); // throws if no moves to undo
+```ts
+game.undoMove();            // throws if no moves to undo
+const branch = game.clone(); // deep copy for analysis variations
 ```
 
 ### Query game state
 
-```js
+```ts
 game.sideToMove();  // "white" or "black"
 game.status();      // "ongoing", "checkmate_white", etc.
 game.isGameOver();  // boolean
 game.isInCheck();   // boolean
+game.moveCount();   // number of half-moves played
 ```
 
 ### Get board state
 
-```js
+```ts
 const pieces = game.boardState();
-// [{q: 0, r: -5, piece: "king", color: "white"}, ...]
+// [{q: -5, r: 0, piece: "rook", color: "white", square: "a1"}, ...]
 ```
 
-Each piece has `q`, `r`, `piece` (king/queen/rook/bishop/knight/pawn), and `color` (white/black).
+Each `JsPiece` has `q`, `r`, `piece` (king/queen/rook/bishop/knight/pawn), `color` (white/black), and a `square` string in Glinski notation.
+
+### Board encoding
+
+For browser-side ML, you can also pull out the raw tensor:
+
+```ts
+import { tensorShape } from "hexchess-zero";
+
+const flat = game.encodeBoard();  // Float32Array, length = 19 * 11 * 11
+const [c, h, w] = tensorShape();   // [19, 11, 11]
+```
 
 ## AiPlayer class
 
 ### Heuristic AI (no model needed)
 
-```js
-const ai = new AiPlayer(500); // 500 MCTS simulations
+```ts
+const ai = new AiPlayer(500); // 500 MCTS simulations per move
 const move = ai.bestMove(game);
-// {from_q, from_r, to_q, to_r, promotion}
 ```
 
-Higher simulation counts produce stronger play but take longer.
+Higher simulation counts produce stronger play but take longer. You can also tune the sim count after construction via `ai.simulations = 200`.
+
+### Full search result
+
+`search()` returns the full MCTS result — best move, scalar value, visit-count policy, and nodes searched:
+
+```ts
+const result = ai.search(game, 0.0);
+result.best_move;  // JsMove
+result.value;      // number in [-1, 1], positive = good for side to move
+result.nodes;      // number of nodes searched
+result.policy;     // number[] of length numMoveIndices()
+```
 
 ### Neural network AI
 
 Load an ONNX model file and pass the bytes:
 
-```js
+```ts
 const response = await fetch("/models/latest.onnx");
 const modelBytes = new Uint8Array(await response.arrayBuffer());
 
@@ -112,36 +140,47 @@ const ai = AiPlayer.withModel(500, modelBytes);
 const move = ai.bestMove(game);
 ```
 
-The WASM bindings use [Tract](https://github.com/sonos/tract) for inference — a pure-Rust ML runtime that compiles to WASM. No server-side inference needed.
+The WASM bindings use [Tract](https://github.com/sonos/tract) for inference — a pure-Rust ML runtime that compiles to WASM. No server-side inference needed. Model loading is synchronous and will block the thread, so for smooth UIs load it inside a Web Worker.
 
-### Temperature control
+### Temperature + Dirichlet noise
 
-Use `bestMoveWithTemperature` for non-deterministic play:
-
-```js
+```ts
 // temperature=0: always pick the best move (greedy)
 // temperature=1: sample proportional to visit counts
 const move = ai.bestMoveWithTemperature(game, 0.3);
+
+// Root-move Dirichlet noise (for self-play exploration)
+ai.setDirichlet(0.25, 0.3);
+ai.setDirichlet(0.0, 0.3);  // disable
+```
+
+### Transposition table stats
+
+```ts
+const tt = ai.ttStats();
+tt.hits; tt.misses; tt.clears; tt.current_size;
 ```
 
 ## Notation helpers
 
 Moves and board cells use `(q, r)` coordinates throughout the API. To display them with human-readable [Glinski notation](/docs/rules#notation) — for move history, UI labels, PGN-style export, etc. — use the built-in helpers:
 
-```js
-import { toNotation, fromNotation } from "hexchess-zero";
+```ts
+import { toNotation, fromNotation, numMoveIndices } from "hexchess-zero";
 
 toNotation(0, 0);     // "f6"  (center)
 toNotation(1, -5);    // "g1"  (white king start)
 
-fromNotation("f6");   // Int8Array [0, 0]
-fromNotation("g1");   // Int8Array [1, -5]
+fromNotation("f6");   // { q: 0, r: 0 }
+fromNotation("g1");   // { q: 1, r: -5 }
 fromNotation("xx");   // throws
+
+numMoveIndices();     // ~4206 — policy vector length
 ```
 
 ## Full example
 
-```js
+```ts
 import init, { Game, AiPlayer } from "hexchess-zero";
 
 await init();
@@ -151,8 +190,8 @@ const ai = new AiPlayer(500);
 
 while (!game.isGameOver()) {
   const move = ai.bestMove(game);
-  game.applyMove(move.from_q, move.from_r, move.to_q, move.to_r, move.promotion);
-  console.log(`${game.sideToMove()} to move — status: ${game.status()}`);
+  console.log(`${game.sideToMove()} plays ${move.notation}`);
+  game.apply(move);
 }
 
 console.log(`Game over: ${game.status()}`);

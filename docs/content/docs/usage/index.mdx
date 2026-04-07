@@ -19,7 +19,9 @@ Both bindings expose the same core concepts:
 
 ## Move format
 
-Moves are represented as `(from_q, from_r, to_q, to_r)` with an optional `promotion` field (`"queen"`, `"rook"`, `"bishop"`, or `"knight"`). The `(q, r)` pair is the engine's internal cell address; use `to_notation` / `from_notation` (see the per-language pages) to convert to/from human-readable [Glinski notation](/docs/rules#notation).
+Moves are represented as typed `Move` objects with `from_q`, `from_r`, `to_q`, `to_r`, an optional `promotion` (`"queen"`, `"rook"`, `"bishop"`, or `"knight"`), and a `notation` string. The `(q, r)` pair is the engine's internal cell address; the `notation` field gives you the human-readable [Glinski notation](/docs/rules#notation) form (e.g. `"f5-f6"`, `"f10-f11=Q"`).
+
+You can also apply moves directly by notation — `game.apply("f5-f6")` works in both Python and TypeScript.
 
 ## Game status
 

@@ -42,33 +42,67 @@ import hexchess
 game = hexchess.Game()
 
 moves = game.legal_moves()
-# [{'from_q': 0, 'from_r': -4, 'to_q': 0, 'to_r': -3, 'promotion': None}, ...]
+# [Move(b1-b2), Move(b1-b3), Move(c1-d2), ...]
 
-game.apply_move(0, -4, 0, -3)  # move a piece
+# Apply a move — accepts a Move from legal_moves() or Glinski notation.
+game.apply(moves[0])
+game.apply("f5-f6")
+game.apply("f10-f11=Q")
+
+# Low-level positional form is still supported:
+game.apply_move(0, -4, 0, -3)
 
 game.side_to_move()   # "white" or "black"
 game.status()         # "ongoing", "checkmate_white", etc.
 game.is_game_over()   # bool
 game.is_in_check()    # bool
+game.move_count()     # number of half-moves played
+```
+
+### Move objects
+
+Each entry in `legal_moves()` is a `hexchess.Move` with typed attributes:
+
+```python
+mv = game.legal_moves()[0]
+
+mv.from_q, mv.from_r   # axial coordinates of the from-square
+mv.to_q, mv.to_r       # axial coordinates of the to-square
+mv.from_, mv.to        # (q, r) tuples
+mv.promotion           # "queen" / "rook" / "bishop" / "knight" / None
+mv.notation            # "b1-b2"  (Glinski notation)
+
+# Moves are hashable and comparable
+{mv, mv} == {mv}       # True
+
+# Construct from notation
+mv = hexchess.Move.from_notation("f10-f11=Q")
 ```
 
 ### Board state and undo
 
 ```python
 pieces = game.board_state()
-# [{'q': 0, 'r': -5, 'piece': 'king', 'color': 'white'}, ...]
+# [Piece(q=-5, r=0, piece="rook", color="white"), ...]
+for p in pieces:
+    print(p.square, p.piece, p.color)  # "a1 rook white"
 
 game.undo_move()  # undo the last move
 
 # Deep copy for branching analysis
-game2 = game.clone()
+import copy
+game2 = copy.deepcopy(game)
+
+# Print an ASCII rendering of the board — useful in notebooks.
+print(game)
 ```
 
 ### Pawn promotion
 
 ```python
-game.apply_move(0, 4, 0, 5, "queen")  # promote to queen
-# options: "queen", "rook", "bishop", "knight"
+game.apply("f10-f11=Q")                # via notation
+game.apply_move(0, 4, 0, 5, "queen")   # via positional API
+# promotion piece: "queen", "rook", "bishop", "knight"
 ```
 
 ## MCTS search
@@ -79,10 +113,10 @@ game.apply_move(0, 4, 0, 5, "queen")  # promote to queen
 mcts = hexchess.MctsSearch(simulations=500)
 
 result = mcts.run(game)
-result["best_move"]   # {'from_q': ..., 'to_q': ..., ...}
-result["value"]       # float in [-1, 1], positive = good for side to move
-result["policy"]      # numpy array of shape (num_move_indices,)
-result["nodes"]       # number of nodes searched
+result.best_move       # hexchess.Move
+result.value           # float in [-1, 1], positive = good for side to move
+result.policy          # numpy array of shape (num_move_indices,)
+result.nodes           # number of nodes searched
 ```
 
 ### Neural network search
@@ -97,23 +131,31 @@ mcts = hexchess.MctsSearch(
 )
 
 result = mcts.run(game)
+game.apply(result.best_move)
 ```
 
 ### Temperature and Dirichlet noise
 
 ```python
-# Temperature for exploration (used in self-play)
+# Temperature controls move sampling: 0 = greedy, 1 = proportional to visits.
 result = mcts.run(game, temperature=1.0)
 
-# Dirichlet noise at root (encourages exploring new moves)
-result = mcts.run(game, dirichlet_epsilon=0.25, dirichlet_alpha=0.3)
+# Dirichlet noise is configured at construction time (used for self-play).
+explorer = hexchess.MctsSearch(
+    simulations=800,
+    dirichlet_epsilon=0.25,
+    dirichlet_alpha=0.3,
+)
+
+# `simulations` is a read/write property.
+explorer.simulations = 200
 ```
 
 ### Transposition table stats
 
 ```python
 stats = mcts.tt_stats()
-# {'hits': 1234, 'misses': 5678, 'clears': 2, 'current_size': 10000}
+stats.hits, stats.misses, stats.clears, stats.current_size
 ```
 
 ## Minimax search
@@ -123,19 +165,20 @@ For classical alpha-beta search (used in imitation bootstrap and analysis):
 ```python
 # Basic minimax
 result = hexchess.minimax_search(game, depth=5)
-result["best_move"]  # best move dict
-result["score"]      # centipawn score (positive = good for side to move)
-result["nodes"]      # nodes searched
+result.best_move       # hexchess.Move
+result.score           # centipawn score (positive = good for side to move)
+result.nodes           # nodes searched
 
 # Search with scores for ALL legal moves
 result = hexchess.minimax_search_all(game, depth=5)
-result["moves"]  # [{'move': {...}, 'score': 123}, ...]
+for ranked in result.moves:
+    print(ranked.move.notation, ranked.score)
 
 # Two-phase search: deep best-move + shallow policy for all moves
 result = hexchess.minimax_search_with_policy(game, depth=5)
-result["best_move"]
-result["best_score"]
-result["moves"]      # all moves with scores
+result.best_move
+result.best_score
+result.moves           # list[RankedMove]
 ```
 
 ### Custom evaluation weights
@@ -170,8 +213,9 @@ tensor = hexchess.encode_board(game)
 # Batch encoding → numpy array of shape (N, 19, 11, 11)
 tensors = hexchess.encode_batch([game1, game2, game3])
 
-# Tensor shape constant
-hexchess.TENSOR_SHAPE  # (19, 11, 11)
+# Shape + policy-size constants
+hexchess.TENSOR_SHAPE       # (19, 11, 11)
+hexchess.NUM_MOVE_INDICES   # ~4206
 ```
 
 The 19 channels encode:
@@ -193,8 +237,7 @@ Convert between moves and policy vector indices:
 idx = hexchess.move_to_index(0, -4, 0, -3)
 
 # Index → move
-move = hexchess.index_to_move(idx)
-# {'from_q': 0, 'from_r': -4, 'to_q': 0, 'to_r': -3, 'promotion': None}
+move = hexchess.index_to_move(idx)  # hexchess.Move(b1-b2)
 
 # Total policy vector size
 hexchess.num_move_indices()  # ~4206
