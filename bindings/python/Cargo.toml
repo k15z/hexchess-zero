@@ -14,3 +14,12 @@ crate-type = ["cdylib"]
 hexchess-engine = { path = "../../engine", features = ["onnx"] }
 pyo3 = { version = "0.24", features = ["extension-module", "abi3-py39"] }
 numpy = "0.24"
+
+# Force vendored OpenSSL on Linux so the aarch64 cross-compile in our release
+# workflow works without a target-arch openssl install. ort-sys's build.rs
+# pulls openssl-sys in transitively via ureq → native-tls when downloading
+# onnxruntime; the cross container has no aarch64 openssl. Building it from
+# source adds ~30s to Linux builds but eliminates the cross-compile pitfall.
+# macOS/Windows builds skip this and use the platform's own TLS stack.
+[target.'cfg(target_os = "linux")'.dependencies]
+openssl = { version = "0.10", features = ["vendored"] }
