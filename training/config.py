@@ -19,7 +19,7 @@ class _BaseConfig:
     """Shared hyperparameters for training and model architecture."""
 
     # --- MCTS ---
-    num_simulations: int = 500
+    num_simulations: int = 800
 
     # --- Self-play ---
     temperature_threshold: int = 60  # after this many moves, temperature drops to temperature_low

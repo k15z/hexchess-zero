@@ -378,7 +378,7 @@ PROJECTION_INTERVAL_SECONDS = 120
 
 
 def run_elo_service(
-    simulations: int = 500,
+    simulations: int = 800,
     max_versions: int = 5,
     notify_interval: int = 20,
 ) -> None:

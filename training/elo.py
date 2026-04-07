@@ -75,7 +75,7 @@ class MctsPlayer:
         return self.search.run(game, temperature=0.0).best_move
 
 
-def baselines(simulations: int = 500) -> list[Player]:
+def baselines(simulations: int = 800) -> list[Player]:
     return [
         MinimaxPlayer(name="Minimax-2", depth=2),
         MinimaxPlayer(name="Minimax-3", depth=3),
