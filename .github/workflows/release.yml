@@ -8,6 +8,11 @@ on:
         type: choice
         required: true
         options: [patch, minor, major]
+      dry_run:
+        description: 'Dry run: build everything, skip publish + tag'
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   group: release
@@ -78,16 +83,26 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Linux wheels need openssl for ort-sys's build.rs (it pulls
+          # openssl-sys via ureq → native-tls to download onnxruntime).
+          # The two cross containers maturin-action picks have different
+          # package managers — see PyO3/maturin-action#192 for the canonical
+          # pattern this is based on.
+          #
+          # x86_64: ghcr.io/rust-cross/manylinux_2_28-cross:x86_64 (AlmaLinux/dnf).
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             manylinux: '2_28'
             before_script_linux: 'dnf install -y openssl-devel perl-IPC-Cmd'
+          # aarch64: ghcr.io/rust-cross/manylinux_2_28-cross:aarch64 (Debian/apt).
+          # libssl-dev installs the aarch64 cross sysroot openssl in this image.
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             manylinux: '2_28'
-            before_script_linux: 'dnf install -y openssl-devel perl-IPC-Cmd'
-          - os: macos-13
-            target: x86_64-apple-darwin
+            before_script_linux: 'apt-get update && apt-get install -y pkg-config libssl-dev'
+          # macOS arm64 (Apple Silicon). We intentionally do not build an
+          # x86_64 macOS wheel: the macos-13 runner image has been retired,
+          # and macOS 13 Intel users can install via the sdist.
           - os: macos-latest
             target: aarch64-apple-darwin
           - os: windows-latest
@@ -150,6 +165,7 @@ jobs:
           path: bindings/wasm/pkg
 
   publish-pypi:
+    if: ${{ !inputs.dry_run }}
     needs: [validate, build-wheels, build-sdist]
     runs-on: ubuntu-latest
     environment: pypi
@@ -163,9 +179,23 @@ jobs:
         with:
           name: sdist
           path: dist
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Check if version already on PyPI
+        id: check
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          if curl -sf -o /dev/null "https://pypi.org/pypi/hexchess-zero/$VERSION/json"; then
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::hexchess-zero==$VERSION already on PyPI, skipping publish"
+          else
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.check.outputs.already_published != 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
 
   publish-npm:
+    if: ${{ !inputs.dry_run }}
     needs: [validate, build-wasm]
     runs-on: ubuntu-latest
     environment: npm
@@ -178,13 +208,27 @@ jobs:
         with:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
+      - name: Check if version already on npm
+        id: check
+        working-directory: pkg
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "hexchess-zero@$VERSION" version > /dev/null 2>&1; then
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::hexchess-zero@$VERSION already on npm, skipping publish"
+          else
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Publish to npm
+        if: steps.check.outputs.already_published != 'true'
         working-directory: pkg
         run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   finalize:
+    if: ${{ !inputs.dry_run }}
     needs: [validate, publish-pypi, publish-npm]
     runs-on: ubuntu-latest
     steps:
@@ -207,6 +251,19 @@ jobs:
   cleanup-on-failure:
     needs: [validate, build-wheels, build-sdist, build-wasm, publish-pypi, publish-npm, finalize]
     if: failure() && needs.validate.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete staging branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          STAGING: ${{ needs.validate.outputs.staging_ref }}
+        run: gh api -X DELETE "repos/$REPO/git/refs/heads/$STAGING" || true
+
+  cleanup-dry-run:
+    # Dry runs skip finalize (which owns the branch-cleanup), so tidy up here.
+    needs: [validate, build-wheels, build-sdist, build-wasm]
+    if: ${{ inputs.dry_run && needs.validate.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - name: Delete staging branch
