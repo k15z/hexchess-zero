@@ -33,6 +33,12 @@ from . import storage
 
 _GAMES_TAIL = 50
 
+# Heartbeat keys older than this are deleted from S3 by the dashboard sync.
+# Workers refresh their heartbeat at startup and after every batch, so any key
+# older than this belongs to a retired pod (k8s rolling restart, OOM, scale-in)
+# whose name will never recur.
+_HEARTBEAT_STALE_SECONDS = 2 * 60 * 60
+
 
 class DashboardStore:
     """Background-synced, thread-safe dashboard state.
@@ -188,14 +194,26 @@ class DashboardStore:
 
     def _sync_heartbeats(self) -> None:
         listed = self._s.list_with_meta(storage.HEARTBEATS_PREFIX)
+        now = datetime.now(timezone.utc)
         seen_names: set[str] = set()
         updates: dict[str, dict] = {}
         for obj in listed:
             name = obj["key"].rsplit("/", 1)[-1].removesuffix(".json")
             if not name:
                 continue
-            seen_names.add(name)
             lm = obj["last_modified"]
+            # Garbage-collect heartbeats from retired pods. Pod names contain
+            # a replicaset hash that changes on every redeploy, so stale keys
+            # accumulate forever otherwise.
+            if hasattr(lm, "tzinfo"):
+                age = (now - lm).total_seconds()
+                if age > _HEARTBEAT_STALE_SECONDS:
+                    try:
+                        self._s.delete(obj["key"])
+                    except Exception:
+                        pass
+                    continue
+            seen_names.add(name)
             lm_iso = lm.isoformat() if hasattr(lm, "isoformat") else str(lm)
             cached = self._heartbeats.get(name)
             if cached is not None and cached.get("lm") == lm_iso:

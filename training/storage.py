@@ -112,6 +112,15 @@ def put_json(key: str, obj: dict) -> None:
     put(key, json.dumps(obj, indent=2))
 
 
+def delete(key: str) -> None:
+    """Delete an object. No-op if the key does not exist."""
+    try:
+        _client().delete_object(Bucket=_bucket(), Key=key)
+    except ClientError as e:
+        if e.response["Error"]["Code"] not in ("NoSuchKey", "404", "NotFound"):
+            raise
+
+
 def copy(src_key: str, dst_key: str) -> None:
     """Server-side copy within the same bucket."""
     _client().copy_object(

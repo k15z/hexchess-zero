@@ -555,7 +555,7 @@ function buildGames(data) {
 
   const show = games.slice(-20).reverse();
 
-  let html = '<table><tr><th class="r">#</th><th>white</th><th>black</th><th>result</th><th class="r">moves</th><th class="r">when</th></tr>';
+  let html = '<table><tr><th>white</th><th>black</th><th>result</th><th class="r">moves</th><th class="r">when</th></tr>';
   for (const g of show) {
     let outcomeHtml;
     if (g.outcome === 'white') outcomeHtml = `<span class="game-outcome w">1-0</span>`;
@@ -563,7 +563,6 @@ function buildGames(data) {
     else outcomeHtml = `<span class="game-outcome d">\u00bd-\u00bd</span>`;
 
     html += `<tr>
-      <td class="r muted">${g.game}</td>
       <td>${g.white}</td>
       <td>${g.black}</td>
       <td>${outcomeHtml}</td>
@@ -588,7 +587,7 @@ function buildWorkers(data) {
     html += `<tr>
       <td><span class="dot ${cls}"></span></td>
       <td>${name}</td>
-      <td>v${hb.model_version || '?'}</td>
+      <td>v${hb.model_version ?? '?'}</td>
       <td class="r">${fmt(hb.total_games)}</td>
       <td class="r">${fmt(hb.total_positions)}</td>
       <td class="r muted">${ago(hb.timestamp)}</td>
