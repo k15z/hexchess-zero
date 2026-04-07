@@ -2,11 +2,10 @@
 
 Horizontally scalable: multiple replicas can run concurrently. The source of
 truth for game results is ``state/elo_games/{ts}_{rand}.json`` — one immutable
-object per game. Writes are race-free (unique keys). The legacy single-blob
-``state/elo.json`` and append-only ``state/elo_games.jsonl`` are now *derived
-projections* rebuilt from the per-game objects. Any replica can overwrite them
-idempotently; last-writer-wins is fine because they are pure functions of the
-game log.
+object per game. Writes are race-free (unique keys). ``state/elo.json`` is a
+*derived projection* rebuilt from the per-game objects. Any replica can
+overwrite it idempotently; last-writer-wins is fine because it is a pure
+function of the game log.
 
 Each replica plays one game at a time (no in-process parallelism). K8s
 replicas provide parallelism; matchmaking collisions across replicas are
@@ -355,42 +354,6 @@ def _assign_colors(state: dict, a: str, b: str) -> tuple[str, str]:
     if a_as_white <= b_as_white:
         return a, b
     return b, a
-
-
-# ---------------------------------------------------------------------------
-# Migration: one-shot backfill from the legacy jsonl log to per-game objects.
-# Idempotent — safe to run from multiple replicas simultaneously because the
-# per-game key is derived from the record timestamp plus a content hash, so
-# duplicate writes collide to the same key and overwrite identically.
-# ---------------------------------------------------------------------------
-
-
-def migrate_legacy_jsonl() -> int:
-    """Backfill legacy state/elo_games.jsonl into per-game objects. Idempotent."""
-    import hashlib
-    import json
-
-    records = storage.get_jsonl(storage.ELO_GAMES_LOG)
-    if not records:
-        logger.info("No legacy jsonl to migrate.")
-        return 0
-
-    existing = set(storage.list_game_record_keys())
-    written = 0
-    for record in records:
-        # Content-hashed key makes the migration idempotent: replays (even
-        # concurrent ones from multiple replicas) collide to the same key.
-        ts = record.get("timestamp", "19700101T000000").replace(":", "").replace("-", "")[:15]
-        payload = json.dumps(record, sort_keys=True, separators=(",", ":"))
-        h = hashlib.sha1(payload.encode()).hexdigest()[:12]
-        key = f"{storage.ELO_GAMES_PREFIX}{ts}_{h}.json"
-        if key in existing:
-            continue
-        storage.put_json(key, record)
-        written += 1
-
-    logger.info("Migrated {} legacy records to per-game objects.", written)
-    return written
 
 
 # ---------------------------------------------------------------------------
