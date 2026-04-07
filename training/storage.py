@@ -120,6 +120,63 @@ def copy(src_key: str, dst_key: str) -> None:
     )
 
 
+def head(key: str) -> dict | None:
+    """Return {'etag', 'size', 'last_modified'} for a key, or None if missing.
+
+    Cheap change-detection primitive — a single HEAD request.
+    """
+    try:
+        resp = _client().head_object(Bucket=_bucket(), Key=key)
+    except ClientError as e:
+        if e.response["Error"]["Code"] in ("NoSuchKey", "404", "NotFound"):
+            return None
+        raise
+    return {
+        "etag": resp.get("ETag", "").strip('"'),
+        "size": int(resp.get("ContentLength", 0)),
+        "last_modified": resp.get("LastModified"),
+    }
+
+
+def get_range(key: str, start: int, end: int | None = None) -> bytes:
+    """Ranged GET starting at byte `start` (inclusive). Used for tailing logs."""
+    rng = f"bytes={start}-" if end is None else f"bytes={start}-{end}"
+    try:
+        resp = _client().get_object(Bucket=_bucket(), Key=key, Range=rng)
+        return resp["Body"].read()
+    except ClientError as e:
+        code = e.response["Error"]["Code"]
+        if code in ("NoSuchKey", "404"):
+            raise KeyError(key) from e
+        if code == "InvalidRange":
+            return b""
+        raise
+
+
+def list_with_meta(prefix: str) -> list[dict]:
+    """List keys under a prefix with size + last_modified metadata."""
+    client = _client()
+    bucket = _bucket()
+    out = []
+    token = None
+    while True:
+        kwargs = {"Bucket": bucket, "Prefix": prefix}
+        if token:
+            kwargs["ContinuationToken"] = token
+        resp = client.list_objects_v2(**kwargs)
+        for obj in resp.get("Contents", []):
+            out.append({
+                "key": obj["Key"],
+                "size": int(obj.get("Size", 0)),
+                "last_modified": obj.get("LastModified"),
+                "etag": obj.get("ETag", "").strip('"'),
+            })
+        if not resp.get("IsTruncated"):
+            break
+        token = resp["NextContinuationToken"]
+    return out
+
+
 def ls(prefix: str) -> list[str]:
     """List all keys under a prefix."""
     client = _client()
@@ -149,8 +206,9 @@ _NPZ_PATTERN = re.compile(r"_n(\d+)\.npz$")
 def list_data_files(prefix: str = SELFPLAY_PREFIX) -> list[dict]:
     """List training data files with parsed metadata.
 
-    Returns list of {"key": ..., "positions": ..., "timestamp": ...}
-    sorted by timestamp descending (most recent first).
+    Returns list of {"key", "positions", "timestamp", "version"} sorted by
+    timestamp descending (most recent first). ``version`` is the ``v{N}``
+    path segment for selfplay data, or "unknown" for other prefixes.
     """
     files = []
     for key in ls(prefix):
@@ -159,10 +217,13 @@ def list_data_files(prefix: str = SELFPLAY_PREFIX) -> list[dict]:
             continue
         basename = key.rsplit("/", 1)[-1]
         ts = basename.split("_")[0]
+        parts = key.split("/")
+        version = parts[2] if len(parts) >= 3 else "unknown"
         files.append({
             "key": key,
             "positions": int(m.group(1)),
             "timestamp": ts,
+            "version": version,
         })
     files.sort(key=lambda f: f["timestamp"], reverse=True)
     return files
