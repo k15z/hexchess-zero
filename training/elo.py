@@ -60,7 +60,7 @@ class MinimaxPlayer:
         self.depth = depth
 
     def pick_move(self, game):
-        return hexchess.minimax_search(game, self.depth)["best_move"]
+        return hexchess.minimax_search(game, self.depth).best_move
 
 
 class MctsPlayer:
@@ -72,7 +72,7 @@ class MctsPlayer:
         )
 
     def pick_move(self, game):
-        return self.search.run(game, temperature=0.0)["best_move"]
+        return self.search.run(game, temperature=0.0).best_move
 
 
 def baselines(simulations: int = 500) -> list[Player]:
@@ -108,9 +108,7 @@ def play_game(white: Player, black: Player, max_moves: int = 300,
                 break
             moves = game.legal_moves()
             mv = random.choice(moves)
-            game.apply_move(
-                mv["from_q"], mv["from_r"], mv["to_q"], mv["to_r"], mv.get("promotion")
-            )
+            game.apply(mv)
 
     move_count = 0
     white_time = 0.0
@@ -130,9 +128,7 @@ def play_game(white: Player, black: Player, max_moves: int = 300,
         else:
             black_time += dt
             black_moves += 1
-        game.apply_move(
-            mv["from_q"], mv["from_r"], mv["to_q"], mv["to_r"], mv.get("promotion")
-        )
+        game.apply(mv)
         move_count += 1
 
     status = game.status()

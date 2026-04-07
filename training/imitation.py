@@ -24,9 +24,9 @@ NUM_MOVES = hexchess.num_move_indices()
 WDL_SCALE = 400.0
 
 
-def _softmax_probs(move_scores: list[dict], temperature: float) -> np.ndarray:
+def _softmax_probs(move_scores, temperature: float) -> np.ndarray:
     """Compute softmax probabilities over minimax move scores."""
-    scores = np.array([m["score"] for m in move_scores], dtype=np.float64)
+    scores = np.array([m.score for m in move_scores], dtype=np.float64)
     scores = np.clip(scores, -5000, 5000)
     scaled = scores / temperature
     scaled -= scaled.max()
@@ -34,15 +34,13 @@ def _softmax_probs(move_scores: list[dict], temperature: float) -> np.ndarray:
     return exp_scores / exp_scores.sum()
 
 
-def _scores_to_policy(move_scores: list[dict], temperature: float) -> np.ndarray:
+def _scores_to_policy(move_scores, temperature: float) -> np.ndarray:
     """Convert minimax move scores to a softmax policy vector."""
     probs = _softmax_probs(move_scores, temperature)
     policy = np.zeros(NUM_MOVES, dtype=np.float32)
     for entry, p in zip(move_scores, probs):
-        mv = entry["move"]
-        idx = hexchess.move_to_index(
-            mv["from_q"], mv["from_r"], mv["to_q"], mv["to_r"], mv.get("promotion"),
-        )
+        mv = entry.move
+        idx = hexchess.move_to_index(mv.from_q, mv.from_r, mv.to_q, mv.to_r, mv.promotion)
         policy[idx] = p
     return policy
 
@@ -83,11 +81,11 @@ def _flip_wdl(wdl: np.ndarray) -> np.ndarray:
     return np.array([wdl[2], wdl[1], wdl[0]], dtype=np.float32)
 
 
-def _sample_move(move_scores: list[dict], temperature: float) -> dict:
+def _sample_move(move_scores, temperature: float):
     """Sample a move from minimax scores using softmax temperature."""
     probs = _softmax_probs(move_scores, temperature)
     idx = np.random.choice(len(move_scores), p=probs)
-    return move_scores[idx]["move"]
+    return move_scores[idx].move
 
 
 def play_imitation_game(cfg: AsyncConfig, log_interval: int = 50) -> list[dict]:
@@ -116,17 +114,17 @@ def play_imitation_game(cfg: AsyncConfig, log_interval: int = 50) -> list[dict]:
         result = hexchess.minimax_search_with_policy(game, cfg.imitation_depth)
 
         board_tensor = np.array(hexchess.encode_board(game), dtype=np.float32)
-        policy = _scores_to_policy(result["moves"], cfg.imitation_temperature)
-        best_score = result["best_score"]
+        policy = _scores_to_policy(result.moves, cfg.imitation_temperature)
+        best_score = result.best_score
         side = game.side_to_move()
 
         pending.append((board_tensor, policy, best_score, side))
 
-        if ply < cfg.imitation_exploration_plies and len(result["moves"]) > 1:
-            mv = _sample_move(result["moves"], cfg.imitation_temperature)
+        if ply < cfg.imitation_exploration_plies and len(result.moves) > 1:
+            mv = _sample_move(result.moves, cfg.imitation_temperature)
         else:
-            mv = result["best_move"]
-        game.apply_move(mv["from_q"], mv["from_r"], mv["to_q"], mv["to_r"], mv.get("promotion"))
+            mv = result.best_move
+        game.apply(mv)
         ply += 1
 
         if ply % log_interval == 0:

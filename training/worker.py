@@ -78,26 +78,16 @@ def _play_one_game(
         else:
             temperature = cfg.temperature_low
 
-        result = search.run(
-            game,
-            temperature=temperature,
-            dirichlet_epsilon=cfg.dirichlet_epsilon,
-            dirichlet_alpha=cfg.dirichlet_alpha,
-        )
+        result = search.run(game, temperature=temperature)
 
         side = game.side_to_move()
         samples.append({
             "board": board_tensor,
-            "policy": result["policy"],
+            "policy": result.policy,
             "side": side,
         })
 
-        best = result["best_move"]
-        game.apply_move(
-            best["from_q"], best["from_r"],
-            best["to_q"], best["to_r"],
-            best.get("promotion"),
-        )
+        game.apply(result.best_move)
         move_number += 1
 
     status = game.status()
@@ -222,6 +212,8 @@ def run_worker(cfg: AsyncConfig) -> None:
     search = hexchess.MctsSearch(
         simulations=cfg.num_simulations,
         model_path=model_path,
+        dirichlet_epsilon=cfg.dirichlet_epsilon,
+        dirichlet_alpha=cfg.dirichlet_alpha,
     )
 
     while True:
@@ -261,11 +253,11 @@ def run_worker(cfg: AsyncConfig) -> None:
             )
 
             tt = search.tt_stats()
-            hit_rate = tt["hits"] / max(tt["hits"] + tt["misses"], 1) * 100
+            hit_rate = tt.hits / max(tt.hits + tt.misses, 1) * 100
             logger.info(
                 "TT: {} entries, {:.0f}% hit rate ({} hits, {} misses, {} clears)",
-                tt["current_size"], hit_rate,
-                tt["hits"], tt["misses"], tt["clears"],
+                tt.current_size, hit_rate,
+                tt.hits, tt.misses, tt.clears,
             )
 
             _write_heartbeat(cfg, current_version, total_games, total_positions)
@@ -278,4 +270,6 @@ def run_worker(cfg: AsyncConfig) -> None:
             search = hexchess.MctsSearch(
                 simulations=cfg.num_simulations,
                 model_path=model_path,
+                dirichlet_epsilon=cfg.dirichlet_epsilon,
+                dirichlet_alpha=cfg.dirichlet_alpha,
             )

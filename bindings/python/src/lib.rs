@@ -1,6 +1,5 @@
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
 
 use numpy::ndarray::{Array1, Array3, Array4};
 use numpy::{IntoPyArray, PyArray3, PyArray4};
@@ -14,8 +13,7 @@ use hexchess_engine::mcts::{
     WeightedHeuristicEvaluator,
 };
 use hexchess_engine::minimax;
-
-use hexchess_engine::movegen;
+use hexchess_engine::movegen::{self, Move as EngineMove};
 use hexchess_engine::serialization;
 
 // ---------------------------------------------------------------------------
@@ -26,19 +24,339 @@ fn promotion_str(kind: Option<PieceKind>) -> Option<&'static str> {
     kind.map(PieceKind::as_str)
 }
 
-/// Build a Python dict representing a move.
-fn move_to_pydict<'py>(py: Python<'py>, mv: &movegen::Move) -> PyResult<Bound<'py, PyDict>> {
-    let dict = PyDict::new(py);
-    dict.set_item("from_q", mv.from.q)?;
-    dict.set_item("from_r", mv.from.r)?;
-    dict.set_item("to_q", mv.to.q)?;
-    dict.set_item("to_r", mv.to.r)?;
-    dict.set_item("promotion", promotion_str(mv.promotion))?;
-    Ok(dict)
+fn parse_promotion(s: Option<&str>) -> PyResult<Option<PieceKind>> {
+    s.map(|s| {
+        PieceKind::parse(s)
+            .ok_or_else(|| PyValueError::new_err(format!("invalid promotion piece: {s}")))
+    })
+    .transpose()
 }
 
 // ---------------------------------------------------------------------------
-// PyEvalWeights class
+// Move class
+// ---------------------------------------------------------------------------
+
+/// A move on the hex board. Immutable value type.
+#[pyclass(name = "Move", frozen)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct PyMove {
+    #[pyo3(get)]
+    from_q: i8,
+    #[pyo3(get)]
+    from_r: i8,
+    #[pyo3(get)]
+    to_q: i8,
+    #[pyo3(get)]
+    to_r: i8,
+    promotion: Option<PieceKind>,
+}
+
+impl PyMove {
+    fn from_engine(mv: &EngineMove) -> Self {
+        Self {
+            from_q: mv.from.q,
+            from_r: mv.from.r,
+            to_q: mv.to.q,
+            to_r: mv.to.r,
+            promotion: mv.promotion,
+        }
+    }
+
+    fn to_engine_key(&self) -> (HexCoord, HexCoord, Option<PieceKind>) {
+        (
+            HexCoord::new(self.from_q, self.from_r),
+            HexCoord::new(self.to_q, self.to_r),
+            self.promotion,
+        )
+    }
+}
+
+#[pymethods]
+impl PyMove {
+    /// Construct a move. `promotion` is one of "queen"/"rook"/"bishop"/"knight" or None.
+    #[new]
+    #[pyo3(signature = (from_q, from_r, to_q, to_r, promotion=None))]
+    fn new(from_q: i8, from_r: i8, to_q: i8, to_r: i8, promotion: Option<&str>) -> PyResult<Self> {
+        Ok(Self {
+            from_q,
+            from_r,
+            to_q,
+            to_r,
+            promotion: parse_promotion(promotion)?,
+        })
+    }
+
+    /// Parse a move from Glinski notation like "f5-f6" or "f10-f11=Q".
+    #[staticmethod]
+    fn from_notation(s: &str) -> PyResult<Self> {
+        let (from, to, promo) = EngineMove::parse_notation(s)
+            .ok_or_else(|| PyValueError::new_err(format!("invalid move notation: {s}")))?;
+        Ok(Self {
+            from_q: from.q,
+            from_r: from.r,
+            to_q: to.q,
+            to_r: to.r,
+            promotion: promo,
+        })
+    }
+
+    /// Promotion piece as a string, or None.
+    #[getter]
+    fn promotion(&self) -> Option<&'static str> {
+        promotion_str(self.promotion)
+    }
+
+    /// `(q, r)` tuple of the from-square.
+    #[getter]
+    #[pyo3(name = "from_")]
+    fn from_(&self) -> (i8, i8) {
+        (self.from_q, self.from_r)
+    }
+
+    /// `(q, r)` tuple of the to-square.
+    #[getter]
+    fn to(&self) -> (i8, i8) {
+        (self.to_q, self.to_r)
+    }
+
+    /// Glinski notation like "f5-f6" or "f10-f11=Q".
+    #[getter]
+    fn notation(&self) -> PyResult<String> {
+        let from = HexCoord::new(self.from_q, self.from_r);
+        let to = HexCoord::new(self.to_q, self.to_r);
+        let mv = EngineMove::new(from, to, None).with_promotion_opt(self.promotion);
+        mv.to_notation()
+            .ok_or_else(|| PyValueError::new_err("move endpoints are off-board"))
+    }
+
+    fn __repr__(&self) -> String {
+        match self.notation() {
+            Ok(s) => format!("Move({})", s),
+            Err(_) => format!(
+                "Move(from=({},{}), to=({},{}), promotion={:?})",
+                self.from_q, self.from_r, self.to_q, self.to_r, self.promotion
+            ),
+        }
+    }
+
+    fn __str__(&self) -> String {
+        self.notation().unwrap_or_else(|_| {
+            format!(
+                "({},{})->({},{})",
+                self.from_q, self.from_r, self.to_q, self.to_r
+            )
+        })
+    }
+
+    fn __eq__(&self, other: &Self) -> bool {
+        self == other
+    }
+
+    fn __hash__(&self) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        self.hash(&mut h);
+        h.finish()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Piece class
+// ---------------------------------------------------------------------------
+
+/// A piece on the board at a given cell.
+#[pyclass(name = "Piece", frozen)]
+#[derive(Clone, Copy)]
+struct PyPiece {
+    #[pyo3(get)]
+    q: i8,
+    #[pyo3(get)]
+    r: i8,
+    kind: PieceKind,
+    color: board::Color,
+}
+
+#[pymethods]
+impl PyPiece {
+    #[getter]
+    fn piece(&self) -> &'static str {
+        self.kind.as_str()
+    }
+
+    #[getter]
+    fn color(&self) -> &'static str {
+        self.color.as_str()
+    }
+
+    #[getter]
+    fn square(&self) -> Option<String> {
+        HexCoord::new(self.q, self.r).to_notation()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Piece(q={}, r={}, piece={:?}, color={:?})",
+            self.q,
+            self.r,
+            self.kind.as_str(),
+            self.color.as_str()
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TtStats class
+// ---------------------------------------------------------------------------
+
+#[pyclass(name = "TtStats", frozen)]
+#[derive(Clone, Copy)]
+struct PyTtStats {
+    #[pyo3(get)]
+    hits: u64,
+    #[pyo3(get)]
+    misses: u64,
+    #[pyo3(get)]
+    clears: u64,
+    #[pyo3(get)]
+    current_size: usize,
+}
+
+#[pymethods]
+impl PyTtStats {
+    fn __repr__(&self) -> String {
+        format!(
+            "TtStats(hits={}, misses={}, clears={}, current_size={})",
+            self.hits, self.misses, self.clears, self.current_size
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MctsResult class
+// ---------------------------------------------------------------------------
+
+#[pyclass(name = "MctsResult")]
+struct PyMctsResult {
+    #[pyo3(get)]
+    best_move: PyMove,
+    policy: Vec<f32>,
+    #[pyo3(get)]
+    value: f32,
+    #[pyo3(get)]
+    nodes: u32,
+}
+
+#[pymethods]
+impl PyMctsResult {
+    /// Policy vector as a numpy array of length `num_move_indices()`.
+    #[getter]
+    fn policy<'py>(&self, py: Python<'py>) -> Bound<'py, numpy::PyArray1<f32>> {
+        Array1::from_vec(self.policy.clone()).into_pyarray(py)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "MctsResult(best_move={}, value={:.3}, nodes={})",
+            self.best_move.__str__(),
+            self.value,
+            self.nodes
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RankedMove + minimax result classes
+// ---------------------------------------------------------------------------
+
+#[pyclass(name = "RankedMove", frozen)]
+#[derive(Clone, Copy)]
+struct PyRankedMove {
+    #[pyo3(get)]
+    r#move: PyMove,
+    #[pyo3(get)]
+    score: i32,
+}
+
+#[pymethods]
+impl PyRankedMove {
+    fn __repr__(&self) -> String {
+        format!(
+            "RankedMove(move={}, score={})",
+            self.r#move.__str__(),
+            self.score
+        )
+    }
+}
+
+#[pyclass(name = "MinimaxResult", frozen)]
+struct PyMinimaxResult {
+    #[pyo3(get)]
+    best_move: PyMove,
+    #[pyo3(get)]
+    score: i32,
+    #[pyo3(get)]
+    nodes: u64,
+}
+
+#[pymethods]
+impl PyMinimaxResult {
+    fn __repr__(&self) -> String {
+        format!(
+            "MinimaxResult(best_move={}, score={}, nodes={})",
+            self.best_move.__str__(),
+            self.score,
+            self.nodes
+        )
+    }
+}
+
+#[pyclass(name = "MinimaxAllResult", frozen)]
+struct PyMinimaxAllResult {
+    #[pyo3(get)]
+    moves: Vec<PyRankedMove>,
+    #[pyo3(get)]
+    nodes: u64,
+}
+
+#[pymethods]
+impl PyMinimaxAllResult {
+    fn __repr__(&self) -> String {
+        format!(
+            "MinimaxAllResult(moves=[{}], nodes={})",
+            self.moves.len(),
+            self.nodes
+        )
+    }
+}
+
+#[pyclass(name = "MinimaxPolicyResult", frozen)]
+struct PyMinimaxPolicyResult {
+    #[pyo3(get)]
+    best_move: PyMove,
+    #[pyo3(get)]
+    best_score: i32,
+    #[pyo3(get)]
+    moves: Vec<PyRankedMove>,
+    #[pyo3(get)]
+    nodes: u64,
+}
+
+#[pymethods]
+impl PyMinimaxPolicyResult {
+    fn __repr__(&self) -> String {
+        format!(
+            "MinimaxPolicyResult(best_move={}, best_score={}, moves=[{}], nodes={})",
+            self.best_move.__str__(),
+            self.best_score,
+            self.moves.len(),
+            self.nodes
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// EvalWeights class
 // ---------------------------------------------------------------------------
 
 #[pyclass(name = "EvalWeights")]
@@ -113,12 +431,34 @@ impl PyEvalWeights {
 }
 
 // ---------------------------------------------------------------------------
-// PyGame class
+// Game class
 // ---------------------------------------------------------------------------
 
 #[pyclass(name = "Game")]
 struct PyGame {
     state: GameState,
+}
+
+impl PyGame {
+    /// Resolve a `Move | str | (fq, fr, tq, tr[, promo])`-ish input to an
+    /// engine move by scanning the legal move list.
+    fn resolve_legal_move(
+        &self,
+        mv_key: (HexCoord, HexCoord, Option<PieceKind>),
+    ) -> PyResult<EngineMove> {
+        let (from, to, promo) = mv_key;
+        let legal = self.state.legal_moves();
+        legal
+            .iter()
+            .find(|m| m.from == from && m.to == to && m.promotion == promo)
+            .copied()
+            .ok_or_else(|| {
+                PyValueError::new_err(format!(
+                    "illegal move: ({},{})->({},{})",
+                    from.q, from.r, to.q, to.r
+                ))
+            })
+    }
 }
 
 #[pymethods]
@@ -130,17 +470,17 @@ impl PyGame {
         }
     }
 
-    /// Return a list of dicts {from_q, from_r, to_q, to_r, promotion}.
-    fn legal_moves<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        let moves = self.state.legal_moves();
-        let list = PyList::empty(py);
-        for mv in &moves {
-            list.append(move_to_pydict(py, mv)?)?;
-        }
-        Ok(list)
+    /// Return the list of legal moves as `Move` objects.
+    fn legal_moves(&self) -> Vec<PyMove> {
+        self.state
+            .legal_moves()
+            .iter()
+            .map(PyMove::from_engine)
+            .collect()
     }
 
-    /// Apply a move. Promotion should be "queen", "rook", "bishop", "knight", or None.
+    /// Apply a move specified as five positional args (legacy API).
+    /// Prefer `apply(mv)` for new code — it accepts a `Move` or a notation string.
     #[pyo3(signature = (from_q, from_r, to_q, to_r, promotion=None))]
     fn apply_move(
         &mut self,
@@ -150,27 +490,30 @@ impl PyGame {
         to_r: i8,
         promotion: Option<&str>,
     ) -> PyResult<()> {
-        let promo_kind = promotion
-            .map(|s| {
-                PieceKind::parse(s)
-                    .ok_or_else(|| PyValueError::new_err(format!("invalid promotion piece: {s}")))
-            })
-            .transpose()?;
-
+        let promo = parse_promotion(promotion)?;
         let from = HexCoord::new(from_q, from_r);
         let to = HexCoord::new(to_q, to_r);
+        let mv = self.resolve_legal_move((from, to, promo))?;
+        self.state.apply_move(mv);
+        Ok(())
+    }
 
-        let legal = self.state.legal_moves();
-        let mv = legal
-            .iter()
-            .find(|m| m.from == from && m.to == to && m.promotion == promo_kind)
-            .ok_or_else(|| {
-                PyValueError::new_err(format!(
-                    "illegal move: ({from_q},{from_r})->({to_q},{to_r})"
-                ))
-            })?;
-
-        self.state.apply_move(*mv);
+    /// Apply a move given as a `Move` object or a Glinski notation string
+    /// (e.g. "f5-f6", "f10-f11=Q"). Raises `ValueError` if the move is illegal.
+    fn apply(&mut self, mv: &Bound<'_, PyAny>) -> PyResult<()> {
+        let key = if let Ok(py_mv) = mv.extract::<PyRef<PyMove>>() {
+            py_mv.to_engine_key()
+        } else if let Ok(s) = mv.extract::<String>() {
+            let (from, to, promo) = EngineMove::parse_notation(&s)
+                .ok_or_else(|| PyValueError::new_err(format!("invalid move notation: {s}")))?;
+            (from, to, promo)
+        } else {
+            return Err(PyValueError::new_err(
+                "apply() expects a Move or a notation string",
+            ));
+        };
+        let engine_mv = self.resolve_legal_move(key)?;
+        self.state.apply_move(engine_mv);
         Ok(())
     }
 
@@ -189,7 +532,6 @@ impl PyGame {
         self.state.status().as_str()
     }
 
-    /// Is the game over?
     fn is_game_over(&self) -> bool {
         self.state.is_game_over()
     }
@@ -199,24 +541,28 @@ impl PyGame {
         self.state.side_to_move().as_str()
     }
 
-    /// All pieces on the board as a list of dicts {q, r, piece, color}.
-    fn board_state<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        let list = PyList::empty(py);
+    /// Number of half-moves played.
+    fn move_count(&self) -> usize {
+        self.state.move_count()
+    }
+
+    /// All pieces on the board as a list of `Piece` objects.
+    fn board_state(&self) -> Vec<PyPiece> {
+        let mut out = Vec::new();
         for (idx, cell) in self.state.board.cells.iter().enumerate() {
             if let Some(piece) = cell {
                 let coord = board::index_to_coord(idx);
-                let dict = PyDict::new(py);
-                dict.set_item("q", coord.q)?;
-                dict.set_item("r", coord.r)?;
-                dict.set_item("piece", piece.kind.as_str())?;
-                dict.set_item("color", piece.color.as_str())?;
-                list.append(dict)?;
+                out.push(PyPiece {
+                    q: coord.q,
+                    r: coord.r,
+                    kind: piece.kind,
+                    color: piece.color,
+                });
             }
         }
-        Ok(list)
+        out
     }
 
-    /// Is the current side to move in check?
     fn is_in_check(&self) -> bool {
         movegen::is_in_check(&self.state.board, self.state.side_to_move())
     }
@@ -227,15 +573,38 @@ impl PyGame {
             state: self.state.clone(),
         }
     }
+
+    fn __copy__(&self) -> Self {
+        self.clone()
+    }
+
+    fn __deepcopy__(&self, _memo: &Bound<'_, PyAny>) -> Self {
+        self.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Game(side={}, ply={}, status={})",
+            self.state.side_to_move().as_str(),
+            self.state.move_count(),
+            self.state.status().as_str()
+        )
+    }
+
+    /// ASCII rendering of the board — useful in notebooks.
+    fn __str__(&self) -> String {
+        format!("{}", self.state.board)
+    }
 }
 
 // ---------------------------------------------------------------------------
-// PyMctsSearch class
+// MctsSearch class
 // ---------------------------------------------------------------------------
 
 #[pyclass(name = "MctsSearch")]
 struct PyMctsSearch {
     search: EngineSearch,
+    #[pyo3(get, set)]
     simulations: u32,
 }
 
@@ -243,11 +612,18 @@ struct PyMctsSearch {
 impl PyMctsSearch {
     /// Create an MCTS search engine.
     ///
-    /// If `model_path` is provided, loads the ONNX neural network once and
-    /// uses it as the evaluator for all subsequent `run()` calls.
-    /// Otherwise, uses a heuristic evaluator (uniform policy, material value).
+    /// If `model_path` is provided, loads the ONNX neural network once.
+    /// Otherwise uses a heuristic evaluator (uniform policy, material value).
+    ///
+    /// `dirichlet_epsilon` / `dirichlet_alpha` enable root-move Dirichlet
+    /// noise; set `dirichlet_epsilon=0` (the default) to disable.
     #[new]
-    #[pyo3(signature = (simulations=800, c_puct=1.5, model_path=None, batch_size=32, tt_capacity=500_000, intra_threads=0, use_weighted_eval=false))]
+    #[pyo3(signature = (
+        simulations=800, c_puct=1.5, model_path=None, batch_size=32,
+        tt_capacity=500_000, intra_threads=0, use_weighted_eval=false,
+        dirichlet_epsilon=0.0, dirichlet_alpha=0.3
+    ))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         simulations: u32,
         c_puct: f32,
@@ -256,6 +632,8 @@ impl PyMctsSearch {
         tt_capacity: usize,
         intra_threads: usize,
         use_weighted_eval: bool,
+        dirichlet_epsilon: f32,
+        dirichlet_alpha: f64,
     ) -> PyResult<Self> {
         let evaluator: Box<dyn Evaluator> = match model_path {
             Some(path) => {
@@ -277,64 +655,49 @@ impl PyMctsSearch {
         search.set_c_puct(c_puct);
         search.set_batch_size(batch_size);
         search.set_tt_capacity(tt_capacity);
+        if dirichlet_epsilon > 0.0 {
+            search.set_dirichlet(Some(DirichletConfig {
+                epsilon: dirichlet_epsilon,
+                alpha: dirichlet_alpha,
+            }));
+        }
         Ok(PyMctsSearch {
             search,
             simulations,
         })
     }
 
-    /// Run MCTS search. Returns dict {best_move, policy, value, nodes}.
-    #[pyo3(signature = (game, temperature=None, dirichlet_epsilon=None, dirichlet_alpha=None))]
-    fn run<'py>(
-        &mut self,
-        py: Python<'py>,
-        game: &PyGame,
-        temperature: Option<f32>,
-        dirichlet_epsilon: Option<f32>,
-        dirichlet_alpha: Option<f64>,
-    ) -> PyResult<Bound<'py, PyDict>> {
-        if let Some(epsilon) = dirichlet_epsilon {
-            self.search.set_dirichlet(Some(DirichletConfig {
-                epsilon,
-                alpha: dirichlet_alpha.unwrap_or(0.3),
-            }));
-        } else {
-            self.search.set_dirichlet(None);
+    /// Run MCTS search on `game`. Returns an `MctsResult`.
+    ///
+    /// `temperature=0` selects the most-visited move; `temperature>0` samples
+    /// proportionally to visit counts ^ (1/temperature).
+    #[pyo3(signature = (game, temperature=0.0))]
+    fn run(&mut self, game: &PyGame, temperature: f32) -> PyMctsResult {
+        let result =
+            self.search
+                .search_with_temperature(&game.state, self.simulations, temperature);
+        PyMctsResult {
+            best_move: PyMove::from_engine(&result.best_move),
+            policy: result.policy,
+            value: result.value,
+            nodes: result.nodes_searched,
         }
-
-        let temp = temperature.unwrap_or(0.0);
-        let result = self
-            .search
-            .search_with_temperature(&game.state, self.simulations, temp);
-
-        // Build the result dict.
-        let dict = PyDict::new(py);
-        dict.set_item("best_move", move_to_pydict(py, &result.best_move)?)?;
-
-        // Policy as numpy array.
-        let policy_array = Array1::from_vec(result.policy);
-        dict.set_item("policy", policy_array.into_pyarray(py))?;
-
-        dict.set_item("value", result.value)?;
-        dict.set_item("nodes", result.nodes_searched)?;
-
-        Ok(dict)
     }
 
-    /// Return transposition table statistics as a dict.
-    fn tt_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let stats = self.search.tt_stats();
-        let dict = PyDict::new(py);
-        dict.set_item("hits", stats.hits)?;
-        dict.set_item("misses", stats.misses)?;
-        dict.set_item("clears", stats.clears)?;
-        dict.set_item("current_size", stats.current_size)?;
-        Ok(dict)
+    /// Transposition-table stats.
+    fn tt_stats(&self) -> PyTtStats {
+        let s = self.search.tt_stats();
+        PyTtStats {
+            hits: s.hits,
+            misses: s.misses,
+            clears: s.clears,
+            current_size: s.current_size,
+        }
     }
 }
 
 // ---------------------------------------------------------------------------
-// Standalone encoding functions
+// Encoding functions
 // ---------------------------------------------------------------------------
 
 /// Encode a game's board state as a numpy array of shape (19, 11, 11).
@@ -385,24 +748,18 @@ fn move_to_index(
     to_r: i8,
     promotion: Option<&str>,
 ) -> PyResult<usize> {
-    let promo_kind = promotion
-        .map(|s| {
-            PieceKind::parse(s)
-                .ok_or_else(|| PyValueError::new_err(format!("invalid promotion piece: {s}")))
-        })
-        .transpose()?;
-
+    let promo = parse_promotion(promotion)?;
     let from = HexCoord::new(from_q, from_r);
     let to = HexCoord::new(to_q, to_r);
-    let mv = movegen::Move::new(from, to, None).with_promotion_opt(promo_kind);
+    let mv = EngineMove::new(from, to, None).with_promotion_opt(promo);
 
     serialization::move_to_index(&mv)
         .ok_or_else(|| PyValueError::new_err("move not in index table"))
 }
 
-/// Convert a policy-vector index to a dict {from_q, from_r, to_q, to_r, promotion}.
+/// Convert a policy-vector index to a `Move`.
 #[pyfunction]
-fn index_to_move(py: Python<'_>, idx: usize) -> PyResult<Bound<'_, PyDict>> {
+fn index_to_move(idx: usize) -> PyResult<PyMove> {
     let n = serialization::num_move_indices();
     if idx >= n {
         return Err(PyValueError::new_err(format!(
@@ -410,13 +767,13 @@ fn index_to_move(py: Python<'_>, idx: usize) -> PyResult<Bound<'_, PyDict>> {
         )));
     }
     let (from, to, promo) = serialization::index_to_move(idx);
-    let dict = PyDict::new(py);
-    dict.set_item("from_q", from.q)?;
-    dict.set_item("from_r", from.r)?;
-    dict.set_item("to_q", to.q)?;
-    dict.set_item("to_r", to.r)?;
-    dict.set_item("promotion", promotion_str(promo))?;
-    Ok(dict)
+    Ok(PyMove {
+        from_q: from.q,
+        from_r: from.r,
+        to_q: to.q,
+        to_r: to.r,
+        promotion: promo,
+    })
 }
 
 /// Total number of move indices in the policy vector.
@@ -436,83 +793,68 @@ fn resolve_weights(weights: Option<&PyEvalWeights>) -> EvalWeights {
     }
 }
 
-/// Run alpha-beta minimax search. Returns dict {best_move, score, nodes}.
-/// Raises ValueError if the game is already over.
+fn ranked_moves(moves: &[minimax::RankedMove]) -> Vec<PyRankedMove> {
+    moves
+        .iter()
+        .map(|r| PyRankedMove {
+            r#move: PyMove::from_engine(&r.mv),
+            score: r.score,
+        })
+        .collect()
+}
+
+/// Alpha-beta minimax search. Raises `ValueError` if the game is terminal.
 #[pyfunction]
 #[pyo3(signature = (game, depth, weights=None))]
-fn minimax_search<'py>(
-    py: Python<'py>,
+fn minimax_search(
     game: &mut PyGame,
     depth: u32,
     weights: Option<&PyEvalWeights>,
-) -> PyResult<Bound<'py, PyDict>> {
+) -> PyResult<PyMinimaxResult> {
     let w = resolve_weights(weights);
     let result = minimax::search(&mut game.state, depth, &w)
         .ok_or_else(|| PyValueError::new_err("cannot search a terminal position"))?;
-    let dict = PyDict::new(py);
-    dict.set_item("best_move", move_to_pydict(py, &result.best_move)?)?;
-    dict.set_item("score", result.score)?;
-    dict.set_item("nodes", result.nodes)?;
-    Ok(dict)
+    Ok(PyMinimaxResult {
+        best_move: PyMove::from_engine(&result.best_move),
+        score: result.score,
+        nodes: result.nodes,
+    })
 }
 
-/// Run minimax and return scores for ALL legal moves.
-/// Returns dict {moves: [{move: {...}, score: int}, ...], nodes: int}.
+/// Minimax returning scores for all legal moves.
 #[pyfunction]
 #[pyo3(signature = (game, depth, weights=None))]
-fn minimax_search_all<'py>(
-    py: Python<'py>,
+fn minimax_search_all(
     game: &mut PyGame,
     depth: u32,
     weights: Option<&PyEvalWeights>,
-) -> PyResult<Bound<'py, PyDict>> {
+) -> PyResult<PyMinimaxAllResult> {
     let w = resolve_weights(weights);
     let result = minimax::search_all_moves(&mut game.state, depth, &w)
         .ok_or_else(|| PyValueError::new_err("cannot search a terminal position"))?;
-
-    let moves_list = PyList::empty(py);
-    for ranked in &result.moves {
-        let entry = PyDict::new(py);
-        entry.set_item("move", move_to_pydict(py, &ranked.mv)?)?;
-        entry.set_item("score", ranked.score)?;
-        moves_list.append(entry)?;
-    }
-
-    let dict = PyDict::new(py);
-    dict.set_item("moves", moves_list)?;
-    dict.set_item("nodes", result.nodes)?;
-    Ok(dict)
+    Ok(PyMinimaxAllResult {
+        moves: ranked_moves(&result.moves),
+        nodes: result.nodes,
+    })
 }
 
-/// Two-phase minimax search: fully-optimized best-move search (Phase 1) plus
-/// shallow TT-backed re-search for all root moves (Phase 2).
-/// Returns dict {best_move, best_score, moves: [{move, score}, ...], nodes}.
+/// Two-phase minimax: optimized best-move search + shallow all-root re-search.
 #[pyfunction]
 #[pyo3(signature = (game, depth, weights=None))]
-fn minimax_search_with_policy<'py>(
-    py: Python<'py>,
+fn minimax_search_with_policy(
     game: &mut PyGame,
     depth: u32,
     weights: Option<&PyEvalWeights>,
-) -> PyResult<Bound<'py, PyDict>> {
+) -> PyResult<PyMinimaxPolicyResult> {
     let w = resolve_weights(weights);
     let result = minimax::search_with_policy(&mut game.state, depth, &w)
         .ok_or_else(|| PyValueError::new_err("cannot search a terminal position"))?;
-
-    let moves_list = PyList::empty(py);
-    for ranked in &result.move_scores {
-        let entry = PyDict::new(py);
-        entry.set_item("move", move_to_pydict(py, &ranked.mv)?)?;
-        entry.set_item("score", ranked.score)?;
-        moves_list.append(entry)?;
-    }
-
-    let dict = PyDict::new(py);
-    dict.set_item("best_move", move_to_pydict(py, &result.best_move)?)?;
-    dict.set_item("best_score", result.best_score)?;
-    dict.set_item("moves", moves_list)?;
-    dict.set_item("nodes", result.nodes)?;
-    Ok(dict)
+    Ok(PyMinimaxPolicyResult {
+        best_move: PyMove::from_engine(&result.best_move),
+        best_score: result.best_score,
+        moves: ranked_moves(&result.move_scores),
+        nodes: result.nodes,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -541,9 +883,20 @@ fn from_notation(s: &str) -> PyResult<(i8, i8)> {
 
 #[pymodule]
 fn hexchess(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // Classes
     m.add_class::<PyGame>()?;
     m.add_class::<PyMctsSearch>()?;
     m.add_class::<PyEvalWeights>()?;
+    m.add_class::<PyMove>()?;
+    m.add_class::<PyPiece>()?;
+    m.add_class::<PyMctsResult>()?;
+    m.add_class::<PyTtStats>()?;
+    m.add_class::<PyRankedMove>()?;
+    m.add_class::<PyMinimaxResult>()?;
+    m.add_class::<PyMinimaxAllResult>()?;
+    m.add_class::<PyMinimaxPolicyResult>()?;
+
+    // Functions
     m.add_function(wrap_pyfunction!(encode_board, m)?)?;
     m.add_function(wrap_pyfunction!(encode_batch, m)?)?;
     m.add_function(wrap_pyfunction!(move_to_index, m)?)?;
@@ -555,13 +908,14 @@ fn hexchess(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(to_notation, m)?)?;
     m.add_function(wrap_pyfunction!(from_notation, m)?)?;
 
-    // TENSOR_SHAPE constant
+    // Constants
     let tensor_shape = (
         serialization::NUM_CHANNELS,
         serialization::BOARD_DIM,
         serialization::BOARD_DIM,
     );
     m.add("TENSOR_SHAPE", tensor_shape)?;
+    m.add("NUM_MOVE_INDICES", serialization::num_move_indices())?;
 
     Ok(())
 }
