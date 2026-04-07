@@ -83,19 +83,23 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux x86_64: before-script runs inside the manylinux_2_28 container.
+          # Linux wheels: bindings/python/Cargo.toml turns on `openssl/vendored`
+          # for cfg(target_os = "linux"), so openssl-sys builds OpenSSL from
+          # source. Both targets need a perl with Time::Piece + IPC::Cmd +
+          # FindBin to run OpenSSL's Configure script.
+          #
+          # x86_64: container is manylinux_2_28 (AlmaLinux/dnf).
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             manylinux: '2_28'
-            before_script_linux: 'dnf install -y openssl-devel perl-IPC-Cmd'
-          # Linux aarch64: maturin-action runs the before-script on the Ubuntu host
-          # (not in the manylinux container) when cross-compiling, so use apt.
-          # The actual build still happens inside the container and picks up the
-          # cross openssl via the runtime's pkg-config.
+            before_script_linux: 'dnf install -y perl-IPC-Cmd perl-Time-Piece perl-FindBin perl-File-Compare perl-File-Copy'
+          # aarch64: container is ghcr.io/rust-cross/manylinux_2_28-cross:aarch64
+          # (Debian-based, apt). Modern Debian perl bundles Time::Piece, but we
+          # still need IPC::Cmd, plus make for openssl's build system.
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             manylinux: '2_28'
-            before_script_linux: 'apt-get update && apt-get install -y perl libssl-dev'
+            before_script_linux: 'apt-get update && apt-get install -y perl libipc-cmd-perl libtime-piece-perl make'
           # macOS arm64 (Apple Silicon). We intentionally do not build an
           # x86_64 macOS wheel: the macos-13 runner image has been retired,
           # and macOS 13 Intel users can install via the sdist.
