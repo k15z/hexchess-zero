@@ -143,6 +143,12 @@ def run_worker(cfg: AsyncConfig) -> None:
 
     current_version, model_path = _read_model_version(cfg)
 
+    # Publish a heartbeat immediately so the dashboard sees this worker (and
+    # its current model version) before the first batch completes — first
+    # self-play batches can take many minutes, during which the pod would
+    # otherwise be invisible.
+    _write_heartbeat(cfg, current_version, 0, 0)
+
     # Bootstrap: generate imitation data from minimax until a model appears.
     # Minimax is single-threaded, so we parallelize across cores. Games are
     # flushed every worker_batch_size completions to keep file sizes consistent
@@ -186,7 +192,7 @@ def run_worker(cfg: AsyncConfig) -> None:
                             batch_elapsed / pending_games, imitation_games,
                             imitation_positions, key,
                         )
-                        _write_heartbeat(cfg, 0, imitation_games, imitation_positions)
+                        _write_heartbeat(cfg, current_version, imitation_games, imitation_positions)
                         pending_samples = []
                         pending_games = 0
                         batch_t0 = time.time()
