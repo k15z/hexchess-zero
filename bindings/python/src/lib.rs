@@ -62,7 +62,7 @@ impl PyMove {
         }
     }
 
-    fn to_engine_key(&self) -> (HexCoord, HexCoord, Option<PieceKind>) {
+    fn to_engine_key(self) -> (HexCoord, HexCoord, Option<PieceKind>) {
         (
             HexCoord::new(self.from_q, self.from_r),
             HexCoord::new(self.to_q, self.to_r),

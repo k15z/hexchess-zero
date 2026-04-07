@@ -32,8 +32,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy -p hexchess-engine -- -D warnings
+      # Match release.yml: lint the whole workspace so PRs catch binding-crate
+      # lints that wouldn't show up when only the engine is checked.
+      - run: cargo clippy --workspace -- -D warnings
 
   rust-test:
     name: Rust Tests
