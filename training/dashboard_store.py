@@ -10,8 +10,9 @@ primitive available:
 
     - ``models/latest.meta.json`` and ``state/elo.json``: HEAD + ETag, re-GET
       only when the ETag changes.
-    - ``state/elo_games.jsonl``: HEAD + size, ranged GET for the appended tail
-      only. Parsed lines are kept in a bounded deque.
+    - ``state/elo_games/``: LIST the prefix, fetch only newly-seen keys. The
+      per-game object layout replaced the old append-only jsonl so multiple
+      elo-service replicas can write concurrently.
     - ``data/selfplay/`` and ``data/imitation/``: full LIST each cycle, but
       aggregates are maintained incrementally — new keys only are parsed, and
       the aggregate dict is rebuilt only when the file set actually changes.
@@ -24,9 +25,7 @@ The HTTP handler just reads ``store.snapshot()`` — no S3 calls on the hot path
 
 from __future__ import annotations
 
-import json
 import threading
-from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -59,9 +58,7 @@ class DashboardStore:
         self._sp_agg: dict[str, Any] = _empty_agg()
         self._im_agg: dict[str, Any] = _empty_agg()
 
-        self._games_offset: int = 0
-        self._games_buf: bytes = b""
-        self._games: deque[dict] = deque(maxlen=_GAMES_TAIL)
+        self._game_records: dict[str, dict] = {}  # key -> record (tail window)
 
         # name -> {"lm": iso, "data": {...}}
         self._heartbeats: dict[str, dict] = {}
@@ -143,46 +140,26 @@ class DashboardStore:
         return transform(data)
 
     def _sync_games(self) -> None:
-        meta = self._s.head(storage.ELO_GAMES_LOG)
-        if meta is None:
+        # Only the most recent _GAMES_TAIL records matter for the dashboard;
+        # LIST is cheap, but GET-per-object isn't — fetch only keys we haven't
+        # already cached and early-out when the tail window is unchanged.
+        keys = sorted(self._s.ls(storage.ELO_GAMES_PREFIX), reverse=True)
+        tail = set(keys[:_GAMES_TAIL])
+        if tail == self._game_records.keys():
             return
 
-        size = meta["size"]
-        # Shrunk file = truncation/rotation. Restart from zero.
-        if size < self._games_offset:
-            self._games_offset = 0
-            self._games_buf = b""
-            self._games.clear()
-
-        if size <= self._games_offset:
-            return
-
-        new_bytes = self._s.get_range(
-            storage.ELO_GAMES_LOG, self._games_offset, size - 1
-        )
-        if not new_bytes:
-            return
-
-        buf = self._games_buf + new_bytes
-        lines = buf.split(b"\n")
-        # Trailing element is either empty (clean newline) or a partial line
-        # to carry over.
-        partial = lines[-1]
-
-        parsed: list[dict] = []
-        for line in lines[:-1]:
-            if not line:
+        new_records = {}
+        for k in tail:
+            if k in self._game_records:
+                new_records[k] = self._game_records[k]
                 continue
             try:
-                parsed.append(json.loads(line))
-            except json.JSONDecodeError:
+                new_records[k] = self._s.get_json(k)
+            except KeyError:
                 continue
 
         with self._lock:
-            for rec in parsed:
-                self._games.append(rec)
-            self._games_offset = size
-            self._games_buf = partial
+            self._game_records = new_records
 
     def _sync_data(
         self,
@@ -259,7 +236,9 @@ class DashboardStore:
                     "player_stats": self._elo.get("player_stats", {}),
                     "pair_results": self._elo.get("pair_results", {}),
                 },
-                "recent_games": list(self._games),
+                "recent_games": [
+                    self._game_records[k] for k in sorted(self._game_records)
+                ],
                 "data": {
                     "selfplay": dict(self._sp_agg),
                     "imitation": im_agg,

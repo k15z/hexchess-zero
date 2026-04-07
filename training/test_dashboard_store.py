@@ -177,47 +177,30 @@ def test_model_and_elo_use_etag_skip(
     assert store.snapshot()["elo"]["total_games"] == 11
 
 
-def test_games_log_incremental_tail(
+def test_games_per_object_incremental_fetch(
     fake: FakeStorage, store: DashboardStore
 ) -> None:
-    line1 = json.dumps({"game": 1, "white": "a", "black": "b", "outcome": "white"})
-    line2 = json.dumps({"game": 2, "white": "a", "black": "b", "outcome": "draw"})
-    fake.put(storage.ELO_GAMES_LOG, line1 + "\n")
+    k1 = storage.ELO_GAMES_PREFIX + "20260101T000000_aaaa.json"
+    k2 = storage.ELO_GAMES_PREFIX + "20260101T000100_bbbb.json"
+    fake.put_json(k1, {"game": 1, "white": "a", "black": "b", "outcome": "white"})
     store.refresh_once()
     assert [g["game"] for g in store.snapshot()["recent_games"]] == [1]
-    offset_after_first = store._games_offset  # noqa: SLF001 — whitebox
 
-    # Append a second line — only the tail should be fetched.
-    fake.append(storage.ELO_GAMES_LOG, line2 + "\n")
+    # Add a second game — only the new key should be GET'd.
+    fake.put_json(k2, {"game": 2, "white": "a", "black": "b", "outcome": "draw"})
 
-    ranges: list[tuple[int, int | None]] = []
-    real_get_range = fake.get_range
+    gets: list[str] = []
+    real_get_json = fake.get_json
 
-    def tracking_get_range(key: str, start: int, end: int | None = None) -> bytes:
-        ranges.append((start, end))
-        return real_get_range(key, start, end)
+    def tracking_get_json(key: str) -> dict:
+        gets.append(key)
+        return real_get_json(key)
 
-    fake.get_range = tracking_get_range  # type: ignore[method-assign]
+    fake.get_json = tracking_get_json  # type: ignore[method-assign]
     store.refresh_once()
 
-    assert len(ranges) == 1
-    assert ranges[0][0] == offset_after_first  # began at last known offset
+    assert gets == [k2]
     assert [g["game"] for g in store.snapshot()["recent_games"]] == [1, 2]
-
-
-def test_games_log_partial_line_carryover(
-    fake: FakeStorage, store: DashboardStore
-) -> None:
-    # Write a line without trailing newline, then complete it in two steps.
-    full = json.dumps({"game": 7, "white": "a", "black": "b", "outcome": "black"})
-    head, tail = full[:10], full[10:]
-    fake.put(storage.ELO_GAMES_LOG, head)
-    store.refresh_once()
-    assert store.snapshot()["recent_games"] == []  # no complete line yet
-
-    fake.append(storage.ELO_GAMES_LOG, tail + "\n")
-    store.refresh_once()
-    assert [g["game"] for g in store.snapshot()["recent_games"]] == [7]
 
 
 def test_data_files_incremental_aggregation(

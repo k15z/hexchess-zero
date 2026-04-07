@@ -41,7 +41,8 @@ VERSIONS_PREFIX = "models/versions/"
 SELFPLAY_PREFIX = "data/selfplay/"
 IMITATION_PREFIX = "data/imitation/"
 ELO_STATE = "state/elo.json"
-ELO_GAMES_LOG = "state/elo_games.jsonl"
+ELO_GAMES_LOG = "state/elo_games.jsonl"  # legacy — read-only, migrated into ELO_GAMES_PREFIX
+ELO_GAMES_PREFIX = "state/elo_games/"  # one object per game, race-free writes
 HEARTBEATS_PREFIX = "heartbeats/"
 
 # ---------------------------------------------------------------------------
@@ -319,6 +320,25 @@ def get_jsonl(key: str) -> list[dict]:
         if line:
             records.append(json.loads(line))
     return records
+
+
+def put_game_record(record: dict) -> str:
+    """Write one Elo game result as its own S3 object. Returns the key.
+
+    Per-game objects replace the old append-to-jsonl pattern so multiple
+    elo-service replicas can write concurrently without clobbering each other.
+    Key format: ``state/elo_games/{ts}_{rand:08x}.json``.
+    """
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    rand = np.random.default_rng().integers(0, 0xFFFF_FFFF)
+    key = f"{ELO_GAMES_PREFIX}{ts}_{int(rand):08x}.json"
+    put_json(key, record)
+    return key
+
+
+def list_game_record_keys() -> list[str]:
+    """List all per-game Elo record keys, sorted (timestamp-prefixed)."""
+    return sorted(ls(ELO_GAMES_PREFIX))
 
 
 def key_basename(key: str) -> str:
