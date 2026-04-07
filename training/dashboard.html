@@ -324,7 +324,7 @@
 </div>
 
 <script>
-const REFRESH_MS = 15000;
+const REFRESH_MS = 60000;
 const ELO_SIGMA_DEFAULT = 25.0 / 3.0;
 const ELO_SCALE = 400 / ELO_SIGMA_DEFAULT;
 const ELO_OFFSET = 1500 - 25 * ELO_SCALE;
@@ -485,7 +485,7 @@ function buildData(data) {
     html += `<div class="kv-row"><span class="k">snapshots</span><span class="v">${d.models.length} versions</span></div>`;
   }
 
-  return panelHtml('data', 'Training Data', null, html);
+  return panelHtml('data', 'Training Data', null, html, false);
 }
 
 function buildH2H(data) {
@@ -572,13 +572,13 @@ function buildGames(data) {
   }
   html += '</table>';
 
-  return panelHtml('games', 'Recent Games', `${games.length}`, html);
+  return panelHtml('games', 'Recent Games', `${games.length}`, html, false);
 }
 
 function buildWorkers(data) {
   const w = data.workers || {};
   const names = Object.keys(w).sort();
-  if (!names.length) return panelHtml('workers', 'Workers', null, '<div class="empty">No worker heartbeats</div>');
+  if (!names.length) return panelHtml('workers', 'Workers', null, '<div class="empty">No worker heartbeats</div>', false);
 
   let html = `<table><tr><th></th><th>worker</th><th>model</th><th class="r">games</th><th class="r">pos</th><th class="r">seen</th></tr>`;
   for (const name of names) {
@@ -594,7 +594,7 @@ function buildWorkers(data) {
     </tr>`;
   }
   html += '</table>';
-  return panelHtml('workers', 'Workers', `${names.length}`, html);
+  return panelHtml('workers', 'Workers', `${names.length}`, html, false);
 }
 
 function buildRetired(data) {
