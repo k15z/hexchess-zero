@@ -364,13 +364,16 @@ def _assign_colors(state: dict, a: str, b: str) -> tuple[str, str]:
 PLAYER_CACHE_SIZE = 6
 
 # How often to re-LIST per-game objects from S3 to absorb peer replica writes.
-# Active player set is recomputed inline every iteration (cheap S3 LIST), so
-# this only governs the more expensive peer-record sync + full state replay.
-PEER_SYNC_INTERVAL_SECONDS = 300
+# Kept short so the saturation cap and predict_draw matchmaking see roughly
+# global game counts: with N replicas and a 5-minute lag, a near-saturated
+# pair could be oversampled ~N× before any replica notices. 60s keeps that
+# slack to a single extra game per replica per pair.
+PEER_SYNC_INTERVAL_SECONDS = 60
 
 # How often a replica writes the derived state/elo.json projection for the
-# dashboard. Races across replicas are fine because the projection is a pure
-# function of the game log.
+# dashboard. Each write is preceded by a peer-record refresh so the projection
+# reflects the freshest possible game log; races across replicas are then
+# benign because every writer is computing from (essentially) the same input.
 PROJECTION_INTERVAL_SECONDS = 120
 
 
@@ -410,6 +413,22 @@ def run_elo_service(
     last_peer_sync_ts = time.monotonic()
     last_projection_ts = 0.0
 
+    def _sync_peer_records() -> None:
+        """LIST + fetch new peer records, replay full state if any arrived."""
+        nonlocal state, last_peer_sync_ts
+        try:
+            added = records.refresh()
+            if added:
+                state = _build_state(records.all_records(), active)
+                logger.info(
+                    "Sync: merged {} peer records ({} total, {} active)",
+                    added, state["total_games"],
+                    len(state["active_players"]),
+                )
+            last_peer_sync_ts = time.monotonic()
+        except Exception as e:
+            logger.warning("Peer sync failed: {}", e)
+
     while True:
         # Active player set is cheap to recompute (one S3 LIST) and we want
         # to pick up newly-promoted models without waiting for the peer sync.
@@ -417,21 +436,8 @@ def run_elo_service(
         if active != state["active_players"]:
             _finalize_active(state, active)
 
-        # Periodically pick up games written by peer replicas. Full replay
-        # only when peer records actually arrived.
         if time.monotonic() - last_peer_sync_ts >= PEER_SYNC_INTERVAL_SECONDS:
-            try:
-                added = records.refresh()
-                if added:
-                    state = _build_state(records.all_records(), active)
-                    logger.info(
-                        "Sync: merged {} peer records ({} total, {} active)",
-                        added, state["total_games"],
-                        len(state["active_players"]),
-                    )
-                last_peer_sync_ts = time.monotonic()
-            except Exception as e:
-                logger.warning("Peer sync failed: {}", e)
+            _sync_peer_records()
 
         if len(state["active_players"]) < 2:
             logger.info(
@@ -504,7 +510,11 @@ def run_elo_service(
             )
 
         # Periodically write the derived projection for the dashboard/metrics.
+        # Refresh peer records first so the projection reflects everyone's
+        # games — otherwise concurrent replicas overwrite elo.json with
+        # strict subsets of the global game log and the dashboard flickers.
         if time.monotonic() - last_projection_ts >= PROJECTION_INTERVAL_SECONDS:
+            _sync_peer_records()
             try:
                 storage.put_json(storage.ELO_STATE, state)
                 last_projection_ts = time.monotonic()
