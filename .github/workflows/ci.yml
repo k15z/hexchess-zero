@@ -86,6 +86,14 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [rust-test, python-test]
     runs-on: ubuntu-latest
+    # Own concurrency group so the image build is only superseded by a
+    # newer image build — not cancelled when an unrelated CI rerun on the
+    # same ref gets superseded. Without this, the workflow-level group
+    # above would tear down an in-progress docker push whenever any
+    # other job in a previous run got cancelled.
+    concurrency:
+      group: docker-publish-${{ github.ref }}
+      cancel-in-progress: true
     permissions:
       contents: read
       packages: write
