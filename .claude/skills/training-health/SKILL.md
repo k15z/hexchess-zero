@@ -20,11 +20,22 @@ Use `uv run python -c '...'` snippets with `from dotenv import load_dotenv` poin
 ### 1. Elo state
 ```python
 state = storage.get_json(storage.ELO_STATE)
-# state["ratings"] — dict of player→Elo (int) or player→{mu, sigma}
-# state["pair_results"] — dict of "a:b"→{a_wins, b_wins, draws, a_as_white, b_as_white}
-# state["player_stats"] — dict of player→{total_time, total_moves}
-# state["total_games"] — int
+# state["ratings"] — dict of player→{mu, sigma} (OpenSkill / Plackett-Luce)
+# state["pair_results"], state["player_stats"], state["total_games"], state["active_players"], state["retired_players"]
 ```
+
+**IMPORTANT — do not sort by raw `mu`.** The system ranks players by a *conservative*
+Elo-scaled rating that subtracts an uncertainty penalty:
+
+```python
+from training.elo import format_elo_table, conservative_rating, to_elo, to_elo_sigma
+# conservative_rating(mu, sigma) -> int Elo (= round((mu - 2*sigma) * 48 + 300))
+print(format_elo_table(state["ratings"]))  # already sorted correctly
+```
+
+Use `format_elo_table` (or `conservative_rating` directly) for any ranking. Sorting by
+raw `mu` will rank high-uncertainty players (e.g. baselines that haven't played much)
+above well-calibrated stronger models.
 
 ### 2. Model versions
 ```python
