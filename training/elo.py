@@ -160,6 +160,13 @@ def new_rating() -> dict:
     return {"mu": r.mu, "sigma": r.sigma}
 
 
+def predict_draw(a: dict, b: dict) -> float:
+    """OpenSkill match-quality metric: high when both sigmas are large and mus are close."""
+    ra = _model.rating(mu=a["mu"], sigma=a["sigma"])
+    rb = _model.rating(mu=b["mu"], sigma=b["sigma"])
+    return _model.predict_draw(teams=[[ra], [rb]])
+
+
 def update_ratings(
     a_rating: dict, b_rating: dict, outcome: str,
 ) -> tuple[dict, dict]:
