@@ -15,7 +15,7 @@ graph TB
         W1["Worker Pod<br/>14Gi RAM"]
         W2["Worker Pod<br/>14Gi RAM"]
         WN["Worker Pod ×N"]
-        Elo["Elo Service<br/>8Gi RAM"]
+        Elo["Elo Service<br/>×4 replicas, 6Gi RAM"]
         Dash["Dashboard"]
     end
 
@@ -49,10 +49,10 @@ graph TB
 
 | Component | Infrastructure | Resources |
 |-----------|---------------|-----------|
-| Self-play workers | Hetzner k3s cluster | CPU pods (14Gi memory each) |
-| Trainer | GPU-capable node | GPU + CPU |
-| Elo service | k3s cluster | CPU pod (8Gi memory) |
-| Dashboard | k3s cluster | Lightweight CPU pod |
+| Self-play workers | Hetzner k3s cluster | CPU pods (7 CPU / 14Gi memory each, scaled via replicas) |
+| Trainer | GPU-capable node (separate k3s cluster) | GPU + CPU |
+| Elo service | Hetzner k3s cluster | 4 replicas × (4 CPU / 6Gi memory). Each replica plays one game at a time; throughput scales with replica count. |
+| Dashboard | Hetzner k3s cluster | Lightweight CPU pod + cloudflared tunnel sidecar |
 | Shared state | S3 (DigitalOcean Spaces / Cloudflare R2) | Object storage |
 
 ## Docker
@@ -84,7 +84,7 @@ Workers are stateless — just add more replicas or nodes. Each worker:
 
 ### Resource requirements
 
-Worker memory usage is dominated by the MCTS search tree (arena-allocated nodes) and the inference model loaded in memory. The Elo service caches multiple model versions for matchmaking, requiring significant memory.
+Worker memory usage is dominated by the MCTS search tree (arena-allocated nodes) and the inference model loaded in memory. The Elo service caches multiple ONNX sessions (one per active player) for matchmaking — peak usage is roughly `PLAYER_CACHE_SIZE × ~800MB`, which is why each replica is sized at 6Gi.
 
 ## Monitoring
 
@@ -94,11 +94,12 @@ Worker memory usage is dominated by the MCTS search tree (arena-allocated nodes)
 make dashboard
 ```
 
-The training dashboard (`training/dashboard.py` + `dashboard.html`) reads directly from S3 and shows:
+The training dashboard (`training/dashboard.py` + `dashboard.html`) is an HTTP server backed by an in-memory store (`training/dashboard_store.py`) that incrementally syncs from S3 in a background thread — using ETag caches on `latest.meta.json` / `elo.json` and a LIST-based diff on `state/elo_games/` so HTTP requests never block on S3. It shows:
 
 - Worker heartbeats and health
-- Training progress (positions generated, model version, loss curves)
-- Elo ratings over time
+- Training progress (positions generated, current model version, loss trends)
+- Combined Elo ratings table (models + baselines, conservative rating ordering)
+- Recent game results from the Elo service
 
 ### Status command
 

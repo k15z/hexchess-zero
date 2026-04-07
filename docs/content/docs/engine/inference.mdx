@@ -3,7 +3,7 @@ title: Inference
 description: Neural network evaluation backends for different targets
 ---
 
-The engine supports multiple inference backends for evaluating positions during MCTS search. The `Evaluator` trait abstracts over them, defined in `engine/src/inference.rs`.
+The engine supports multiple inference backends for evaluating positions during MCTS search. The `Evaluator` trait is defined in `engine/src/inference.rs` alongside the neural network backends; the heuristic backends live in `engine/src/mcts.rs`.
 
 ## Evaluator trait
 

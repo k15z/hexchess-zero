@@ -56,10 +56,11 @@ The trainer periodically re-scans S3 (every `reload_interval` steps) to pick up 
 
 A continuous rating service that:
 
-1. Maintains Elo ratings for all model versions
-2. Uses uncertainty-based matchmaking (prioritizes under-tested versions)
-3. Persists state to S3 (`state/elo.json`)
-4. LRU-caches player objects to bound memory
+1. Rates every model version (and a fixed set of heuristic / minimax baselines) with **OpenSkill** — a Bayesian Plackett-Luce / Weng-Lin model rescaled to look Elo-like (μ=25 → 1500). The "conservative rating" used for ranking is `μ − 2σ`.
+2. Picks pairings using `predict_draw` over the current rating distribution: the top 5% of pairs by draw probability are sampled uniformly, so games concentrate where the result is genuinely uncertain instead of on hopeless mismatches.
+3. Runs **placement matches** for new model versions — they exclusively play baselines until σ has shrunk enough for them to be matched against other models.
+4. Scales horizontally. Each replica plays one game at a time and writes the result as an immutable per-game object under `state/elo_games/{ts}_{rand}.json`. A derived `state/elo.json` projection is rebuilt from the game log (last-writer-wins, idempotent), so multiple replicas never race on a shared state file.
+5. LRU-caches loaded ONNX sessions (default 6 slots) to bound memory.
 
 ## Bootstrap phase
 
@@ -67,7 +68,7 @@ On first run (no model exists), the pipeline can't do self-play — a random net
 
 <Mermaid chart={`
 graph TD
-    R["Random positions"] --> MM["Minimax search<br/>(depth 5)"]
+    R["Random openings<br/>(softmax sampled)"] --> MM["Minimax search<br/>(depth 5)"]
     MM --> Policy["Soft policy targets<br/>(softmax τ=200)"]
     MM --> Value["Value targets<br/>(sigmoid + outcome blend)"]
     Policy --> Train["Train network"]
@@ -85,7 +86,7 @@ graph TD
 <Mermaid chart={`
 graph TD
     SP["Self-play workers"] -->|".npz files"| SD["S3: data/selfplay/v{N}/"]
-    SD -->|sliding window| TB["Replay buffer<br/>(5M positions)"]
+    SD -->|sliding window| TB["Replay buffer<br/>(1M positions)"]
     TB -->|sample batches| TL["Trainer loop"]
     TL -->|export ONNX| SM["S3: models/latest.onnx"]
     SM -->|poll| SP
@@ -112,7 +113,8 @@ data/
   imitation/{ts}_{rand}_n{count}.npz
 
 state/
-  elo.json                 # Elo ratings, pair results, player timing
+  elo.json                 # derived Elo projection (rebuilt from elo_games/)
+  elo_games/{ts}_{rand}.json  # one immutable object per played game
 
 heartbeats/
   {hostname}.json           # worker liveness + stats
@@ -136,7 +138,7 @@ If the trainer is outpacing data production, it sleeps rather than overfitting o
 |-----------|---------|--------|
 | `num_simulations` | 500 | MCTS sims per move — strength vs throughput |
 | `temperature_threshold` | 60 | Move after which $\tau$ drops |
-| `temperature_high` / `low` | 1.0 / 0.01 | Exploration vs clean endgame signals |
+| `temperature_high` / `low` | 1.0 / 0.35 | Exploration vs clean endgame signals (Lc0-style floor) |
 | `dirichlet_alpha` / `epsilon` | 0.3 / 0.25 | Root noise for exploration |
 
 ### Training
@@ -146,13 +148,13 @@ If the trainer is outpacing data production, it sleeps rather than overfitting o
 | `batch_size` | 256 | Training batch size |
 | `learning_rate` | 0.001 | Adam learning rate |
 | `l2_regularization` | $10^{-4}$ | Weight decay |
-| `replay_buffer_size` | 5,000,000 | Max positions in sliding window |
-| `steps_per_cycle` | 500 | Steps between model promotions |
+| `replay_buffer_size` | 1,000,000 | Max positions in sliding window |
+| `steps_per_cycle` | 1,000 | Steps between model promotions |
 
 ## Key dynamics
 
 **Worker throughput vs training speed**: Workers produce positions proportional to `num_simulations` and available CPUs. The trainer consumes them based on `steps_per_cycle` and GPU speed. The token bucket keeps them balanced.
 
-**Buffer size vs cycle length**: With a 5M buffer and 500 steps at batch size 256, each cycle trains on ~128K samples — about 2.5% of the buffer. Positions near the edge of the window get fewer passes before aging out.
+**Buffer size vs cycle length**: With a 1M buffer and 1,000 steps at batch size 256, each cycle trains on ~256K samples — about 25% of the buffer. Positions near the edge of the window get fewer passes before aging out.
 
 **Model version turnover**: Every `steps_per_cycle` steps, a new version is promoted. Workers poll for updates after each batch of games. The lag between promotion and adoption is a few minutes at most.

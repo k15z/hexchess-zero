@@ -47,6 +47,9 @@ make docker-down                        # stop all services
 - **serialization.rs** — Board-to-tensor encoding: `(19, 11, 11)` CHW layout, hex grid embedded in 11x11 rect (invalid cells zero-padded). Channels 0-11: piece planes, 12: side to move, 13: fullmove, 14: halfmove clock, 15: en passant, 16: repetition count, 17: validity mask, 18: in-check. Deterministic move-to-index bijection (~4000 entries) for policy vector; pawn promotions get 4 separate indices. `encode_board` takes `&GameState` (not `&Board`) to access repetition history.
 - **inference.rs** — `Evaluator` trait returns `(policy_logits, value)`. NN outputs WDL logits (Win/Draw/Loss); evaluators convert to scalar `W - L` for MCTS. Implementations: `OnnxEvaluator` (ORT, feature-gated behind `onnx`), `TractEvaluator` (pure Rust, used in WASM), `HeuristicEvaluator` (material-based baseline).
 - **eval.rs** — Material heuristic: centipawn sum through `tanh(cp/750)`.
+- **minimax.rs** — Alpha-beta search with configurable `EvalWeights` (material, mobility, pawn structure, king safety, …). Used for imitation bootstrap and exposed via the Python `minimax_search*` functions.
+
+Glinski algebraic notation (`f6`, `b1-b2`, `f10-f11=Q`) is implemented on `HexCoord` / `Move` directly in `board.rs` and `movegen.rs` — there is no separate `notation.rs`. Move indices are deterministic and unrelated to notation strings.
 
 ### Bindings
 
@@ -60,12 +63,13 @@ AlphaZero-style self-play training loop. All shared state lives in S3 (DigitalOc
 - **storage.py** — S3 abstraction layer. Key constants, upload/download helpers, position counting from filenames. All shared I/O goes through this module.
 - **worker.py** — Continuous self-play loop. Polls S3 for model updates, plays games using MCTS, flushes `.npz` batches to S3. During bootstrap (no model), generates minimax imitation data with process-pool parallelism.
 - **trainer_loop.py** — Continuous trainer. Samples from a sliding-window replay buffer (downloads from S3), trains for N steps per cycle, exports ONNX, promotes to S3. KataGo-style token bucket throttles training to match data production rate.
-- **model.py** — `HexChessNet`: SE residual blocks (128 filters) with KataGo-style global pooling → policy head + WDL value head. Input `(19, 11, 11)`, policy output size = `num_move_indices()`, WDL output = 3 logits.
+- **model.py** — `HexChessNet`: 10 SE residual blocks (192 filters) with KataGo-style global pooling at blocks 3 and 6 → policy head + WDL value head. Input `(19, 11, 11)`, policy output size = `num_move_indices()`, WDL output = 3 logits.
 - **export.py** — PyTorch → ONNX export.
-- **elo.py** — Shared Elo types: Player protocol, MinimaxPlayer, MctsPlayer, game play with per-player timing, MLE Elo computation with Bayesian prior.
-- **elo_service.py** — Continuous Elo rating service. Uncertainty-based matchmaking, persists state to S3 (`state/elo.json`). LRU-caches player objects to bound memory.
+- **elo.py** — Shared Elo types: `Player` protocol, `MinimaxPlayer`, `MctsPlayer`, game play with per-player timing, OpenSkill (Plackett-Luce / Weng-Lin) rating math rescaled to look Elo-like, `predict_draw`, table formatting.
+- **elo_service.py** — Continuous Elo rating service. `predict_draw`-driven matchmaking with placement matches for new models. Scales horizontally: each replica plays one game at a time and writes per-game immutable objects under `state/elo_games/`; the `state/elo.json` projection is rebuilt from the game log (last-writer-wins, idempotent). LRU-caches loaded ONNX sessions to bound memory.
+- **imitation.py** — Minimax self-play games for the bootstrap phase, parallelized with `ProcessPoolExecutor`.
+- **dashboard.py** + **dashboard_store.py** + **dashboard.html** — HTTP server backed by an in-memory store that incrementally syncs from S3 in a background thread (ETag caches + LIST diffs on `state/elo_games/`), so HTTP requests never block on S3.
 - **config.py** — Hyperparameters. Local `.cache/` directory for downloaded S3 objects.
-- **dashboard.py** + **dashboard.html** — Lightweight web dashboard reading from S3.
 
 ### Documentation (`docs/`)
 
@@ -94,7 +98,8 @@ data/
   imitation/{ts}_{rand}_n{count}.npz
 
 state/
-  elo.json                 # Elo ratings + pair results + player timing
+  elo.json                 # derived Elo projection (rebuilt from elo_games/)
+  elo_games/{ts}_{rand}.json  # one immutable object per played game
 
 heartbeats/
   {hostname}.json          # worker liveness + stats
