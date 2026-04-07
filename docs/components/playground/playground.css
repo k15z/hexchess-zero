@@ -57,6 +57,7 @@
 /* Status bar */
 .playground-status {
   background: var(--fd-card, #f8f8f8);
+  color: var(--fd-card-foreground, #111);
   border: 1px solid var(--fd-border, #e0e0e0);
   border-radius: 0.5rem;
   padding: 0.5rem 1.5rem;
