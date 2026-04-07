@@ -1,11 +1,25 @@
-"""Continuous Elo rating service with uncertainty-based matchmaking."""
+"""Continuous Elo rating service with uncertainty-based matchmaking.
+
+Horizontally scalable: multiple replicas can run concurrently. The source of
+truth for game results is ``state/elo_games/{ts}_{rand}.json`` — one immutable
+object per game. Writes are race-free (unique keys). The legacy single-blob
+``state/elo.json`` and append-only ``state/elo_games.jsonl`` are now *derived
+projections* rebuilt from the per-game objects. Any replica can overwrite them
+idempotently; last-writer-wins is fine because they are pure functions of the
+game log.
+
+Each replica plays one game at a time (no in-process parallelism). K8s
+replicas provide parallelism; matchmaking collisions across replicas are
+harmless — two pods occasionally picking the same high-uncertainty pair just
+means more samples on a matchup we already care about.
+"""
 
 from __future__ import annotations
 
+import os
 import random
 import time
 from collections import OrderedDict
-from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,52 +38,16 @@ from .elo import (
     update_ratings,
 )
 
-try:
-    import hexchess
-except ImportError:
-    hexchess = None
-
-
 BASELINE_NAMES = frozenset({"Minimax-2", "Minimax-3", "Minimax-4", "Heuristic"})
 
 
 # ---------------------------------------------------------------------------
-# State management (S3-backed)
+# Helpers
 # ---------------------------------------------------------------------------
 
 
 def _pair_key(a: str, b: str) -> str:
     return ":".join(sorted([a, b]))
-
-
-def _default_state() -> dict:
-    return {
-        "version": 2,
-        "active_players": [],
-        "retired_players": [],
-        "ratings": {},  # {name: {"mu": float, "sigma": float}}
-        "pair_results": {},  # {pair_key: {"a_wins": int, "b_wins": int, "draws": int, "a_as_white": int, "b_as_white": int}}
-        "player_stats": {},  # {name: {"total_time": float, "total_moves": int}}
-        "total_games": 0,
-        "last_slack_game": 0,
-    }
-
-
-def _load_state() -> dict:
-    """Load state from S3, or return default if not found."""
-    try:
-        state = storage.get_json(storage.ELO_STATE)
-        if state.get("version") == 2:
-            return state
-        logger.warning("Unknown state version {}, starting fresh", state.get("version"))
-    except KeyError as e:
-        logger.info("No existing elo state: {}", e)
-    return _default_state()
-
-
-def _save_state(state: dict) -> None:
-    """Write state to S3."""
-    storage.put_json(storage.ELO_STATE, state)
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +58,7 @@ def _save_state(state: dict) -> None:
 class PlayerCache:
     """LRU cache for Player objects. Evicts least-recently-used when full."""
 
-    def __init__(self, simulations: int, cache_dir, max_size: int = 6):
+    def __init__(self, simulations: int, cache_dir: Path, max_size: int = 6):
         self.simulations = simulations
         self.cache_dir = cache_dir
         self.max_size = max(max_size, 4)
@@ -95,7 +73,6 @@ class PlayerCache:
             self._cache[p.name] = p
 
     def get(self, name: str, s3_model_key: str | None = None) -> Player:
-        """Get or create a player. Moves it to the front of the LRU."""
         self._init_baselines()
 
         if name in self._cache:
@@ -130,7 +107,7 @@ class PlayerCache:
 
 
 # ---------------------------------------------------------------------------
-# Model discovery from S3
+# Model discovery
 # ---------------------------------------------------------------------------
 
 
@@ -150,63 +127,152 @@ def _discover_versions() -> list[tuple[int, str]]:
     return versions
 
 
-def _sync_player_pool(
-    state: dict,
-    max_versions: int,
-) -> tuple[dict[str, str | None], list[str]]:
-    """Reconcile active_players with the desired set: baselines + latest N models.
+def _desired_active(max_versions: int) -> tuple[list[str], dict[str, str]]:
+    """Return (active_player_list, version_key_map) for the current S3 state.
 
-    Deterministic — computes the desired set from S3 + max_versions and forces
-    state["active_players"] to match. Old incremental add-then-retire logic
-    sometimes left the pool bloated in long-running processes (cause never
-    fully diagnosed); this version is bulletproof regardless of prior state
-    shape because it always recomputes the target.
+    Active set = baselines + latest N model versions (baselines first).
     """
     versions = _discover_versions()
     version_keys = {f"v{v}": key for v, key in versions}
-
-    # Desired model set: latest N versions (numerically sorted).
-    sorted_version_names = [f"v{v}" for v, _ in sorted(versions)]
-    desired_models = sorted_version_names[-max_versions:] if max_versions > 0 else []
-    desired = list(BASELINE_NAMES) + desired_models
-    desired_set = set(desired)
-
-    # Ensure ratings exist for everything in the desired set.
-    for name in desired:
-        if name not in state["ratings"]:
-            state["ratings"][name] = new_rating()
-
-    # Detect newly-introduced models for notifications.
-    old_active_set = set(state["active_players"])
-    new_models = [
-        m for m in desired_models
-        if m not in old_active_set and m not in state["retired_players"]
-    ]
-    for m in new_models:
-        logger.info("New model discovered: {}", m)
-
-    # Anything currently active that should no longer be: retire it.
-    # Baselines are never retired.
-    for name in list(state["active_players"]):
-        if name in BASELINE_NAMES:
-            continue
-        if name not in desired_set:
-            if name not in state["retired_players"]:
-                state["retired_players"].append(name)
-                logger.info("Retired old model: {}", name)
-
-    # Replace active_players wholesale with the desired set, ordered with
-    # baselines first then models in chronological order.
-    state["active_players"] = list(desired)
-
-    path_map: dict[str, str | None] = {
-        name: version_keys.get(name) for name in state["active_players"]
-    }
-    return path_map, new_models
+    sorted_names = sorted(version_keys.keys(), key=lambda n: int(n[1:]))
+    desired_models = sorted_names[-max_versions:] if max_versions > 0 else []
+    active = list(BASELINE_NAMES) + desired_models
+    return active, version_keys
 
 
 # ---------------------------------------------------------------------------
-# Matchmaking (uncertainty-based via OpenSkill sigma)
+# State projection: rebuild ratings / pair_results / player_stats from the
+# per-game record log. This is a pure function of (records, active_players).
+# ---------------------------------------------------------------------------
+
+
+def _empty_state() -> dict:
+    return {
+        "active_players": [],
+        "retired_players": [],
+        "ratings": {},
+        "pair_results": {},
+        "player_stats": {},
+        "total_games": 0,
+    }
+
+
+def _apply_record(state: dict, rec: dict) -> None:
+    """Fold a single game record into ``state`` in place.
+
+    Called both from the full replay path (``_build_state``) and incrementally
+    after a local game, so the rating math lives in exactly one place.
+    """
+    white = rec.get("white")
+    black = rec.get("black")
+    outcome = rec.get("outcome")
+    if not white or not black or outcome not in ("white", "black", "draw"):
+        return
+
+    ratings = state["ratings"]
+    for name in (white, black):
+        if name not in ratings:
+            ratings[name] = new_rating()
+
+    a, b = sorted([white, black])
+    key = _pair_key(a, b)
+    result = state["pair_results"].setdefault(
+        key,
+        {"a_wins": 0, "b_wins": 0, "draws": 0, "a_as_white": 0, "b_as_white": 0},
+    )
+    result["a_as_white" if white == a else "b_as_white"] += 1
+
+    if outcome == "draw":
+        os_outcome = "draw"
+        result["draws"] += 1
+    else:
+        winner_is_a = (outcome == "white") == (white == a)
+        os_outcome = "a_wins" if winner_is_a else "b_wins"
+        result[os_outcome] += 1
+
+    ratings[a], ratings[b] = update_ratings(ratings[a], ratings[b], os_outcome)
+
+    player_stats = state["player_stats"]
+    for name, t_key, m_key in (
+        (white, "white_time", "white_moves"),
+        (black, "black_time", "black_moves"),
+    ):
+        ps = player_stats.setdefault(name, {"total_time": 0.0, "total_moves": 0})
+        ps["total_time"] = round(ps["total_time"] + float(rec.get(t_key, 0.0)), 2)
+        ps["total_moves"] += int(rec.get(m_key, 0))
+
+    state["total_games"] += 1
+
+
+def _finalize_active(state: dict, active_players: list[str]) -> None:
+    """Set active/retired player lists and ensure every active player has a rating."""
+    ratings = state["ratings"]
+    for name in active_players:
+        if name not in ratings:
+            ratings[name] = new_rating()
+    state["active_players"] = list(active_players)
+    state["retired_players"] = sorted(
+        set(ratings.keys()) - set(active_players) - BASELINE_NAMES,
+    )
+
+
+def _build_state(records: list[dict], active_players: list[str]) -> dict:
+    """Replay per-game records to produce the full Elo state projection."""
+    state = _empty_state()
+    for rec in sorted(records, key=lambda r: r.get("timestamp", "") or ""):
+        _apply_record(state, rec)
+    _finalize_active(state, active_players)
+    return state
+
+
+# ---------------------------------------------------------------------------
+# Record store: incremental cache of per-game objects from S3
+# ---------------------------------------------------------------------------
+
+
+class GameRecordStore:
+    """Caches per-game records. Refreshes by LIST + fetch-new."""
+
+    def __init__(self) -> None:
+        self._records: dict[str, dict] = {}  # key -> record
+
+    def __len__(self) -> int:
+        return len(self._records)
+
+    def all_records(self) -> list[dict]:
+        return list(self._records.values())
+
+    def add_local(self, key: str, record: dict) -> None:
+        """Register a record that this replica just wrote, so we don't refetch."""
+        self._records[key] = record
+
+    def refresh(self) -> int:
+        """Fetch any new per-game objects from S3. Returns number added."""
+        remote = storage.list_game_record_keys()
+        new_keys = [k for k in remote if k not in self._records]
+        if not new_keys:
+            return 0
+        # S3 GETs are I/O-bound; serial fetches of thousands of records on
+        # cold start were the service's startup bottleneck.
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _fetch(k: str) -> tuple[str, dict | None]:
+            try:
+                return k, storage.get_json(k)
+            except KeyError:
+                return k, None
+
+        added = 0
+        with ThreadPoolExecutor(max_workers=16) as ex:
+            for k, rec in ex.map(_fetch, new_keys):
+                if rec is not None:
+                    self._records[k] = rec
+                    added += 1
+        return added
+
+
+# ---------------------------------------------------------------------------
+# Matchmaking
 # ---------------------------------------------------------------------------
 
 
@@ -219,14 +285,6 @@ def _is_lopsided(result: dict, min_games: int = 30, threshold: float = 0.85) -> 
 
 
 def _sentinel_pair(state: dict) -> tuple[str, str] | None:
-    """Return (latest_model, latest_model - SENTINEL_LOOKBACK) if both are active.
-
-    Used to force a recurring head-to-head matchup that tracks the strength
-    delta between the current model and a fixed-distance ancestor. This is
-    the only metric that meaningfully answers "is the model still improving?"
-    in self-play RL — training loss is unreliable when target distributions
-    shift, and Elo MLE over many sparse pairings is too noisy.
-    """
     versions = sorted(
         int(n[1:]) for n in state["active_players"]
         if n.startswith("v") and n[1:].isdigit()
@@ -241,27 +299,16 @@ def _sentinel_pair(state: dict) -> tuple[str, str] | None:
     return None
 
 
-def _select_pair(state: dict, exclude: set[str] | None = None) -> tuple[str, str] | None:
-    """Select the pair that would benefit most from another game.
-
-    With probability SENTINEL_PROBABILITY, returns the sentinel pair
-    (latest model vs latest - SENTINEL_LOOKBACK) instead — this guarantees
-    fresh data on the strength-delta matchup we care most about, regardless
-    of how the OpenSkill uncertainty heuristic ranks it.
-
-    Otherwise uses OpenSkill sigma (uncertainty) of both players plus
-    closeness of ratings to prioritize informative matchups.
-    """
+def _select_pair(state: dict) -> tuple[str, str] | None:
+    """Select the pair that would benefit most from another game."""
     players = state["active_players"]
     if len(players) < 2:
-        raise ValueError("Need at least 2 active players")
+        return None
 
     if random.random() < SENTINEL_PROBABILITY:
         sp = _sentinel_pair(state)
         if sp is not None:
-            sp_key = _pair_key(*sp)
-            if not exclude or sp_key not in exclude:
-                return sp
+            return sp
 
     ratings = state["ratings"]
     candidates = []
@@ -272,20 +319,13 @@ def _select_pair(state: dict, exclude: set[str] | None = None) -> tuple[str, str
             key = _pair_key(a, b)
             result = state["pair_results"].get(key)
 
-            if exclude and key in exclude:
-                continue
-
             if result is not None and _is_lopsided(result):
-                logger.debug("Skipping lopsided pair: {}", key)
                 continue
 
-            ra = ratings.get(a, new_rating())
-            rb = ratings.get(b, new_rating())
+            ra = ratings[a]
+            rb = ratings[b]
 
-            # Combined uncertainty: higher sigma = more to learn
             uncertainty = ra["sigma"] + rb["sigma"]
-
-            # Closeness bonus: similar-rated pairs give more information
             mu_diff = abs(ra["mu"] - rb["mu"])
             closeness = 1.0 / (1.0 + mu_diff)
 
@@ -302,8 +342,8 @@ def _select_pair(state: dict, exclude: set[str] | None = None) -> tuple[str, str
     return a, b
 
 
-def _assign_colors(state: dict, pair_key: str, a: str, b: str) -> tuple[str, str]:
-    result = state["pair_results"].get(pair_key)
+def _assign_colors(state: dict, a: str, b: str) -> tuple[str, str]:
+    result = state["pair_results"].get(_pair_key(a, b))
     if result is None:
         return (a, b) if random.random() < 0.5 else (b, a)
 
@@ -312,105 +352,43 @@ def _assign_colors(state: dict, pair_key: str, a: str, b: str) -> tuple[str, str
 
     if a_as_white <= b_as_white:
         return a, b
-    else:
-        return b, a
+    return b, a
 
 
 # ---------------------------------------------------------------------------
-# Result recording
+# Migration: one-shot backfill from the legacy jsonl log to per-game objects.
+# Idempotent — safe to run from multiple replicas simultaneously because the
+# per-game key is derived from the record timestamp plus a content hash, so
+# duplicate writes collide to the same key and overwrite identically.
 # ---------------------------------------------------------------------------
 
 
-def _record_result(
-    state: dict, pair_key: str, white_name: str, outcome: str,
-    move_count: int,
-) -> None:
-    """Record game result: update pair counts, OpenSkill ratings, and game log."""
-    a, b = pair_key.split(":")
+def migrate_legacy_jsonl() -> int:
+    """Backfill legacy state/elo_games.jsonl into per-game objects. Idempotent."""
+    import hashlib
+    import json
 
-    if pair_key not in state["pair_results"]:
-        state["pair_results"][pair_key] = {
-            "a_wins": 0, "b_wins": 0, "draws": 0,
-            "a_as_white": 0, "b_as_white": 0,
-        }
-
-    result = state["pair_results"][pair_key]
-
-    if white_name == a:
-        result["a_as_white"] += 1
-    else:
-        result["b_as_white"] += 1
-
-    # Determine outcome in terms of a/b
-    if outcome == "draw":
-        result["draws"] += 1
-        os_outcome = "draw"
-    elif outcome == "white":
-        if white_name == a:
-            result["a_wins"] += 1
-            os_outcome = "a_wins"
-        else:
-            result["b_wins"] += 1
-            os_outcome = "b_wins"
-    elif outcome == "black":
-        if white_name == a:
-            result["b_wins"] += 1
-            os_outcome = "b_wins"
-        else:
-            result["a_wins"] += 1
-            os_outcome = "a_wins"
-
-    # Update OpenSkill ratings incrementally
-    ra = state["ratings"].get(a, new_rating())
-    rb = state["ratings"].get(b, new_rating())
-    state["ratings"][a], state["ratings"][b] = update_ratings(ra, rb, os_outcome)
-
-    # Append to game log
-    black_name = b if white_name == a else a
-    game_record = {
-        "game": state["total_games"] + 1,
-        "white": white_name,
-        "black": black_name,
-        "outcome": outcome,
-        "moves": move_count,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-    try:
-        storage.append_jsonl(storage.ELO_GAMES_LOG, game_record)
-    except Exception as e:
-        logger.warning("Failed to append game log: {}", e)
-
-
-def _pair_game_count(state: dict, pair_key: str) -> int:
-    r = state["pair_results"].get(pair_key)
-    if r is None:
+    records = storage.get_jsonl(storage.ELO_GAMES_LOG)
+    if not records:
+        logger.info("No legacy jsonl to migrate.")
         return 0
-    return r["a_wins"] + r["b_wins"] + r["draws"]
 
+    existing = set(storage.list_game_record_keys())
+    written = 0
+    for record in records:
+        # Content-hashed key makes the migration idempotent: replays (even
+        # concurrent ones from multiple replicas) collide to the same key.
+        ts = record.get("timestamp", "19700101T000000").replace(":", "").replace("-", "")[:15]
+        payload = json.dumps(record, sort_keys=True, separators=(",", ":"))
+        h = hashlib.sha1(payload.encode()).hexdigest()[:12]
+        key = f"{storage.ELO_GAMES_PREFIX}{ts}_{h}.json"
+        if key in existing:
+            continue
+        storage.put_json(key, record)
+        written += 1
 
-# ---------------------------------------------------------------------------
-# Worker process: plays games in a subprocess with its own PlayerCache
-# ---------------------------------------------------------------------------
-
-
-_worker_cache: PlayerCache | None = None
-
-
-def _worker_init(simulations: int, cache_dir_str: str, cache_size: int) -> None:
-    """Initializer for ProcessPoolExecutor workers."""
-    global _worker_cache
-    _worker_cache = PlayerCache(simulations, Path(cache_dir_str), max_size=cache_size)
-
-
-def _worker_play(
-    white_name: str,
-    black_name: str,
-    path_map: dict[str, str | None],
-) -> dict:
-    assert _worker_cache is not None, "Worker not initialized"
-    white = _worker_cache.get(white_name, path_map.get(white_name))
-    black = _worker_cache.get(black_name, path_map.get(black_name))
-    return play_game(white, black)
+    logger.info("Migrated {} legacy records to per-game objects.", written)
+    return written
 
 
 # ---------------------------------------------------------------------------
@@ -418,21 +396,16 @@ def _worker_play(
 # ---------------------------------------------------------------------------
 
 
-# Peak ONNX session memory: num_workers * WORKER_CACHE_SIZE * ~800MB.
-# With defaults (2 workers, 6 slots) that's ~10 GB, fitting a 16Gi pod.
-WORKER_CACHE_SIZE = 6
+PLAYER_CACHE_SIZE = 6
 
-# Throttle S3 LIST of model versions. New models appear on the scale of
-# hours; polling every game is wasteful.
+# How often to re-LIST per-game objects + re-discover model versions.
 SYNC_INTERVAL_SECONDS = 300
 
-# Throttle S3 PUT of state/elo.json. elo_games.jsonl is the durable record,
-# so state only needs to be consistent on restart.
-SAVE_EVERY_N_GAMES = 5
+# How often a replica writes the derived state/elo.json projection for the
+# dashboard. Races across replicas are fine because the projection is a pure
+# function of the game log.
+PROJECTION_INTERVAL_SECONDS = 120
 
-# Sentinel matchmaking: fraction of dispatches forced to (latest, latest-K)
-# instead of uncertainty-driven selection. Gives a real strength-delta signal
-# even when many model versions are active and pair_results are sparse.
 SENTINEL_LOOKBACK = 4
 SENTINEL_PROBABILITY = 0.33
 
@@ -441,156 +414,153 @@ def run_elo_service(
     simulations: int = 500,
     max_versions: int = 5,
     notify_interval: int = 20,
-    num_workers: int = 2,
 ) -> None:
-    """Run the continuous Elo rating service with parallel game workers."""
+    """Run the continuous Elo rating service. One game at a time per replica."""
     cfg = AsyncConfig()
     cfg.ensure_cache_dirs()
 
-    state = _load_state()
     cache_dir = cfg.model_cache_dir / "elo"
     cache_dir.mkdir(parents=True, exist_ok=True)
 
+    players_cache = PlayerCache(simulations, cache_dir, max_size=PLAYER_CACHE_SIZE)
+    records = GameRecordStore()
+
+    # Slack notifications should fire from at most one replica; gate on an
+    # env var the operator sets on exactly one pod.
+    slack_leader = os.environ.get("ELO_SLACK_LEADER") == "1"
+    last_slack_game = 0
+
     logger.info(
-        "Elo service starting ({} games in state, {} workers)",
-        state["total_games"], num_workers,
+        "Elo service starting (simulations={}, max_versions={}, slack_leader={})",
+        simulations, max_versions, slack_leader,
     )
 
-    executor = ProcessPoolExecutor(
-        max_workers=num_workers,
-        initializer=_worker_init,
-        initargs=(simulations, str(cache_dir), WORKER_CACHE_SIZE),
+    records.refresh()
+    active, version_keys = _desired_active(max_versions)
+    state = _build_state(records.all_records(), active)
+    logger.info(
+        "Initial state: {} games, {} active players",
+        state["total_games"], len(state["active_players"]),
     )
 
-    in_flight: dict[Future, tuple[str, str, str]] = {}
-    in_flight_keys: set[str] = set()
-    pending_notifications: list[str] = []
-    last_sync_ts = 0.0
-    path_map: dict[str, str | None] = {}
-    games_since_save = 0
+    last_sync_ts = time.monotonic()
+    last_projection_ts = 0.0
 
-    try:
-        while True:
-            now = time.monotonic()
-            if now - last_sync_ts >= SYNC_INTERVAL_SECONDS or not path_map:
-                path_map, new_models = _sync_player_pool(state, max_versions)
-                pending_notifications.extend(new_models)
+    while True:
+        now = time.monotonic()
+
+        # Periodically pick up games written by peer replicas and newly
+        # promoted models. Full replay only when something actually changed.
+        if now - last_sync_ts >= SYNC_INTERVAL_SECONDS:
+            try:
+                added = records.refresh()
+                new_active, version_keys = _desired_active(max_versions)
+                if added or new_active != state["active_players"]:
+                    state = _build_state(records.all_records(), new_active)
+                    if added:
+                        logger.info(
+                            "Sync: merged {} peer records ({} total, {} active)",
+                            added, state["total_games"],
+                            len(state["active_players"]),
+                        )
                 last_sync_ts = now
+            except Exception as e:
+                logger.warning("Sync failed: {}", e)
 
-            if len(state["active_players"]) < 2:
-                logger.info(
-                    "Waiting for models... ({} players)",
-                    len(state["active_players"]),
-                )
-                time.sleep(60)
-                continue
+        if len(state["active_players"]) < 2:
+            logger.info(
+                "Waiting for models... ({} players)",
+                len(state["active_players"]),
+            )
+            time.sleep(60)
+            continue
 
-            while len(in_flight) < num_workers:
-                pair = _select_pair(state, exclude=in_flight_keys)
-                if pair is None:
-                    break
-                a, b = pair
-                pair_key = _pair_key(a, b)
-                white_name, black_name = _assign_colors(state, pair_key, a, b)
+        pair = _select_pair(state)
+        if pair is None:
+            logger.info("No dispatchable pairs, waiting...")
+            time.sleep(60)
+            continue
 
-                pair_games = _pair_game_count(state, pair_key)
-                logger.info(
-                    "Dispatch game {}: {} (W) vs {} (B) [pair has {} prior games]",
-                    state["total_games"] + len(in_flight) + 1,
-                    white_name, black_name, pair_games,
-                )
-                fut = executor.submit(
-                    _worker_play, white_name, black_name, path_map,
-                )
-                in_flight[fut] = (pair_key, white_name, black_name)
-                in_flight_keys.add(pair_key)
+        a, b = pair
+        white_name, black_name = _assign_colors(state, a, b)
+        pair_result = state["pair_results"].get(_pair_key(a, b))
+        pair_games = (
+            pair_result["a_wins"] + pair_result["b_wins"] + pair_result["draws"]
+            if pair_result else 0
+        )
 
-            if not in_flight:
-                logger.info("No dispatchable pairs, waiting for new models...")
-                time.sleep(60)
-                continue
+        logger.info(
+            "Dispatch game {}: {} (W) vs {} (B) [pair has {} prior games]",
+            state["total_games"] + 1, white_name, black_name, pair_games,
+        )
 
-            done, _pending = wait(
-                list(in_flight.keys()), return_when=FIRST_COMPLETED,
+        try:
+            white = players_cache.get(white_name, version_keys.get(white_name))
+            black = players_cache.get(black_name, version_keys.get(black_name))
+            result = play_game(white, black)
+        except Exception as e:
+            logger.error("Game {} vs {} failed: {}", white_name, black_name, e)
+            time.sleep(5)
+            continue
+
+        outcome = result["outcome"]
+        w_avg = result["white_time"] / max(result["white_moves"], 1)
+        b_avg = result["black_time"] / max(result["black_moves"], 1)
+        logger.info(
+            "  Result: {} ({} moves) | {} {:.2f}s/move | {} {:.2f}s/move",
+            outcome, result["moves"],
+            white_name, w_avg, black_name, b_avg,
+        )
+
+        record = {
+            "white": white_name,
+            "black": black_name,
+            "outcome": outcome,
+            "moves": result["moves"],
+            "white_time": result["white_time"],
+            "black_time": result["black_time"],
+            "white_moves": result["white_moves"],
+            "black_moves": result["black_moves"],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+        try:
+            key = storage.put_game_record(record)
+            records.add_local(key, record)
+        except Exception as e:
+            logger.error("Failed to persist game record: {}", e)
+            continue
+
+        # Incremental fold — avoids an O(N) OpenSkill replay after every game.
+        # The periodic sync above rebuilds from scratch to absorb peer writes.
+        _apply_record(state, record)
+
+        if state["total_games"] % 10 == 0:
+            logger.info(
+                "Ratings (game {}):\n{}",
+                state["total_games"],
+                format_elo_table(state["ratings"]),
             )
 
-            for fut in done:
-                pair_key, white_name, black_name = in_flight.pop(fut)
-                in_flight_keys.discard(pair_key)
-                try:
-                    result = fut.result()
-                except Exception as e:
-                    logger.error(
-                        "Game {} vs {} failed: {}", white_name, black_name, e,
-                    )
-                    continue
-
-                outcome = result["outcome"]
-                w_avg = result["white_time"] / max(result["white_moves"], 1)
-                b_avg = result["black_time"] / max(result["black_moves"], 1)
-                logger.info(
-                    "  Result: {} ({} moves) | {} {:.2f}s/move | {} {:.2f}s/move",
-                    outcome, result["moves"],
-                    white_name, w_avg, black_name, b_avg,
-                )
-
-                # OpenSkill updates must stay serial for reproducibility.
-                _record_result(
-                    state, pair_key, white_name, outcome, result["moves"],
-                )
-                state["total_games"] += 1
-                games_since_save += 1
-
-                player_stats = state.setdefault("player_stats", {})
-                for name, t, m in [
-                    (white_name, result["white_time"], result["white_moves"]),
-                    (black_name, result["black_time"], result["black_moves"]),
-                ]:
-                    ps = player_stats.setdefault(
-                        name, {"total_time": 0.0, "total_moves": 0},
-                    )
-                    ps["total_time"] = round(ps["total_time"] + t, 2)
-                    ps["total_moves"] += m
-
-                if state["total_games"] % 10 == 0:
-                    logger.info(
-                        "Ratings (game {}):\n{}",
-                        state["total_games"],
-                        format_elo_table(state["ratings"]),
-                    )
-
-            still_pending = []
-            for model_name in pending_notifications:
-                if model_name in state["ratings"]:
-                    _notify_new_model(state, model_name)
-                else:
-                    still_pending.append(model_name)
-            pending_notifications = still_pending
-
-            games_since_slack = state["total_games"] - state["last_slack_game"]
-            if games_since_slack >= notify_interval:
-                _notify_slack(state)
-
-            if games_since_save >= SAVE_EVERY_N_GAMES:
-                _save_state(state)
-                games_since_save = 0
-    finally:
-        if games_since_save > 0:
+        # Periodically write the derived projection for the dashboard/metrics.
+        if time.monotonic() - last_projection_ts >= PROJECTION_INTERVAL_SECONDS:
             try:
-                _save_state(state)
+                storage.put_json(storage.ELO_STATE, state)
+                last_projection_ts = time.monotonic()
             except Exception as e:
-                logger.warning("Final state save failed: {}", e)
-        executor.shutdown(wait=False, cancel_futures=True)
+                logger.warning("Projection write failed: {}", e)
+
+        if slack_leader:
+            games_since_slack = state["total_games"] - last_slack_game
+            if games_since_slack >= notify_interval:
+                try:
+                    _notify_slack(state)
+                    last_slack_game = state["total_games"]
+                except Exception as e:
+                    logger.warning("Slack notify failed: {}", e)
 
 
 def _notify_slack(state: dict) -> None:
     from .slack import notify_elo_update
     if state["ratings"]:
         notify_elo_update(state["ratings"], state["total_games"])
-        state["last_slack_game"] = state["total_games"]
-
-
-def _notify_new_model(state: dict, model_name: str) -> None:
-    from .slack import notify_elo_update
-    notify_elo_update(state["ratings"], state["total_games"], new_model=model_name)
-    state["last_slack_game"] = state["total_games"]
