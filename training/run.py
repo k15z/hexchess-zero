@@ -87,11 +87,6 @@ def main() -> None:
     elo_svc_parser.add_argument("--max-versions", type=int, default=20, help="Max model versions in pool")
     elo_svc_parser.add_argument("--notify-interval", type=int, default=20, help="Games between Slack notifications")
 
-    subparsers.add_parser(
-        "elo-migrate",
-        help="One-shot: backfill legacy state/elo_games.jsonl into per-game objects",
-    )
-
     args = parser.parse_args()
 
     if args.command is None:
@@ -118,10 +113,6 @@ def main() -> None:
             max_versions=args.max_versions,
             notify_interval=args.notify_interval,
         )
-    elif args.command == "elo-migrate":
-        _configure_logging()
-        from .elo_service import migrate_legacy_jsonl
-        migrate_legacy_jsonl()
 
 
 if __name__ == "__main__":
