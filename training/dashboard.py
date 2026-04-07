@@ -10,6 +10,7 @@ from .config import AsyncConfig
 from .dashboard_store import DashboardStore
 
 _DASHBOARD_HTML: str | None = None
+_ICON_PNG: bytes | None = None
 
 
 def _load_html() -> str:
@@ -18,6 +19,13 @@ def _load_html() -> str:
         html_path = Path(__file__).parent / "dashboard.html"
         _DASHBOARD_HTML = html_path.read_text()
     return _DASHBOARD_HTML
+
+
+def _load_icon() -> bytes:
+    global _ICON_PNG
+    if _ICON_PNG is None:
+        _ICON_PNG = (Path(__file__).parent / "icon.png").read_bytes()
+    return _ICON_PNG
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -29,8 +37,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._serve_html()
         elif self.path == "/api/status":
             self._serve_json(self.store.snapshot())
+        elif self.path == "/icon.png":
+            self._serve_icon()
         else:
             self.send_error(404)
+
+    def _serve_icon(self):
+        body = _load_icon()
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self.end_headers()
+        self.wfile.write(body)
 
     def _serve_html(self):
         body = _load_html().encode()
