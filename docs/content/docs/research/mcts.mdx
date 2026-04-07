@@ -78,7 +78,7 @@ $$
 - **$\tau = 0$** (greedy): always pick the most-visited move
 - **$\tau = 1$** (proportional): sample proportional to visit counts
 
-During self-play, high temperature ($\tau = 1$) is used for the first ~60 moves to create diverse openings, then near-zero temperature for the remainder to produce clean value signals.
+During self-play, high temperature ($\tau = 1$) is used for the first ~60 moves to create diverse openings, then a low-but-nonzero temperature ($\tau = 0.35$, an Lc0-style floor) for the remainder. A true near-zero temperature collapsed policy targets to one-hot in the majority of positions, killing the gradient signal.
 
 ## Batched evaluation
 

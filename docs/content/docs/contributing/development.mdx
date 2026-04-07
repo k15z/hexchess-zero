@@ -38,6 +38,7 @@ engine/              Rust engine (single source of truth for game rules)
     serialization.rs Board-to-tensor encoding, move indexing
     inference.rs     Evaluator trait + backends (ONNX, Tract, heuristic)
     eval.rs          Material heuristic evaluation
+    minimax.rs       Alpha-beta search with configurable EvalWeights (used by imitation bootstrap and analysis)
 
 bindings/
   wasm/              WASM bindings (wasm-bindgen, Tract inference)
