@@ -117,6 +117,9 @@ def test_label_smoothing_on_wdl_matches_formula():
 
 
 def test_mlh_huber_known_value():
+    """Targets are normalized by mlh_scale (default 100) before Huber.
+    pred=8, target=10 → normalized diff = 0.02 → smooth_l1 quadratic
+    region: 0.5 * 0.02^2 = 0.0002."""
     preds = {
         "policy": torch.zeros(1, NUM_MOVES),
         "wdl": torch.zeros(1, 3),
@@ -132,8 +135,8 @@ def test_mlh_huber_known_value():
         "aux_policy": torch.full((1, NUM_MOVES), 1.0 / NUM_MOVES),
     }
     out = compute_losses(preds, targets)
-    # smooth_l1 with beta=1 on |10-8|=2 → |x|-0.5 = 1.5
-    assert abs(out.mlh.item() - 1.5) < 1e-5
+    expected = 0.5 * (0.02 ** 2)
+    assert abs(out.mlh.item() - expected) < 1e-6
 
 
 def test_sample_weight_doubling_doubles_total():
