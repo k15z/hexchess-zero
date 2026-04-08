@@ -1,7 +1,13 @@
 """Hyperparameters and paths for the training pipeline."""
 
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 from pathlib import Path
+
+
+def _default_run_id() -> str:
+    """Run identifier for logging/metrics grouping (notes/13 §7.1, §8)."""
+    return os.environ.get("RUN_ID", "dev")
 
 
 def _project_root() -> Path:
@@ -17,6 +23,9 @@ def _cache_root() -> Path:
 @dataclass
 class _BaseConfig:
     """Shared hyperparameters for training and model architecture."""
+
+    # --- Run identity ---
+    run_id: str = field(default_factory=_default_run_id)
 
     # --- MCTS ---
     num_simulations: int = 800

@@ -52,6 +52,7 @@ from loguru import logger
 from . import storage
 from .config import AsyncConfig
 from .imitation import play_imitation_game
+from .logging_setup import log_event, setup_json_logging
 
 try:
     import hexchess
@@ -539,6 +540,9 @@ def run_worker(cfg: AsyncConfig) -> None:
     if hexchess is None:
         raise ImportError("hexchess bindings not available")
 
+    setup_json_logging("worker", run_id=cfg.run_id)
+    log_event("worker.start", run_id=cfg.run_id)
+
     def _cleanup(signum, frame):
         logger.info("Received signal {}, terminating child processes...", signum)
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
@@ -629,6 +633,23 @@ def run_worker(cfg: AsyncConfig) -> None:
         total_positions += len(record.positions)
 
         key = flush_game_record(record, current_version)
+        # Tier-1 per-game structured event (plan §7.3).
+        mcts_qs = [p.root_q for p in record.positions] if record.positions else []
+        mcts_entropies = [p.root_entropy for p in record.positions] if record.positions else []
+        log_event(
+            "selfplay.game",
+            game_id=int(game_id),
+            model_version=int(current_version),
+            result=record.result,
+            termination=getattr(record, "termination", None),
+            num_full_positions=len(record.positions),
+            num_total_positions=int(record.num_total_positions),
+            duration_s=float(elapsed),
+            mcts_mean_root_q=float(np.mean(mcts_qs)) if mcts_qs else 0.0,
+            mcts_mean_root_entropy=float(np.mean(mcts_entropies)) if mcts_entropies else 0.0,
+            pcr_full_position_count=len(record.positions),
+            pcr_fast_position_count=int(record.num_total_positions) - len(record.positions),
+        )
         logger.info(
             "game {} ({}): {} full-search / {} total plies, {:.1f}s | v{} | {}",
             total_games, record.result,

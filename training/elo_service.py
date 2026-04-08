@@ -26,6 +26,7 @@ from loguru import logger
 
 from . import storage
 from .config import AsyncConfig
+from .logging_setup import log_event, setup_json_logging
 from .elo import (
     MctsPlayer,
     MinimaxPlayer,
@@ -385,6 +386,8 @@ def run_elo_service(
     """Run the continuous Elo rating service. One game at a time per replica."""
     cfg = AsyncConfig()
     cfg.ensure_cache_dirs()
+    setup_json_logging("elo", run_id=cfg.run_id)
+    log_event("elo.start", run_id=cfg.run_id, simulations=simulations)
 
     cache_dir = cfg.model_cache_dir / "elo"
     cache_dir.mkdir(parents=True, exist_ok=True)
