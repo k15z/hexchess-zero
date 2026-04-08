@@ -371,6 +371,63 @@ pub fn move_to_index(mv: &Move) -> Option<usize> {
     MOVE_INDEX.reverse.get(&(fi, ti, po)).copied()
 }
 
+/// Involution on hex coords used for move-table mirroring: the 180-degree
+/// rotation `(q, r) → (-q, -r)`.
+///
+/// We use central inversion rather than a pure left-right reflection because
+/// the move table distinguishes pawn-promotion pairs (which expand to four
+/// indices) from non-promotion pairs. Central inversion is the unique hex
+/// symmetry that maps white pawn directions to black pawn directions AND
+/// white promotion cells to black promotion cells, so a white-promo pair
+/// mirrors cleanly to a black-promo pair (both have the 4 promotion
+/// entries). A left-right reflection does NOT preserve the set of
+/// pawn-promotion pairs because promotion cells live on the top/bottom
+/// edges of the hex, which reflections across a vertical axis do not map
+/// onto each other.
+///
+/// Involution: applying it twice yields the original coord.
+/// Validity-preserving: negating both `q` and `r` also negates `s = -q - r`,
+/// so `max(|q|, |r|, |s|)` is unchanged.
+pub fn mirror_coord(c: HexCoord) -> HexCoord {
+    HexCoord::new(-c.q, -c.r)
+}
+
+/// Move-index → mirrored move-index lookup table.
+///
+/// Built once at startup from `MOVE_INDEX`: each entry `MIRROR_INDEX[i]` is
+/// the index of the move obtained by reflecting move `i` across the r-axis
+/// (both `from` and `to` cells mirrored, promotion piece unchanged).
+static MIRROR_INDEX: LazyLock<Vec<usize>> = LazyLock::new(|| {
+    let n = MOVE_INDEX.entries.len();
+    let mut out = vec![0usize; n];
+    for (i, e) in MOVE_INDEX.entries.iter().enumerate() {
+        let from = crate::board::index_to_coord(e.from_idx as usize);
+        let to = crate::board::index_to_coord(e.to_idx as usize);
+        let mfrom = mirror_coord(from);
+        let mto = mirror_coord(to);
+        let mfi = crate::board::coord_to_index(mfrom)
+            .expect("mirror_coord must land on a valid cell") as u8;
+        let mti = crate::board::coord_to_index(mto).expect("mirror_coord must land on a valid cell")
+            as u8;
+        let key = (mfi, mti, promotion_ordinal(e.promotion));
+        out[i] = *MOVE_INDEX
+            .reverse
+            .get(&key)
+            .expect("mirrored move must also be in the move table");
+    }
+    out
+});
+
+/// Return the mirrored move index corresponding to `idx`.
+pub fn mirror_move_index(idx: usize) -> usize {
+    MIRROR_INDEX[idx]
+}
+
+/// Return the full mirror-index lookup table as a slice.
+pub fn mirror_indices() -> &'static [usize] {
+    &MIRROR_INDEX
+}
+
 /// Convert a policy-vector index back to `(from, to, promotion)`.
 ///
 /// Panics if `index >= num_move_indices()`.
@@ -886,6 +943,43 @@ mod tests {
             n,
             h
         );
+    }
+
+    #[test]
+    fn test_mirror_symmetry_exhaustive() {
+        use crate::board::ALL_COORDS;
+
+        // 1. mirror_coord preserves validity for all 91 valid coords.
+        for &c in ALL_COORDS.iter() {
+            let m = mirror_coord(c);
+            assert!(
+                m.is_valid(),
+                "mirror of valid coord {:?} is invalid: {:?}",
+                c,
+                m
+            );
+            // 2. Involution.
+            assert_eq!(mirror_coord(m), c);
+        }
+
+        // 3. For every move in the move table, its mirrored version is in
+        //    the table (implicitly verified by MIRROR_INDEX's LazyLock init,
+        //    which panics otherwise; re-check here for test clarity).
+        let n = num_move_indices();
+        for i in 0..n {
+            let j = mirror_move_index(i);
+            assert!(j < n);
+        }
+
+        // 4. Involution at move-index level.
+        for i in 0..n {
+            assert_eq!(
+                mirror_move_index(mirror_move_index(i)),
+                i,
+                "mirror is not an involution at index {}",
+                i
+            );
+        }
     }
 
     #[test]

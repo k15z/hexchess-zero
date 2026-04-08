@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 
 import pytest
 import torch
@@ -12,7 +11,6 @@ from training.config import _BaseConfig
 from training.health_checks import (
     HealthCheckError,
     HealthCheckReport,
-    HealthCheckResult,
     check_bn_eval_mode,
     check_initial_loss_bounds,
     check_mirror_table,

@@ -29,9 +29,10 @@ test: ## Run engine tests
 bench: ## Run move generation benchmark
 	cargo bench --bench movegen
 
-lint: ## Run clippy + format check
+lint: ## Run clippy + format check + ruff
 	cargo clippy -p hexchess-engine -- -D warnings
 	cargo fmt --all --check
+	uvx ruff check
 
 # --- Documentation ---
 

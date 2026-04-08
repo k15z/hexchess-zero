@@ -8,7 +8,7 @@ WDL), and flush a rich `.npz` + metadata sidecar + per-game trace to S3.
 Schema (see notes/13-implementation-plan.md §5.3):
     boards                (N, 22, 11, 11)        int8
     policy                (N, num_move_indices)  float16
-    policy_aux_opp        (N, num_move_indices)  float16  (TODO chunk 13)
+    policy_aux_opp        (N, num_move_indices)  float16
     wdl_terminal          (N, 3)                 float32
     wdl_short             (N, 3)                 float32
     mlh                   (N,)                   int16
@@ -69,7 +69,7 @@ class PositionSample:
     """One full-search position to be emitted as a training sample."""
     board: np.ndarray            # (22, 11, 11) float32 from encode_board
     policy: np.ndarray           # (num_moves,) float32 (PTP-pruned)
-    policy_aux_opp: np.ndarray   # (num_moves,) float32 uniform-legal (TODO chunk 13)
+    policy_aux_opp: np.ndarray   # (num_moves,) float32 opponent-reply visit dist
     root_q: float                # [-1, 1] from STM perspective
     root_n: int                  # total visits at root
     root_entropy: float
@@ -155,14 +155,13 @@ def _root_q_to_wdl(q: float) -> list[float]:
     the binding if a sharper signal is wanted.
     """
     q = float(max(-1.0, min(1.0, q)))
-    w = max(q, 0.0)
-    l = max(-q, 0.0)
-    d = max(0.0, 1.0 - abs(q))
-    # Clamp numeric drift.
-    s = w + d + l
+    win = max(q, 0.0)
+    loss = max(-q, 0.0)
+    draw = max(0.0, 1.0 - abs(q))
+    s = win + draw + loss
     if s > 0:
-        w, d, l = w / s, d / s, l / s
-    return [w, d, l]
+        win, draw, loss = win / s, draw / s, loss / s
+    return [win, draw, loss]
 
 
 def _entropy(p: np.ndarray) -> float:
@@ -402,17 +401,21 @@ def _play_one_game_pcr(
         if was_full and policy_target is not None:
             policy_np = np.asarray(policy_target, dtype=np.float32)
 
-            # Uniform-over-legal opponent policy placeholder.
-            # TODO(chunk 13): emit the actual opponent-ply visit distribution
-            # from the MCTS tree once the binding exposes it.
-            aux_opp = np.zeros(num_moves, dtype=np.float32)
-            if legal_count > 0:
-                inv = 1.0 / legal_count
-                for mv in legal:
-                    idx = hexchess.move_to_index(
-                        mv.from_q, mv.from_r, mv.to_q, mv.to_r, mv.promotion
-                    )
-                    aux_opp[idx] = inv
+            # Opponent-reply visit distribution from the MCTS tree. Falls
+            # back to uniform-over-legal if the best child is unexpanded
+            # (e.g. terminal position or very small search).
+            aux_opp_raw = search.aux_opponent_policy()
+            if aux_opp_raw is not None:
+                aux_opp = np.asarray(aux_opp_raw, dtype=np.float32)
+            else:
+                aux_opp = np.zeros(num_moves, dtype=np.float32)
+                if legal_count > 0:
+                    inv = 1.0 / legal_count
+                    for mv in legal:
+                        idx = hexchess.move_to_index(
+                            mv.from_q, mv.from_r, mv.to_q, mv.to_r, mv.promotion
+                        )
+                        aux_opp[idx] = inv
 
             pos = PositionSample(
                 board=board_tensor.astype(np.float32),
@@ -572,7 +575,6 @@ def run_worker(cfg: AsyncConfig) -> None:
         batch_size = cfg.worker_batch_size
         pending_samples: list[dict] = []
         pending_games = 0
-        batch_t0 = time.time()
 
         with ProcessPoolExecutor(max_workers=num_workers) as pool:
             futures = {pool.submit(play_imitation_game, cfg) for _ in range(num_workers * 2)}
@@ -597,7 +599,6 @@ def run_worker(cfg: AsyncConfig) -> None:
                         _write_heartbeat(cfg, current_version, imitation_games, imitation_positions)
                         pending_samples = []
                         pending_games = 0
-                        batch_t0 = time.time()
                         current_version, model_path = _read_model_version(cfg)
             for f in futures:
                 f.cancel()

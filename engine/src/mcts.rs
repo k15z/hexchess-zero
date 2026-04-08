@@ -15,6 +15,8 @@ use crate::movegen::Move;
 use crate::serialization;
 
 use rand::Rng;
+use rand::SeedableRng;
+use rand::rngs::StdRng;
 
 // ---------------------------------------------------------------------------
 // SearchConfig
@@ -153,6 +155,9 @@ pub struct SearchConfig {
     pub use_lcb: bool,
     /// Treat 2-fold repetition encountered within a search path as an immediate draw.
     pub two_fold_as_draw: bool,
+    /// Optional seed for the internal RNG (used for Dirichlet noise sampling
+    /// and temperature-based move selection). `None` draws from thread RNG.
+    pub rng_seed: Option<u64>,
 }
 
 impl SearchConfig {
@@ -175,6 +180,7 @@ impl SearchConfig {
             resign: ResignConfig::default(),
             use_lcb: false,
             two_fold_as_draw: true,
+            rng_seed: None,
         }
     }
 
@@ -209,6 +215,7 @@ impl SearchConfig {
             },
             use_lcb: true,
             two_fold_as_draw: true,
+            rng_seed: None,
         }
     }
 }
@@ -481,14 +488,19 @@ pub struct MctsSearch {
     path_scratch: Vec<usize>,
     /// Reusable buffer of leaves for `simulate_batched`.
     leaves_scratch: Vec<LeafInfo>,
+    /// Seeded RNG for Dirichlet noise and temperature sampling. `None` falls
+    /// back to thread-local RNG.
+    rng: Option<StdRng>,
 }
 
 impl MctsSearch {
     pub fn new(evaluator: Box<dyn Evaluator>) -> Self {
+        let config = SearchConfig::training();
+        let rng = config.rng_seed.map(StdRng::seed_from_u64);
         Self {
             nodes: Vec::new(),
             evaluator,
-            config: SearchConfig::training(),
+            config,
             tt: HashMap::new(),
             tt_hits: 0,
             tt_misses: 0,
@@ -496,11 +508,22 @@ impl MctsSearch {
             resign_history: [VecDeque::new(), VecDeque::new()],
             path_scratch: Vec::new(),
             leaves_scratch: Vec::new(),
+            rng,
         }
+    }
+
+    /// Seed the internal RNG used for Dirichlet noise and temperature
+    /// sampling so searches become deterministic given the same inputs.
+    pub fn set_rng_seed(&mut self, seed: u64) {
+        self.config.rng_seed = Some(seed);
+        self.rng = Some(StdRng::seed_from_u64(seed));
     }
 
     /// Replace the entire search configuration.
     pub fn set_config(&mut self, config: SearchConfig) {
+        if let Some(seed) = config.rng_seed {
+            self.rng = Some(StdRng::seed_from_u64(seed));
+        }
         self.config = config;
     }
 
@@ -673,6 +696,7 @@ impl MctsSearch {
                         Self::expand_nodes(
                             &mut self.nodes,
                             &self.config,
+                            self.rng.as_mut(),
                             node_idx,
                             state,
                             &cached.0,
@@ -681,7 +705,14 @@ impl MctsSearch {
                     } else {
                         self.tt_misses += 1;
                         let (policy, value) = self.evaluator.evaluate(state);
-                        Self::expand_nodes(&mut self.nodes, &self.config, node_idx, state, &policy);
+                        Self::expand_nodes(
+                            &mut self.nodes,
+                            &self.config,
+                            self.rng.as_mut(),
+                            node_idx,
+                            state,
+                            &policy,
+                        );
                         self.tt_insert(key, (policy, value));
                         value as f64
                     }
@@ -748,6 +779,7 @@ impl MctsSearch {
                             Self::expand_nodes(
                                 &mut self.nodes,
                                 &self.config,
+                                self.rng.as_mut(),
                                 node_idx,
                                 state,
                                 &cached.0,
@@ -808,6 +840,7 @@ impl MctsSearch {
                         Self::expand_nodes(
                             &mut self.nodes,
                             &self.config,
+                            self.rng.as_mut(),
                             node_idx,
                             leaf_state,
                             policy,
@@ -910,6 +943,7 @@ impl MctsSearch {
     fn expand_nodes(
         nodes: &mut Vec<MctsNode>,
         config: &SearchConfig,
+        rng: Option<&mut StdRng>,
         node_idx: usize,
         state: &GameState,
         policy: &[f32],
@@ -949,7 +983,25 @@ impl MctsSearch {
             && let Some(ref dcfg) = config.dirichlet
         {
             let top_k = config.dirichlet_top_k;
-            apply_shaped_dirichlet_noise(&mut children_info, dcfg.epsilon, dcfg.alpha, top_k);
+            match rng {
+                Some(r) => apply_shaped_dirichlet_noise(
+                    &mut children_info,
+                    dcfg.epsilon,
+                    dcfg.alpha,
+                    top_k,
+                    r,
+                ),
+                None => {
+                    let mut thread = rand::rng();
+                    apply_shaped_dirichlet_noise(
+                        &mut children_info,
+                        dcfg.epsilon,
+                        dcfg.alpha,
+                        top_k,
+                        &mut thread,
+                    );
+                }
+            }
         }
 
         for (mv, mv_idx, prior) in children_info {
@@ -1225,6 +1277,47 @@ impl MctsSearch {
         policy
     }
 
+    /// Build an auxiliary policy target representing the visit distribution
+    /// over the opponent's reply (the grandchildren of the root, from the
+    /// root's most-visited child). Returns `None` if the root has no
+    /// children, or the most-visited child is unexpanded / has no visits.
+    pub fn aux_opponent_policy(&self) -> Option<Vec<f32>> {
+        if self.nodes.is_empty() {
+            return None;
+        }
+        let root = &self.nodes[0];
+        if root.children.is_empty() {
+            return None;
+        }
+        let best_child_idx = *root
+            .children
+            .iter()
+            .max_by_key(|&&i| self.nodes[i].visit_count)?;
+        let best_child = &self.nodes[best_child_idx];
+        if !best_child.is_expanded || best_child.visit_count == 0 {
+            return None;
+        }
+        let num_indices = serialization::num_move_indices();
+        let mut out = vec![0.0f32; num_indices];
+        let mut total: u32 = 0;
+        for &gi in &best_child.children {
+            total += self.nodes[gi].visit_count;
+        }
+        if total == 0 {
+            return Some(out);
+        }
+        let inv = 1.0 / total as f32;
+        for &gi in &best_child.children {
+            let gc = &self.nodes[gi];
+            if let Some(mv_idx) = gc.action_index
+                && mv_idx < num_indices
+            {
+                out[mv_idx] = gc.visit_count as f32 * inv;
+            }
+        }
+        Some(out)
+    }
+
     /// Select the best root child using LCB: `Q(a) − 1.96·sqrt(Var(a)/N(a))`.
     /// Children with fewer than 2 visits fall back to raw Q.
     pub fn lcb_best_move(&self) -> Option<Move> {
@@ -1308,18 +1401,19 @@ pub struct PcrOutcome {
 /// (a broad, almost-uniform blind-spot distribution); the other half is
 /// concentrated uniformly on the top-`K` children ranked by prior probability.
 /// This is the notes/02 §7 "shaped Dirichlet" recipe.
-fn apply_shaped_dirichlet_noise(
+fn apply_shaped_dirichlet_noise<R: Rng + ?Sized>(
     children_info: &mut [(Move, usize, f32)],
     epsilon: f32,
     alpha: f64,
     top_k: usize,
+    rng: &mut R,
 ) {
     let n = children_info.len();
     if n == 0 {
         return;
     }
 
-    let broad = sample_dirichlet(n, alpha * 0.5);
+    let broad = sample_dirichlet(rng, n, alpha * 0.5);
 
     let mut idxs: Vec<usize> = (0..n).collect();
     idxs.sort_by(|&a, &b| {
@@ -1348,9 +1442,8 @@ fn apply_shaped_dirichlet_noise(
 ///
 /// Uses Gamma sampling via the Ahrens-Dieter method (suitable for alpha < 1)
 /// combined with Marsaglia-Tsang for alpha >= 1.
-fn sample_dirichlet(n: usize, alpha: f64) -> Vec<f64> {
-    let mut rng = rand::rng();
-    let mut samples: Vec<f64> = (0..n).map(|_| sample_gamma(&mut rng, alpha)).collect();
+fn sample_dirichlet<R: Rng + ?Sized>(rng: &mut R, n: usize, alpha: f64) -> Vec<f64> {
+    let mut samples: Vec<f64> = (0..n).map(|_| sample_gamma(rng, alpha)).collect();
     let sum: f64 = samples.iter().sum();
     if sum > 0.0 {
         for s in &mut samples {
@@ -1368,7 +1461,7 @@ fn sample_dirichlet(n: usize, alpha: f64) -> Vec<f64> {
 /// For alpha < 1, uses the transformation: if X ~ Gamma(alpha+1, 1) then
 /// X * U^(1/alpha) ~ Gamma(alpha, 1), where U ~ Uniform(0,1).
 /// For alpha >= 1, uses Marsaglia-Tsang method.
-fn sample_gamma(rng: &mut impl Rng, alpha: f64) -> f64 {
+fn sample_gamma<R: Rng + ?Sized>(rng: &mut R, alpha: f64) -> f64 {
     if alpha < 1.0 {
         // Boost: Gamma(alpha) = Gamma(alpha+1) * U^(1/alpha)
         let u: f64 = rng.random();
@@ -1379,7 +1472,7 @@ fn sample_gamma(rng: &mut impl Rng, alpha: f64) -> f64 {
 }
 
 /// Marsaglia-Tsang method for Gamma(alpha, 1) where alpha >= 1.
-fn sample_gamma_gt1(rng: &mut impl Rng, alpha: f64) -> f64 {
+fn sample_gamma_gt1<R: Rng + ?Sized>(rng: &mut R, alpha: f64) -> f64 {
     let d = alpha - 1.0 / 3.0;
     let c = 1.0 / (9.0 * d).sqrt();
     loop {
@@ -1955,7 +2048,8 @@ mod tests {
             .enumerate()
             .map(|(i, m)| (*m, i, uniform_prior))
             .collect();
-        apply_shaped_dirichlet_noise(&mut ci, 0.25, 0.25, 10);
+        let mut trng = rand::rng();
+        apply_shaped_dirichlet_noise(&mut ci, 0.25, 0.25, 10, &mut trng);
         let sum: f32 = ci.iter().map(|e| e.2).sum();
         assert!((sum - 1.0).abs() < 1e-3, "shaped dirichlet sum={sum}");
         for (_, _, p) in &ci {
@@ -2136,6 +2230,41 @@ mod tests {
         }
         assert!(!search.record_and_check_resign(Color::White, 0.5));
         assert!(!search.record_and_check_resign(Color::White, 0.01));
+    }
+
+    #[test]
+    fn rng_seed_yields_deterministic_visits() {
+        // Two searches with the same seed on the same position must produce
+        // identical visit counts across all root children.
+        let state = GameState::new();
+
+        let mut run_one = || {
+            let mut s = MctsSearch::new(Box::new(HeuristicEvaluator));
+            s.config_mut().batch_size = 1;
+            s.set_rng_seed(42);
+            let _ = s.search(&state, 64);
+            let root = &s.nodes[0];
+            root.children
+                .iter()
+                .map(|&i| s.nodes[i].visit_count)
+                .collect::<Vec<_>>()
+        };
+
+        let a = run_one();
+        let b = run_one();
+        assert_eq!(a, b, "seeded searches must be deterministic");
+    }
+
+    #[test]
+    fn aux_opponent_policy_sums_to_one() {
+        let state = GameState::new();
+        let mut s = MctsSearch::new(Box::new(HeuristicEvaluator));
+        s.config_mut().batch_size = 1;
+        s.set_rng_seed(7);
+        let _ = s.search(&state, 128);
+        let aux = s.aux_opponent_policy().expect("should have aux");
+        let sum: f32 = aux.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-4, "aux sum = {sum}");
     }
 
     #[test]

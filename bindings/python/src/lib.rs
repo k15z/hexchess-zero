@@ -674,11 +674,12 @@ impl PyMctsSearch {
         })
     }
 
-    /// Seed the internal RNG used by `run_pcr` for coin flips. Full engine
-    /// determinism (search RNG, Dirichlet, etc.) is a chunk 9 concern; this
-    /// only controls the PCR coin and similar binding-level sources.
+    /// Seed both the binding-level RNG (used by `run_pcr` for coin flips)
+    /// and the engine's internal RNG (Dirichlet noise, etc.) so searches
+    /// become deterministic given the same inputs.
     fn set_rng_seed(&mut self, seed: u64) {
         self.rng = StdRng::seed_from_u64(seed);
+        self.search.set_rng_seed(seed);
     }
 
     /// Enable/disable resignation for the next game. Used by the worker's
@@ -733,6 +734,19 @@ impl PyMctsSearch {
             value: result.value,
             nodes: result.nodes_searched,
         }
+    }
+
+    /// Return the opponent-reply visit distribution from the previous
+    /// search as a numpy float32 array of length `num_move_indices()`, or
+    /// `None` if unavailable (no search yet, or the best child is
+    /// unexpanded).
+    fn aux_opponent_policy<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> Option<Bound<'py, numpy::PyArray1<f32>>> {
+        self.search
+            .aux_opponent_policy()
+            .map(|v| numpy::PyArray1::from_vec(py, v))
     }
 
     /// Transposition-table stats.
@@ -831,6 +845,20 @@ fn index_to_move(idx: usize) -> PyResult<PyMove> {
 #[pyfunction]
 fn num_move_indices() -> usize {
     serialization::num_move_indices()
+}
+
+/// Return the move-index mirror lookup table as a numpy uint32 array of
+/// length `num_move_indices()`. Element `i` is the index of the move
+/// obtained by reflecting move `i` under the engine's canonical involution
+/// (central inversion of the hex grid). Intended for data-augmentation in
+/// the training loader.
+#[pyfunction]
+fn mirror_indices_array(py: Python<'_>) -> Bound<'_, numpy::PyArray1<u32>> {
+    let v: Vec<u32> = serialization::mirror_indices()
+        .iter()
+        .map(|&i| i as u32)
+        .collect();
+    numpy::PyArray1::from_vec(py, v)
 }
 
 // ---------------------------------------------------------------------------
@@ -953,6 +981,7 @@ fn hexchess(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(move_to_index, m)?)?;
     m.add_function(wrap_pyfunction!(index_to_move, m)?)?;
     m.add_function(wrap_pyfunction!(num_move_indices, m)?)?;
+    m.add_function(wrap_pyfunction!(mirror_indices_array, m)?)?;
     m.add_function(wrap_pyfunction!(minimax_search, m)?)?;
     m.add_function(wrap_pyfunction!(minimax_search_all, m)?)?;
     m.add_function(wrap_pyfunction!(minimax_search_with_policy, m)?)?;
