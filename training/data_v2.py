@@ -1,0 +1,126 @@
+"""v2 .npz loader and target builder for the chunk 6 trainer.
+
+The worker (chunk 5) writes rich per-position arrays:
+
+    boards                (N, 22, 11, 11)        int8
+    policy                (N, num_move_indices)  float16
+    policy_aux_opp        (N, num_move_indices)  float16
+    wdl_terminal          (N, 3)                 float32
+    wdl_short             (N, 3)                 float32
+    mlh                   (N,)                   int16
+    was_full_search       (N,)                   bool
+    root_q, root_n, root_entropy, nn_value_at_position, legal_count, ply, game_id
+
+This module provides pure functions to:
+  - load one v2 .npz into numpy arrays (filtered to was_full_search=True),
+  - build the per-batch ``targets`` dict expected by ``compute_losses``,
+  - derive a legal_mask from the policy visits.
+
+The loader is deliberately numpy-only; the trainer wraps a batch in
+torch tensors at dataloader collate time.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+
+
+@dataclass
+class V2Batch:
+    """A slice of v2 training samples as plain numpy arrays (fp32 / bool)."""
+
+    boards: np.ndarray          # (B, 22, 11, 11) float32
+    policy: np.ndarray          # (B, num_moves)  float32
+    aux_policy: np.ndarray      # (B, num_moves)  float32
+    wdl_terminal: np.ndarray    # (B, 3)          float32
+    wdl_short: np.ndarray       # (B, 3)          float32
+    mlh: np.ndarray             # (B,)            float32
+    legal_mask: np.ndarray      # (B, num_moves)  bool
+    ply: np.ndarray             # (B,)            int32
+
+    def __len__(self) -> int:
+        return int(self.boards.shape[0])
+
+
+def _decode_boards(boards_int8: np.ndarray) -> np.ndarray:
+    """Cast int8 board tensor back to float32.
+
+    The worker stored ``rint(float_board).astype(int8)``. The 12 piece
+    planes and the binary meta planes (side-to-move, en-passant, in-check,
+    last-move-from/to, repetition, validity) round-trip exactly since
+    every value is in {0, 1, 2}.
+
+    Four meta planes (fullmove/100, halfmove/100, repetition, halfmove/50)
+    were in the fractional range [0, ~2] and were lossily rounded to
+    integers. We accept that loss here — see the worker module docstring
+    for the rationale. No explicit rescale is applied (the float values
+    post-round-trip are the integer-rounded versions).
+    """
+    return boards_int8.astype(np.float32)
+
+
+def _legal_mask_from_policy(policy: np.ndarray) -> np.ndarray:
+    """Derive a legal_mask from the MCTS visit distribution.
+
+    Nonzero entries in the target policy correspond to visited moves, and
+    only legal moves are ever visited. Illegal entries are 0 in the
+    target so we can safely mask them out in the predicted distribution.
+    This is a conservative approximation documented in notes/13 §4:
+    legal-but-unvisited moves are marked "illegal" for the loss, which is
+    fine because the soft-target CE already has zero weight on them.
+    """
+    return policy > 0.0
+
+
+def load_v2_npz(path: str | Path) -> V2Batch:
+    """Load a chunk-5 v2 .npz file and return an fp32 V2Batch.
+
+    Only rows with ``was_full_search == True`` are kept. The loader uses
+    ``np.load`` (not mmap) because we copy every array to fp32 anyway.
+    """
+    path = Path(path)
+    data = np.load(str(path))
+
+    was_full = np.asarray(data["was_full_search"]).astype(bool)
+    idx = np.nonzero(was_full)[0]
+    if idx.size == 0:
+        raise ValueError(f"no full-search rows in {path}")
+
+    boards = _decode_boards(np.asarray(data["boards"])[idx])
+    policy = np.asarray(data["policy"])[idx].astype(np.float32)
+    aux_policy = np.asarray(data["policy_aux_opp"])[idx].astype(np.float32)
+    wdl_terminal = np.asarray(data["wdl_terminal"])[idx].astype(np.float32)
+    wdl_short = np.asarray(data["wdl_short"])[idx].astype(np.float32)
+    mlh = np.asarray(data["mlh"])[idx].astype(np.float32)
+    ply = np.asarray(data["ply"])[idx].astype(np.int32)
+    legal_mask = _legal_mask_from_policy(policy)
+
+    return V2Batch(
+        boards=boards,
+        policy=policy,
+        aux_policy=aux_policy,
+        wdl_terminal=wdl_terminal,
+        wdl_short=wdl_short,
+        mlh=mlh,
+        legal_mask=legal_mask,
+        ply=ply,
+    )
+
+
+def build_targets_dict(batch: V2Batch) -> dict:
+    """Build the ``targets`` dict argument for :func:`training.losses.compute_losses`.
+
+    The returned dict contains only the target arrays (still numpy); the
+    trainer is responsible for converting to torch tensors and moving to
+    the target device.
+    """
+    return {
+        "policy": batch.policy,
+        "wdl": batch.wdl_terminal,
+        "mlh": batch.mlh,
+        "stv": batch.wdl_short,
+        "aux_policy": batch.aux_policy,
+    }
