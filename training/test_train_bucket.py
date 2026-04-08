@@ -152,6 +152,30 @@ def test_passes_math():
     assert passes == pytest.approx(4.0)
 
 
+def test_window_size_caps_initial_seed():
+    """Regression: max_seed must not exceed window_size * target_passes.
+
+    notes/13 §4.2 — you cannot claim reuse credit for positions that are
+    no longer in the replay window.
+    """
+    bucket = TrainBucket(
+        target_passes=4.0, batch_size=256,
+        max_seed=1_000_000, max_tokens=1_000_000,
+    )
+    # Huge total_positions but tiny window — only 25k positions are
+    # actually in the buffer, so the initial seed must be <= 25k * 4.
+    bucket.update(10_000_000, window_size=25_000)
+    assert bucket.tokens == 25_000 * 4.0
+
+
+def test_window_size_does_not_inflate_seed():
+    """Window cap is a ceiling, not a floor."""
+    bucket = TrainBucket(target_passes=4.0, batch_size=256, max_seed=1_000_000)
+    bucket.update(1_000, window_size=1_000_000)
+    # Without window cap this would already be 4000; cap is 4M, no effect.
+    assert bucket.tokens == 4000.0
+
+
 def test_production_config():
     """Simulate production: target_passes=4, batch_size=256, 2 workers.
 
