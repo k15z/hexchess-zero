@@ -100,6 +100,14 @@ impl GameState {
         self.move_history.len()
     }
 
+    /// The most recent move applied to this game, if any.
+    ///
+    /// Returns `None` for the initial position. Used by the board-to-tensor
+    /// encoder to provide last-move from/to planes to the network.
+    pub fn last_move(&self) -> Option<Move> {
+        self.move_history.last().map(|u| u.mv)
+    }
+
     /// All legal moves in the current position.
     pub fn legal_moves(&self) -> Vec<Move> {
         movegen::generate_legal_moves(&self.board).to_vec()
