@@ -674,11 +674,12 @@ impl PyMctsSearch {
         })
     }
 
-    /// Seed the internal RNG used by `run_pcr` for coin flips. Full engine
-    /// determinism (search RNG, Dirichlet, etc.) is a chunk 9 concern; this
-    /// only controls the PCR coin and similar binding-level sources.
+    /// Seed both the binding-level RNG (used by `run_pcr` for coin flips)
+    /// and the engine's internal RNG (Dirichlet noise, etc.) so searches
+    /// become deterministic given the same inputs.
     fn set_rng_seed(&mut self, seed: u64) {
         self.rng = StdRng::seed_from_u64(seed);
+        self.search.set_rng_seed(seed);
     }
 
     /// Enable/disable resignation for the next game. Used by the worker's
