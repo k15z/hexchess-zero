@@ -155,14 +155,13 @@ def _root_q_to_wdl(q: float) -> list[float]:
     the binding if a sharper signal is wanted.
     """
     q = float(max(-1.0, min(1.0, q)))
-    w = max(q, 0.0)
-    l = max(-q, 0.0)
-    d = max(0.0, 1.0 - abs(q))
-    # Clamp numeric drift.
-    s = w + d + l
+    win = max(q, 0.0)
+    loss = max(-q, 0.0)
+    draw = max(0.0, 1.0 - abs(q))
+    s = win + draw + loss
     if s > 0:
-        w, d, l = w / s, d / s, l / s
-    return [w, d, l]
+        win, draw, loss = win / s, draw / s, loss / s
+    return [win, draw, loss]
 
 
 def _entropy(p: np.ndarray) -> float:
@@ -572,7 +571,6 @@ def run_worker(cfg: AsyncConfig) -> None:
         batch_size = cfg.worker_batch_size
         pending_samples: list[dict] = []
         pending_games = 0
-        batch_t0 = time.time()
 
         with ProcessPoolExecutor(max_workers=num_workers) as pool:
             futures = {pool.submit(play_imitation_game, cfg) for _ in range(num_workers * 2)}
@@ -597,7 +595,6 @@ def run_worker(cfg: AsyncConfig) -> None:
                         _write_heartbeat(cfg, current_version, imitation_games, imitation_positions)
                         pending_samples = []
                         pending_games = 0
-                        batch_t0 = time.time()
                         current_version, model_path = _read_model_version(cfg)
             for f in futures:
                 f.cancel()

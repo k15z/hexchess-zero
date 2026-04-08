@@ -15,7 +15,6 @@ import argparse
 import json
 import math
 from pathlib import Path
-from typing import Any
 
 from . import storage
 from .config import AsyncConfig
