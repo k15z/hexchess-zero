@@ -140,7 +140,8 @@ def train_model(cfg: AsyncConfig) -> str:
             policies = policies.to(device)
             outcomes = outcomes.to(device)
 
-            pred_policy, pred_wdl = model(boards)
+            preds = model(boards)
+            pred_policy, pred_wdl = preds["policy"], preds["wdl"]
 
             log_probs = torch.log_softmax(pred_policy, dim=1)
             policy_loss = -torch.sum(policies * log_probs, dim=1).mean()

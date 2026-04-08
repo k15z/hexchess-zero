@@ -11,6 +11,23 @@ from .config import _BaseConfig
 from .model import build_model
 
 
+class _OnnxExportWrapper(torch.nn.Module):
+    """Wraps HexChessNet to return only (policy, wdl) as a tuple.
+
+    The Rust engine's OnnxEvaluator only reads the 'policy' and 'value'
+    outputs, so we drop MLH/STV/aux_policy at export time to keep the
+    inference contract stable.
+    """
+
+    def __init__(self, model: torch.nn.Module):
+        super().__init__()
+        self.model = model
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        out = self.model(x)
+        return out["policy"], out["wdl"]
+
+
 def export_to_onnx(
     checkpoint_path: Path,
     output_path: Path,
@@ -41,8 +58,10 @@ def export_to_onnx(
 
     # Export
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    export_model = _OnnxExportWrapper(model)
+    export_model.eval()
     torch.onnx.export(
-        model,
+        export_model,
         dummy_input,
         str(output_path),
         input_names=["board"],

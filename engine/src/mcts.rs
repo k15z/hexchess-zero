@@ -681,13 +681,7 @@ impl MctsSearch {
                     } else {
                         self.tt_misses += 1;
                         let (policy, value) = self.evaluator.evaluate(state);
-                        Self::expand_nodes(
-                            &mut self.nodes,
-                            &self.config,
-                            node_idx,
-                            state,
-                            &policy,
-                        );
+                        Self::expand_nodes(&mut self.nodes, &self.config, node_idx, state, &policy);
                         self.tt_insert(key, (policy, value));
                         value as f64
                     }
@@ -897,8 +891,7 @@ impl MctsSearch {
             } else {
                 -child.q_value()
             };
-            let u = c * child.prior as f64 * parent_visits_sqrt
-                / (1.0 + child.visit_count as f64);
+            let u = c * child.prior as f64 * parent_visits_sqrt / (1.0 + child.visit_count as f64);
             let score = q + u;
             if score > best_score {
                 best_score = score;
@@ -956,12 +949,7 @@ impl MctsSearch {
             && let Some(ref dcfg) = config.dirichlet
         {
             let top_k = config.dirichlet_top_k;
-            apply_shaped_dirichlet_noise(
-                &mut children_info,
-                dcfg.epsilon,
-                dcfg.alpha,
-                top_k,
-            );
+            apply_shaped_dirichlet_noise(&mut children_info, dcfg.epsilon, dcfg.alpha, top_k);
         }
 
         for (mv, mv_idx, prior) in children_info {
@@ -978,7 +966,6 @@ impl MctsSearch {
 
         nodes[node_idx].is_expanded = true;
     }
-
 
     fn backpropagate(&mut self, path: &[usize], leaf_value: f64) {
         let mut value = leaf_value;
@@ -1120,7 +1107,12 @@ impl MctsSearch {
 
     /// Run a search using the current config's temperature schedule for
     /// the given ply. Used by the self-play worker for training games.
-    pub fn run_for_ply(&mut self, state: &GameState, ply: u32, num_simulations: u32) -> SearchResult {
+    pub fn run_for_ply(
+        &mut self,
+        state: &GameState,
+        ply: u32,
+        num_simulations: u32,
+    ) -> SearchResult {
         let temperature = self.config.temperature.temperature_at(ply);
         self.search_with_temperature(state, num_simulations, temperature)
     }
@@ -1906,7 +1898,10 @@ mod tests {
         let c2 = 19652.0f32;
         let v0 = dynamic_c_puct(2.5, c2, 0);
         let expected0 = 2.5 + ((1.0 + 0.0 + c2) / c2).ln();
-        assert!((v0 - expected0).abs() < 1e-5, "N=0: got {v0}, want {expected0}");
+        assert!(
+            (v0 - expected0).abs() < 1e-5,
+            "N=0: got {v0}, want {expected0}"
+        );
         assert!(v0 > 2.5 && v0 < 2.5001);
 
         let v1k = dynamic_c_puct(2.5, c2, 1_000);
@@ -2007,7 +2002,10 @@ mod tests {
                 assert!(outcome.policy_target.is_none());
             }
         }
-        assert!(full_count > 0 && fast_count > 0, "both branches should fire");
+        assert!(
+            full_count > 0 && fast_count > 0,
+            "both branches should fire"
+        );
     }
 
     #[test]

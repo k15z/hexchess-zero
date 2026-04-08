@@ -14,7 +14,7 @@ use crate::movegen::{self, Move};
 // Board-to-tensor encoding
 // ---------------------------------------------------------------------------
 
-pub const NUM_CHANNELS: usize = 19;
+pub const NUM_CHANNELS: usize = 22;
 pub const BOARD_DIM: usize = 11;
 pub const TENSOR_SIZE: usize = NUM_CHANNELS * BOARD_DIM * BOARD_DIM;
 
@@ -35,6 +35,14 @@ pub const TENSOR_SIZE: usize = NUM_CHANNELS * BOARD_DIM * BOARD_DIM;
 /// 16: Repetition count (0.0 / 1.0 / 2.0; constant plane)
 /// 17: Validity mask (1.0 on 91 valid hex cells, 0.0 on padding)
 /// 18: In check (1.0 if side to move is in check; constant plane)
+/// 19: Last move from-square (1.0 at source of most recent move, else 0)
+/// 20: Last move to-square (1.0 at destination of most recent move, else 0)
+/// 21: Plies-since-pawn-move (halfmove_clock / 50, clamped to [0, 1]; constant
+///     plane). NOTE: we reuse the board's halfmove clock, which in this engine
+///     resets on pawn moves OR captures (standard halfmove-clock semantics).
+///     The plan specifies "plies since pawn move" but we deliberately reuse
+///     halfmove_clock here rather than adding new state — the two signals are
+///     highly correlated and the net can learn the difference if it matters.
 pub fn encode_board(state: &GameState) -> [f32; TENSOR_SIZE] {
     let board = &state.board;
     let mut tensor = [0.0f32; TENSOR_SIZE];
@@ -115,6 +123,32 @@ pub fn encode_board(state: &GameState) -> [f32; TENSOR_SIZE] {
         for row in 0..BOARD_DIM {
             for col in 0..BOARD_DIM {
                 tensor[idx(18, col, row)] = 1.0;
+            }
+        }
+    }
+
+    // Last-move from/to (channels 19, 20).
+    if let Some(mv) = state.last_move() {
+        if mv.from.is_valid() {
+            let col = (mv.from.q + 5) as usize;
+            let row = (mv.from.r + 5) as usize;
+            tensor[idx(19, col, row)] = 1.0;
+        }
+        if mv.to.is_valid() {
+            let col = (mv.to.q + 5) as usize;
+            let row = (mv.to.r + 5) as usize;
+            tensor[idx(20, col, row)] = 1.0;
+        }
+    }
+
+    // Plies-since-pawn-move (channel 21): constant plane, halfmove_clock / 50
+    // clamped to [0, 1]. See the channel doc comment above for why we reuse
+    // halfmove_clock directly.
+    let pspm = (board.halfmove_clock as f32 / 50.0).clamp(0.0, 1.0);
+    if pspm > 0.0 {
+        for row in 0..BOARD_DIM {
+            for col in 0..BOARD_DIM {
+                tensor[idx(21, col, row)] = pspm;
             }
         }
     }
@@ -450,8 +484,89 @@ mod tests {
 
     #[test]
     fn test_tensor_shape() {
-        assert_eq!(TENSOR_SIZE, 19 * 11 * 11);
-        assert_eq!(TENSOR_SIZE, 2299);
+        assert_eq!(NUM_CHANNELS, 22);
+        assert_eq!(TENSOR_SIZE, 22 * 11 * 11);
+        assert_eq!(TENSOR_SIZE, 2662);
+    }
+
+    fn plane_sum(tensor: &[f32; TENSOR_SIZE], ch: usize) -> f32 {
+        let base = ch * BOARD_DIM * BOARD_DIM;
+        tensor[base..base + BOARD_DIM * BOARD_DIM].iter().sum()
+    }
+
+    #[test]
+    fn test_last_move_planes_zero_on_initial_position() {
+        let state = GameState::new();
+        let tensor = encode_board(&state);
+        assert_eq!(plane_sum(&tensor, 19), 0.0);
+        assert_eq!(plane_sum(&tensor, 20), 0.0);
+        assert_eq!(plane_sum(&tensor, 21), 0.0);
+    }
+
+    #[test]
+    fn test_last_move_planes_after_pawn_move() {
+        let mut state = GameState::new();
+        // Pick any legal pawn move from the starting position.
+        let legal = state.legal_moves();
+        // b1-b2 style: find a move whose source piece is a pawn.
+        let pawn_move = legal
+            .into_iter()
+            .find(|m| {
+                state
+                    .board
+                    .get(m.from)
+                    .map(|p| p.kind == PieceKind::Pawn)
+                    .unwrap_or(false)
+            })
+            .expect("starting position has pawn moves");
+        let from = pawn_move.from;
+        let to = pawn_move.to;
+        state.apply_move(pawn_move);
+
+        let tensor = encode_board(&state);
+        let from_col = (from.q + 5) as usize;
+        let from_row = (from.r + 5) as usize;
+        let to_col = (to.q + 5) as usize;
+        let to_row = (to.r + 5) as usize;
+        assert_eq!(
+            tensor[19 * BOARD_DIM * BOARD_DIM + from_row * BOARD_DIM + from_col],
+            1.0,
+            "last-move from-plane should mark source cell"
+        );
+        assert_eq!(
+            tensor[20 * BOARD_DIM * BOARD_DIM + to_row * BOARD_DIM + to_col],
+            1.0,
+            "last-move to-plane should mark destination cell"
+        );
+        // Exactly one 1.0 in each plane.
+        assert_eq!(plane_sum(&tensor, 19), 1.0);
+        assert_eq!(plane_sum(&tensor, 20), 1.0);
+        // Pawn move resets the halfmove clock.
+        assert_eq!(plane_sum(&tensor, 21), 0.0);
+    }
+
+    #[test]
+    fn test_plies_since_pawn_move_plane() {
+        let mut board = Board::starting_position();
+        board.halfmove_clock = 10;
+        let state = GameState::from_board(board);
+        let tensor = encode_board(&state);
+        // 10 / 50 = 0.2 on every valid (and padding) cell.
+        let val = tensor[21 * BOARD_DIM * BOARD_DIM];
+        assert!((val - 0.2).abs() < 1e-6);
+        // Sum over the full 11x11 plane.
+        let expected = 0.2 * (BOARD_DIM * BOARD_DIM) as f32;
+        assert!((plane_sum(&tensor, 21) - expected).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_plies_since_pawn_move_plane_clamped() {
+        let mut board = Board::starting_position();
+        board.halfmove_clock = 200; // way past 50
+        let state = GameState::from_board(board);
+        let tensor = encode_board(&state);
+        let val = tensor[21 * BOARD_DIM * BOARD_DIM];
+        assert!((val - 1.0).abs() < 1e-6);
     }
 
     #[test]

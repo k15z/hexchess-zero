@@ -703,7 +703,7 @@ impl PyMctsSearch {
 // Encoding functions
 // ---------------------------------------------------------------------------
 
-/// Encode a game's board state as a numpy array of shape (19, 11, 11).
+/// Encode a game's board state as a numpy array of shape (22, 11, 11).
 #[pyfunction]
 fn encode_board<'py>(py: Python<'py>, game: &PyGame) -> Bound<'py, PyArray3<f32>> {
     let flat = serialization::encode_board(&game.state);
@@ -719,7 +719,7 @@ fn encode_board<'py>(py: Python<'py>, game: &PyGame) -> Bound<'py, PyArray3<f32>
     array.into_pyarray(py)
 }
 
-/// Encode a batch of games as a numpy array of shape (N, 19, 11, 11).
+/// Encode a batch of games as a numpy array of shape (N, 22, 11, 11).
 #[pyfunction]
 fn encode_batch<'py>(
     py: Python<'py>,

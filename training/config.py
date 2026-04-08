@@ -43,7 +43,7 @@ class _BaseConfig:
     global_pool_blocks: tuple[int, ...] = (3, 6)  # which blocks get global pooling
     policy_channels: int = 8  # conv channels in policy head (wider = better move prediction)
     value_channels: int = 32  # conv channels in value head (pooled via global avg)
-    board_channels: int = 19
+    board_channels: int = 22
     board_height: int = 11
     board_width: int = 11
 

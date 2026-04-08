@@ -250,7 +250,11 @@ def _run_bootstrap(cfg: AsyncConfig, model: torch.nn.Module,
             policies = policies.to(device)
             outcomes = outcomes.to(device)
 
-            pred_policy, pred_wdl = model(boards)
+            preds = model(boards)
+            pred_policy = preds["policy"]
+            pred_wdl = preds["wdl"]
+            # preds["mlh"], preds["stv"], preds["aux_policy"] computed but
+            # unused in loss until chunk 4 wires up the real loss module.
 
             log_probs = torch.log_softmax(pred_policy, dim=1)
             policy_loss = -torch.sum(policies * log_probs, dim=1).mean()
@@ -437,7 +441,9 @@ def run_trainer(cfg: AsyncConfig) -> None:
                 policies = policies.to(device)
                 outcomes = outcomes.to(device)
 
-                pred_policy, pred_wdl = model(boards)
+                preds = model(boards)
+                pred_policy = preds["policy"]
+                pred_wdl = preds["wdl"]
 
                 log_probs = torch.log_softmax(pred_policy, dim=1)
                 policy_loss = -torch.sum(policies * log_probs, dim=1).mean()
