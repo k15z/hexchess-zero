@@ -42,6 +42,13 @@ class LossWeights:
     mlh: float = 0.1
     stv: float = 0.15
     aux_policy: float = 0.15
+    # MLH targets are raw plies (e.g. [0, 250]). Huber loss on raw plies
+    # produces gradients ~|pred - target| in the L1 region, which dominates
+    # the total loss for an untrained model. Normalize both pred and target
+    # by this scale before Huber so the loss lives in [0, ~3]. The MLH
+    # head's scalar output learns to predict in normalized units; multiply
+    # by mlh_scale at inference time to recover plies.
+    mlh_scale: float = 100.0
     # L2 is applied via optimizer weight_decay, not this module.
     l2: float = 3e-5
 
@@ -175,9 +182,9 @@ def compute_losses(
         sample_weight=sample_weight,
     )
 
-    # ---- Moves-left (Huber / smooth L1) -----------------------------------
-    mlh_pred = preds["mlh"].float().squeeze(-1)
-    mlh_target = targets["mlh"].float()
+    # ---- Moves-left (Huber / smooth L1, normalized to [0, ~3]) -----------
+    mlh_pred = preds["mlh"].float().squeeze(-1) / w.mlh_scale
+    mlh_target = targets["mlh"].float() / w.mlh_scale
     mlh_per_sample = F.smooth_l1_loss(mlh_pred, mlh_target, reduction="none", beta=1.0)
     mlh_loss = _weighted_mean(mlh_per_sample, sample_weight)
 
@@ -187,11 +194,16 @@ def compute_losses(
     stv_per_sample = -(stv_target * log_p_stv).sum(dim=-1)
     stv_loss = _weighted_mean(stv_per_sample, sample_weight)
 
-    # ---- Auxiliary policy (masked soft-target CE) -------------------------
+    # ---- Auxiliary policy (UNMASKED soft-target CE) -----------------------
+    # The aux target is the *opponent's* visit distribution at the next ply,
+    # which has support over a different legal-move set than the current STM.
+    # Applying the STM legal_mask here puts -1e9 on opponent-legal moves the
+    # target has nonzero mass on, blowing up CE. Don't mask aux at all —
+    # KataGo's opponent-reply head is unmasked too.
     aux_policy_loss = _ce_against_soft_target(
         preds["aux_policy"],
         targets["aux_policy"],
-        legal_mask=legal_mask,
+        legal_mask=None,
         sample_weight=sample_weight,
     )
 
@@ -237,6 +249,14 @@ def assert_healthy_initial_losses(
     policy = float(breakdown.policy.detach().item())
     wdl = float(breakdown.value.detach().item())
     aux = float(breakdown.aux_policy.detach().item())
+    mlh = float(breakdown.mlh.detach().item())
+    # Normalized Huber: pred ≈ 0, target ≈ plies/100 ∈ [0, 3]. Untrained
+    # loss is dominated by L1 region: |target| ≈ 0.5–2.0. Allow [0.0, 3.0].
+    assert 0.0 <= mlh <= 3.0, (
+        f"Initial MLH loss {mlh:.3f} outside [0.0, 3.0]. "
+        "Check that mlh targets are scaled by losses.LossWeights.mlh_scale "
+        "(default 100) and that the MLH head outputs are not saturated."
+    )
 
     log_legal = math.log(max(num_legal_moves, 2))
     lower_p, upper_p = max(3.0, log_legal - 1.0), 5.0
@@ -249,7 +269,13 @@ def assert_healthy_initial_losses(
         f"Initial WDL loss {wdl:.3f} outside [0.95, 1.20] (expected ≈ log 3 = 1.099). "
         "Check label smoothing and one-hot encoding."
     )
-    assert lower_p <= aux <= upper_p, (
-        f"Initial aux-policy loss {aux:.3f} outside [{lower_p:.2f}, {upper_p:.2f}]. "
-        "Check aux-policy masking / target normalization."
+    # Aux policy is unmasked → CE is over the full move table (~4206 moves),
+    # so the expected initial value is log(4206) ≈ 8.34, not log(num_legal).
+    # The target distribution still concentrates on a small subset (the
+    # opponent's legal replies), so a fresh-init network's loss is closer
+    # to log(num_aux_target_support). Allow a wide window: [3.0, 9.5].
+    assert 3.0 <= aux <= 9.5, (
+        f"Initial aux-policy loss {aux:.3f} outside [3.0, 9.5]. "
+        "Check aux-policy target normalization (sum to 1) and that the "
+        "head outputs over the full move-index space."
     )
