@@ -98,14 +98,18 @@ class AsyncConfig(_BaseConfig):
     """
 
     # --- Async-specific ---
-    worker_batch_size: int = 5  # games per flush
+    worker_batch_size: int = 2  # games per flush (small so bootstrap data lands quickly)
     steps_per_cycle: int = 1000  # training steps per cycle
     reload_interval: int = 1000  # reload buffer from disk every N steps for fresh data
     max_train_steps_per_new_data: float = 4.0  # target passes per data point (KataGo-style bucket)
-    min_positions_to_start: int = 1_000_000  # bootstrap gate: #15 found ~850k needed to beat heuristic
+    min_positions_to_start: int = 200_000  # bootstrap gate — workers can generate more after the trainer starts
 
     # --- Imitation bootstrap ---
-    imitation_depth: int = 5  # minimax search depth for imitation targets
+    # Depth 5 is prohibitively slow on Glinski (>10 min per game observed).
+    # Depth 3 produces still-reasonable targets (captures, obvious tactics)
+    # and is ~30x faster, which lets us cycle through bootstrap in hours
+    # instead of days.
+    imitation_depth: int = 3
     imitation_exploration_plies: int = 30  # plies using softmax sampling for diversity
     imitation_temperature: float = 200.0  # softmax temperature for policy targets and exploration sampling
     imitation_wdl_lambda: float = 0.5  # blend: λ*sigmoid(eval) + (1-λ)*game_outcome
