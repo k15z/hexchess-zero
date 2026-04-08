@@ -610,62 +610,141 @@ function buildRetired(data) {
   return panelHtml('retired', 'Retired', `${retired.length}`, body, false);
 }
 
-// --- Plan §7.6 pages 1-4: placeholder panels ---
-// These are minimum-viable scaffolds; actual chart wiring is deferred to a
-// follow-up. Each panel shows "awaiting data" and lists the metrics it will
-// eventually display, so the layout is in place for incremental backfill.
-// TODO(plan §7.6 page 5 — benchmark suite stability heatmap): to add.
-// TODO(plan §7.6 page 6 — diff viewer): to add.
-// TODO(plan §7.6 page 7 — replay buffer audit browser): to add.
+// --- Plan §7.6 pages 1-4 ---
+// Pages 1 and 2 are wired against the metrics already in /api/status.
+// Pages 3 and 4 still need new metric pipelines (loss snapshots in S3 for
+// page 3, TT-hit-rate in worker heartbeats for page 4) and stay as TODO
+// placeholders that list what they're waiting on.
+// TODO(plan §7.6 page 5 — benchmark suite stability heatmap)
+// TODO(plan §7.6 page 6 — diff viewer)
+// TODO(plan §7.6 page 7 — replay buffer audit browser)
+
+function _stackedBar(parts, total) {
+  // parts: [{label, value, color}]; total: denominator for widths.
+  if (!total) return '<div class="empty">no data</div>';
+  let bar = '<div style="display:flex;height:14px;border-radius:3px;overflow:hidden;background:#222;">';
+  let legend = '<div style="display:flex;gap:10px;font-size:11px;margin-top:4px;opacity:0.8;">';
+  for (const p of parts) {
+    const pct = (100 * p.value) / total;
+    if (pct > 0) {
+      bar += `<div style="width:${pct.toFixed(2)}%;background:${p.color};" title="${p.label}: ${p.value}"></div>`;
+    }
+    legend += `<span><span style="display:inline-block;width:8px;height:8px;background:${p.color};margin-right:3px;"></span>${p.label} ${p.value}</span>`;
+  }
+  bar += '</div>';
+  legend += '</div>';
+  return bar + legend;
+}
+
 function buildRunHealth(data) {
-  const body = `
-    <div class="empty">Awaiting data — TODO wire charts from /api/status.</div>
-    <ul style="margin:8px 0 0 18px;font-size:12px;opacity:0.7">
-      <li>Loss panel (policy/value/mlh/aux dual axes)</li>
-      <li>Policy entropy time series vs log(40) baseline</li>
-      <li>Anchor Elo with ±1σ ribbons (anchor_v0 monotone)</li>
-      <li>Games / hour stacked by worker</li>
-      <li>Mean game length (median + p5/p95 ribbon)</li>
-      <li>Draw / W / L fraction stacked area</li>
-    </ul>`;
-  return panelHtml('run-health', 'Page 1 — Run Health', 'placeholder', body, false);
+  const games = data.recent_games || [];
+  let html = '';
+
+  // W/D/L breakdown over the recent-game tail.
+  let w = 0, l = 0, d = 0;
+  let lengths = [];
+  for (const g of games) {
+    const winner = g.winner || g.result;
+    if (winner === 'draw' || winner === 'd') d++;
+    else if (winner === 'white' || winner === 'w') w++;
+    else if (winner === 'black' || winner === 'b') l++;
+    const ml = (g.white_moves || 0) + (g.black_moves || 0);
+    if (ml > 0) lengths.push(ml);
+  }
+  const total = w + d + l;
+  html += `<div class="kv-row"><span class="k">recent W/D/L</span><span class="v">${total} games</span></div>`;
+  html += _stackedBar([
+    {label: 'W', value: w, color: '#3aa'},
+    {label: 'D', value: d, color: '#888'},
+    {label: 'L', value: l, color: '#a44'},
+  ], total);
+
+  // Game length summary.
+  if (lengths.length) {
+    lengths.sort((a, b) => a - b);
+    const median = lengths[Math.floor(lengths.length / 2)];
+    const p5 = lengths[Math.floor(lengths.length * 0.05)];
+    const p95 = lengths[Math.floor(lengths.length * 0.95)];
+    const mean = (lengths.reduce((s, x) => s + x, 0) / lengths.length).toFixed(1);
+    html += `<div class="kv-row" style="margin-top:8px"><span class="k">game length (plies)</span><span class="v">mean ${mean} &middot; median ${median} &middot; p5 ${p5} &middot; p95 ${p95}</span></div>`;
+  }
+
+  // Workers: games per worker (cumulative — rate would need a time series).
+  const workers = Object.entries(data.workers || {});
+  if (workers.length) {
+    html += '<table style="margin-top:6px;font-size:12px;"><tr><th>worker</th><th class="r">games</th><th class="r">positions</th></tr>';
+    workers.sort((a, b) => (b[1].total_games || 0) - (a[1].total_games || 0));
+    for (const [name, w] of workers) {
+      html += `<tr><td>${name}</td><td class="r">${fmt(w.total_games || 0)}</td><td class="r">${fmt(w.total_positions || 0)}</td></tr>`;
+    }
+    html += '</table>';
+  }
+
+  if (!html) html = '<div class="empty">awaiting first games</div>';
+  return panelHtml('run-health', 'Page 1 — Run Health', `${total}`, html, false);
 }
 
 function buildDataPage(data) {
-  const body = `
-    <div class="empty">Awaiting data — TODO wire window + bucket series.</div>
-    <ul style="margin:8px 0 0 18px;font-size:12px;opacity:0.7">
-      <li>Replay window size vs N_total cumulative</li>
-      <li>Train bucket tokens over time</li>
-      <li>Sample reuse ratio</li>
-      <li>Per-version sample contribution to current window</li>
-      <li>was_full_search distribution (~25%)</li>
-    </ul>`;
-  return panelHtml('data-page', 'Page 2 — Data', 'placeholder', body, false);
+  // Sublinear KataGo replay window: c=25_000, alpha=0.75, beta=0.4.
+  // Mirrors training/replay_window.py — recompute client-side from N_total.
+  const C = 25000, A = 0.75, B = 0.4;
+  function windowSize(n) {
+    if (n <= 0) return 0;
+    if (n <= C) return n;
+    const t = Math.pow(n / C, A);
+    return Math.round(C * (1 + B * (t - 1) / A));
+  }
+
+  const sp = (data.data && data.data.selfplay) || {};
+  const im = (data.data && data.data.imitation) || {};
+  const nTotal = (sp.total_positions || 0) + (im.total_positions || 0);
+  const window = windowSize(nTotal);
+  const reuse = nTotal > 0 ? (window / nTotal) : 0;
+
+  let html = '';
+  html += `<div class="kv-row"><span class="k">N_total</span><span class="v">${fmt(nTotal)} positions</span></div>`;
+  html += `<div class="kv-row"><span class="k">replay window</span><span class="v">${fmt(window)} (${(100 * reuse).toFixed(1)}% of N_total)</span></div>`;
+
+  // Per-version contribution stacked bar.
+  const byVer = sp.by_version || {};
+  const entries = Object.entries(byVer).sort((a, b) => Number(a[0]) - Number(b[0]));
+  if (entries.length) {
+    const total = entries.reduce((s, [, v]) => s + (v.positions || 0), 0);
+    const palette = ['#3aa', '#5b6', '#cc6', '#c84', '#a44', '#849', '#469', '#666'];
+    const parts = entries.map(([ver, info], i) => ({
+      label: `v${ver}`,
+      value: info.positions || 0,
+      color: palette[i % palette.length],
+    }));
+    html += '<div class="kv-row" style="margin-top:8px"><span class="k">per-version contribution</span></div>';
+    html += _stackedBar(parts, total);
+  }
+
+  return panelHtml('data-page', 'Page 2 — Data', `${fmt(nTotal)}`, html, false);
 }
 
 function buildModelBehavior(data) {
   const body = `
-    <div class="empty">Awaiting data — TODO add calibration + entropy panels.</div>
+    <div class="empty">awaiting trainer metric snapshots</div>
     <ul style="margin:8px 0 0 18px;font-size:12px;opacity:0.7">
-      <li>WDL calibration plot</li>
-      <li>Policy entropy histogram by step</li>
-      <li>NN argmax vs MCTS argmax agreement</li>
-      <li>KL(old → new) per promotion</li>
+      <li>WDL calibration plot — needs trainer to publish step metrics to S3</li>
+      <li>Policy entropy histogram — needs trainer to publish step metrics to S3</li>
+      <li>NN argmax vs MCTS argmax agreement — needs trainer instrumentation</li>
+      <li>KL(old → new) per promotion — needs to compare consecutive ONNX exports</li>
     </ul>`;
-  return panelHtml('model-behavior', 'Page 3 — Model Behavior', 'placeholder', body, false);
+  return panelHtml('model-behavior', 'Page 3 — Model Behavior', 'TODO', body, false);
 }
 
 function buildSearch(data) {
   const body = `
-    <div class="empty">Awaiting data — TODO add TT / visits / resign panels.</div>
+    <div class="empty">awaiting worker heartbeat extension</div>
     <ul style="margin:8px 0 0 18px;font-size:12px;opacity:0.7">
-      <li>TT hit rate per worker</li>
-      <li>Mean root visits, mean PV length</li>
-      <li>LCB vs argmax-visit divergence</li>
-      <li>Resign false-positive rate vs threshold</li>
+      <li>TT hit rate per worker — needs worker to add tt_stats to heartbeat</li>
+      <li>Mean root visits / PV length — needs game-level metric in meta sidecar</li>
+      <li>LCB vs argmax-visit divergence — needs eval-game accounting</li>
+      <li>Resign false-positive rate — needs the 10%-skip games to write outcome</li>
     </ul>`;
-  return panelHtml('search', 'Page 4 — Search', 'placeholder', body, false);
+  return panelHtml('search', 'Page 4 — Search', 'TODO', body, false);
 }
 
 function render(data) {
