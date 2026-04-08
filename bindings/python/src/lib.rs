@@ -847,6 +847,20 @@ fn num_move_indices() -> usize {
     serialization::num_move_indices()
 }
 
+/// Return the move-index mirror lookup table as a numpy uint32 array of
+/// length `num_move_indices()`. Element `i` is the index of the move
+/// obtained by reflecting move `i` under the engine's canonical involution
+/// (central inversion of the hex grid). Intended for data-augmentation in
+/// the training loader.
+#[pyfunction]
+fn mirror_indices_array(py: Python<'_>) -> Bound<'_, numpy::PyArray1<u32>> {
+    let v: Vec<u32> = serialization::mirror_indices()
+        .iter()
+        .map(|&i| i as u32)
+        .collect();
+    numpy::PyArray1::from_vec(py, v)
+}
+
 // ---------------------------------------------------------------------------
 // Minimax search
 // ---------------------------------------------------------------------------
@@ -967,6 +981,7 @@ fn hexchess(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(move_to_index, m)?)?;
     m.add_function(wrap_pyfunction!(index_to_move, m)?)?;
     m.add_function(wrap_pyfunction!(num_move_indices, m)?)?;
+    m.add_function(wrap_pyfunction!(mirror_indices_array, m)?)?;
     m.add_function(wrap_pyfunction!(minimax_search, m)?)?;
     m.add_function(wrap_pyfunction!(minimax_search_all, m)?)?;
     m.add_function(wrap_pyfunction!(minimax_search_with_policy, m)?)?;
