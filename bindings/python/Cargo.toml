@@ -14,3 +14,4 @@ crate-type = ["cdylib"]
 hexchess-engine = { path = "../../engine", features = ["onnx"] }
 pyo3 = { version = "0.24", features = ["extension-module", "abi3-py39"] }
 numpy = "0.24"
+rand = { workspace = true }

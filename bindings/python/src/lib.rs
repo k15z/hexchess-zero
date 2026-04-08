@@ -12,6 +12,8 @@ use hexchess_engine::mcts::{
     DirichletConfig, Evaluator, HeuristicEvaluator, MctsSearch as EngineSearch,
     WeightedHeuristicEvaluator,
 };
+use rand::SeedableRng;
+use rand::rngs::StdRng;
 use hexchess_engine::minimax;
 use hexchess_engine::movegen::{self, Move as EngineMove};
 use hexchess_engine::serialization;
@@ -609,6 +611,7 @@ struct PyMctsSearch {
     search: EngineSearch,
     #[pyo3(get, set)]
     simulations: u32,
+    rng: StdRng,
 }
 
 #[pymethods]
@@ -667,7 +670,49 @@ impl PyMctsSearch {
         Ok(PyMctsSearch {
             search,
             simulations,
+            rng: StdRng::from_os_rng(),
         })
+    }
+
+    /// Seed the internal RNG used by `run_pcr` for coin flips. Full engine
+    /// determinism (search RNG, Dirichlet, etc.) is a chunk 9 concern; this
+    /// only controls the PCR coin and similar binding-level sources.
+    fn set_rng_seed(&mut self, seed: u64) {
+        self.rng = StdRng::seed_from_u64(seed);
+    }
+
+    /// Enable/disable resignation for the next game. Used by the worker's
+    /// 10% resign-skip policy.
+    fn set_resign_enabled(&mut self, enabled: bool) {
+        self.search.config_mut().resign.enabled = enabled;
+    }
+
+    /// Run a Playout-Cap-Randomization search step. Returns a dict:
+    ///   {best_move, value, nodes, was_full_search, policy_target (or None)}
+    /// Only full-search steps should be recorded as training samples.
+    #[pyo3(signature = (game, ply=0))]
+    fn run_pcr<'py>(
+        &mut self,
+        py: Python<'py>,
+        game: &PyGame,
+        ply: u32,
+    ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+        let outcome = self.search.run_pcr(&game.state, ply, &mut self.rng);
+        let dict = pyo3::types::PyDict::new(py);
+        dict.set_item("best_move", PyMove::from_engine(&outcome.best_move).into_pyobject(py)?)?;
+        dict.set_item("value", outcome.value)?;
+        dict.set_item("nodes", outcome.nodes_searched)?;
+        dict.set_item("was_full_search", outcome.was_full_search)?;
+        match outcome.policy_target {
+            Some(p) => {
+                let arr = numpy::PyArray1::from_slice(py, &p);
+                dict.set_item("policy_target", arr)?;
+            }
+            None => {
+                dict.set_item("policy_target", py.None())?;
+            }
+        }
+        Ok(dict)
     }
 
     /// Run MCTS search on `game`. Returns an `MctsResult`.
