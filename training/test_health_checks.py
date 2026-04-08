@@ -334,10 +334,18 @@ def test_run_all_invariants_clean_run_passes():
     # is tested in isolation above with a masked model.
     batch = {"boards": _valid_board_batch(batch=2)}
     report = run_all_invariants(m, batch, strict=False, tt_hit_rate=0.5)
-    # Allow repetition_detection to report "skipped: ..." — still passed=True.
-    assert report.all_passed, "\n".join(
-        f"{r.name}: {r.message}" for r in report.failures()
-    )
+    # Move-encoding round-trip and repetition detection require the hexchess
+    # binding (built via maturin develop). CI doesn't build the wheel, so
+    # those two are expected to fail-with-message there. Locally with the
+    # binding installed, all checks pass. Tolerate the binding-related
+    # failures explicitly.
+    binding_required = {"move_encoding_round_trip", "repetition_detection"}
+    failures = [
+        r for r in report.failures()
+        if r.name not in binding_required
+        or "hexchess binding not available" not in r.message
+    ]
+    assert not failures, "\n".join(f"{r.name}: {r.message}" for r in failures)
 
 
 # ---------------------------------------------------------------------------
