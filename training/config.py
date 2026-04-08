@@ -74,13 +74,16 @@ class _BaseConfig:
     gating_max_failures: int = 3
 
     # --- Network architecture ---
-    num_residual_blocks: int = 10
-    num_filters: int = 192
-    se_channels: int = 48  # SE bottleneck width (Leela-style)
-    global_pool_channels: int = 32  # KataGo-style global pooling width
-    global_pool_blocks: tuple[int, ...] = (3, 6)  # which blocks get global pooling
-    policy_channels: int = 8  # conv channels in policy head (wider = better move prediction)
-    value_channels: int = 32  # conv channels in value head (pooled via global avg)
+    # Sized to ~5M params: small enough to iterate fast on the cluster + Mac
+    # Studio, big enough to learn the ~4200-move policy without bottlenecking.
+    num_residual_blocks: int = 8
+    num_filters: int = 144
+    se_channels: int = 32
+    global_pool_channels: int = 32
+    global_pool_blocks: tuple[int, ...] = (2, 5)
+    policy_channels: int = 4
+    aux_policy_channels: int = 2  # narrower opponent-reply head
+    value_channels: int = 32
     board_channels: int = 22
     board_height: int = 11
     board_width: int = 11
@@ -140,6 +143,10 @@ class AsyncConfig(_BaseConfig):
         _check(self.l2_regularization >= 0, "l2_regularization must be >= 0")
         _check(self.grad_clip_norm > 0, "grad_clip_norm must be > 0")
         _check(self.lr_warmup_steps >= 0, "lr_warmup_steps must be >= 0")
+        _check(self.runtime_health_check_every_steps > 0,
+               "runtime_health_check_every_steps must be > 0")
+        _check(self.promote_every_new_positions > 0,
+               "promote_every_new_positions must be > 0")
         _check(self.num_simulations > 0, "num_simulations must be > 0")
 
         _check(self.window_c > 0, "window_c must be > 0")

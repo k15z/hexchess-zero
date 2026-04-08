@@ -176,11 +176,12 @@ class HexChessNet(nn.Module):
         self.stv_fc1 = nn.Linear(stv_ch, 128)
         self.stv_fc2 = nn.Linear(128, 3)
 
-        # --- Auxiliary opponent-reply policy head (mirrors main policy head) ---
-        self.aux_policy_conv = nn.Conv2d(nf, policy_ch, 1, bias=False)
-        self.aux_policy_bn = nn.BatchNorm2d(policy_ch)
+        # --- Auxiliary opponent-reply policy head (narrower than main) ---
+        aux_ch = cfg.aux_policy_channels
+        self.aux_policy_conv = nn.Conv2d(nf, aux_ch, 1, bias=False)
+        self.aux_policy_bn = nn.BatchNorm2d(aux_ch)
         self.aux_policy_fc = nn.Linear(
-            policy_ch * self.board_h * self.board_w, NUM_MOVE_INDICES
+            aux_ch * self.board_h * self.board_w, NUM_MOVE_INDICES
         )
 
     def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:

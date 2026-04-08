@@ -16,11 +16,14 @@ import time
 import numpy as np
 from loguru import logger
 
-import hexchess
+try:
+    import hexchess
+except ImportError:
+    hexchess = None  # type: ignore[assignment]
 
 from .config import AsyncConfig
 
-NUM_MOVES = hexchess.num_move_indices()
+NUM_MOVES = hexchess.num_move_indices() if hexchess is not None else 0
 WDL_SCALE = 400.0
 
 
