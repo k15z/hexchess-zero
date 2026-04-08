@@ -29,6 +29,11 @@ from . import storage
 from .config import AsyncConfig
 from .data_v2 import V2Batch, load_v2_npz
 from .export import export_to_onnx
+from .health_checks import (
+    HealthCheckError,
+    run_all_invariants,
+    run_runtime_checks,
+)
 from .gating import (
     GateState,
     decide_promotion,
@@ -56,6 +61,7 @@ GRAD_CLIP_NORM = 5.0
 WEIGHT_DECAY = 3e-5
 BASE_LR = 1e-3
 SWA_SNAPSHOT_EVERY_SAMPLES = 250_000
+RUNTIME_HEALTH_CHECK_EVERY_STEPS = 500
 PROMOTE_EVERY_NEW_POSITIONS = 500_000
 GAUNTLET_GAMES = 200
 
@@ -672,6 +678,20 @@ def run_trainer(cfg: AsyncConfig) -> None:
 
     optimizer = _make_optimizer(model)
 
+    # Hard invariants (plan §7.5). Crash the trainer if any of these fail —
+    # this is intentional CrashLoopBackoff behavior so encoding/shape bugs
+    # don't silently corrupt a long training run.
+    model.eval()
+    try:
+        report = run_all_invariants(model, batch=None, strict=True)
+        logger.info("Startup health checks passed ({} invariants)",
+                    len(report.results))
+    except HealthCheckError as exc:
+        logger.error("STARTUP HEALTH CHECK FAILED: {}", exc)
+        raise
+    finally:
+        model.train()
+
     # Bootstrap if no model exists
     if current_version == 0:
         current_version = _run_bootstrap(cfg, model, optimizer, device)
@@ -838,6 +858,16 @@ def run_trainer(cfg: AsyncConfig) -> None:
                         cycle_aux_loss / step, cycle_total_loss / step,
                         sps, elapsed,
                     )
+
+                if step % RUNTIME_HEALTH_CHECK_EVERY_STEPS == 0:
+                    rt_report = run_runtime_checks(
+                        model,
+                        breakdown.total.detach(),
+                        {"boards": boards, "legal_mask": legal_mask},
+                    )
+                    for f in rt_report.failures():
+                        logger.warning("runtime health check: {}: {}",
+                                       f.name, f.message)
 
                 if step % cfg.reload_interval == 0 and step < cfg.steps_per_cycle:
                     dataset, dataloader, n_total = reload_buffer()

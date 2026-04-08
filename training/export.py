@@ -60,6 +60,11 @@ def export_to_onnx(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     export_model = _OnnxExportWrapper(model)
     export_model.eval()
+    # Hard invariant #8: the model being exported must be in eval mode so
+    # that BatchNorm uses running stats, not batch stats (notes/10 §7).
+    from .health_checks import check_bn_eval_mode
+    _bn = check_bn_eval_mode(export_model)
+    assert _bn.passed, f"BN eval-mode invariant failed before ONNX export: {_bn.message}"
     torch.onnx.export(
         export_model,
         dummy_input,
