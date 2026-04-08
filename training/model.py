@@ -114,9 +114,13 @@ class HexChessNet(nn.Module):
 
     Architecture: SE residual tower with KataGo global pooling in select blocks.
 
-    Input:  (batch, 19, 11, 11)
-    Output: (policy_logits: (batch, num_move_indices),
-             wdl_logits: (batch, 3))
+    Input:  (batch, 22, 11, 11)
+    Output: dict with keys:
+        policy:     (batch, num_move_indices)   main policy logits
+        wdl:        (batch, 3)                  Win/Draw/Loss logits
+        mlh:        (batch, 1)                  moves-left head (plies, regression)
+        stv:        (batch, 3)                  short-term (h=8) WDL logits
+        aux_policy: (batch, num_move_indices)   opponent-reply policy logits
     """
 
     def __init__(self, config: _BaseConfig | None = None):
@@ -158,16 +162,35 @@ class HexChessNet(nn.Module):
         self.value_fc1 = nn.Linear(value_ch, 256)
         self.value_fc2 = nn.Linear(256, 3)
 
-    def forward(
-        self, x: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+        # --- Moves-left head (MLH): predicts plies-to-end (scalar regression) ---
+        mlh_ch = 16
+        self.mlh_conv = nn.Conv2d(nf, mlh_ch, 1, bias=False)
+        self.mlh_bn = nn.BatchNorm2d(mlh_ch)
+        self.mlh_fc1 = nn.Linear(mlh_ch, 64)
+        self.mlh_fc2 = nn.Linear(64, 1)
+
+        # --- Short-term value head (STV): WDL at horizon h=8 plies ---
+        stv_ch = 32
+        self.stv_conv = nn.Conv2d(nf, stv_ch, 1, bias=False)
+        self.stv_bn = nn.BatchNorm2d(stv_ch)
+        self.stv_fc1 = nn.Linear(stv_ch, 128)
+        self.stv_fc2 = nn.Linear(128, 3)
+
+        # --- Auxiliary opponent-reply policy head (mirrors main policy head) ---
+        self.aux_policy_conv = nn.Conv2d(nf, policy_ch, 1, bias=False)
+        self.aux_policy_bn = nn.BatchNorm2d(policy_ch)
+        self.aux_policy_fc = nn.Linear(
+            policy_ch * self.board_h * self.board_w, NUM_MOVE_INDICES
+        )
+
+    def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
         # Input block
         x = F.relu(self.input_bn(self.input_conv(x)))
 
         # Residual tower
         x = self.residual_blocks(x)
 
-        # Policy head
+        # Main policy head
         p = F.relu(self.policy_bn(self.policy_conv(x)))
         p = p.view(p.size(0), -1)
         p = self.policy_fc(p)
@@ -178,7 +201,30 @@ class HexChessNet(nn.Module):
         v = F.relu(self.value_fc1(v))
         v = self.value_fc2(v)
 
-        return p, v
+        # Moves-left head (scalar plies)
+        m = F.relu(self.mlh_bn(self.mlh_conv(x)))
+        m = m.mean(dim=(2, 3))
+        m = F.relu(self.mlh_fc1(m))
+        mlh = self.mlh_fc2(m)
+
+        # Short-term value head (WDL at h=8 plies)
+        s = F.relu(self.stv_bn(self.stv_conv(x)))
+        s = s.mean(dim=(2, 3))
+        s = F.relu(self.stv_fc1(s))
+        stv = self.stv_fc2(s)
+
+        # Auxiliary opponent-reply policy head
+        ap = F.relu(self.aux_policy_bn(self.aux_policy_conv(x)))
+        ap = ap.view(ap.size(0), -1)
+        aux_policy = self.aux_policy_fc(ap)
+
+        return {
+            "policy": p,
+            "wdl": v,
+            "mlh": mlh,
+            "stv": stv,
+            "aux_policy": aux_policy,
+        }
 
 
 def build_model(config: _BaseConfig | None = None) -> HexChessNet:
@@ -190,14 +236,33 @@ if __name__ == "__main__":
     cfg = _BaseConfig()
     model = build_model(cfg)
 
-    # Print parameter count
+    # Parameter count. Plan §2 estimated ~3.3M but that assumed a smaller
+    # trunk; the real 10x192 trunk + two ~4M policy heads puts us near 15M.
+    # Loose ceiling: <20M. TODO(chunk 13): revisit model sizing.
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Model parameters: {total_params:,}")
+    assert total_params < 20_000_000, f"param count {total_params} exceeds 20M ceiling"
 
-    # Smoke test with random input
-    dummy = torch.randn(1, cfg.board_channels, cfg.board_height, cfg.board_width)
-    policy, value = model(dummy)
-    print(f"Policy shape: {policy.shape}")  # (1, NUM_MOVE_INDICES)
-    print(f"WDL shape:    {value.shape}")   # (1, 3)
-    wdl_probs = torch.softmax(value, dim=1)
-    print(f"WDL probs:    {wdl_probs[0].tolist()}")
+    # Shape smoke test
+    model.eval()
+    dummy = torch.randn(2, cfg.board_channels, cfg.board_height, cfg.board_width)
+    with torch.no_grad():
+        out = model(dummy)
+    expected_shapes = {
+        "policy": (2, NUM_MOVE_INDICES),
+        "wdl": (2, 3),
+        "mlh": (2, 1),
+        "stv": (2, 3),
+        "aux_policy": (2, NUM_MOVE_INDICES),
+    }
+    for k, expected in expected_shapes.items():
+        actual = tuple(out[k].shape)
+        assert actual == expected, f"{k}: expected {expected}, got {actual}"
+        print(f"  {k}: {actual}")
+
+    # BN eval-mode determinism: two forwards with the same input must match exactly.
+    with torch.no_grad():
+        out2 = model(dummy)
+    for k in out:
+        assert torch.equal(out[k], out2[k]), f"{k} not deterministic in eval mode"
+    print("eval-mode determinism: OK")
