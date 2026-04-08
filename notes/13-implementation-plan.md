@@ -136,22 +136,24 @@ Add:
 
 ## 2. Network architecture
 
-In `training/model.py`. Current net is already in the right ballpark (10×192 SE+pool). Changes:
+In `training/model.py`. **As built — see chunk 3 + the model-shrink TODO pass.**
 
 ### 2.1 Trunk
 
-- **10 residual blocks × 192 filters** (~3.0M params). Justified by notes/05 sizing table and notes/12 §5: small board → small net → faster iteration. Don't over-size before we have data to fill it.
-- **SE in every block**, reduction ratio 8 (`se_channels = 24`). The current code uses Leela-style scale+bias SE which is slightly stronger than vanilla SE — keep it.
-- **Global-pool bias branch in blocks 3 and 6** (already done). Blocks at 1/3 and 2/3 depth are KataGo's recommendation (notes/02 §3).
-- **Replace BatchNorm with FixUp-style init** at the end of phase 1 (see §8). For phase 1, keep BN but add a strict eval/inference test (notes/05 §activations, notes/10 §7). KataGo eventually moved off BN entirely to dodge train/eval drift.
+- **8 residual blocks × 144 filters** (~6.3M params total with all heads). Original plan called for 10×192 ~3M but the policy-head FC (`policy_ch · 121 · 4206`) dominates: at policy_ch=8 the FC alone is ~4M, blowing the trunk budget. The shrunk topology lands at 6.3M params.
+- **SE in every block**, Leela-style scale+bias SE.
+- **Global-pool bias branch in blocks 2 and 5** (was 3 and 6 for the 10-block layout, scaled to 1/4 and 5/8 depth for the 8-block layout).
+- **BatchNorm** with the strict BN-eval-mode invariant from chunk 7. FixUp migration deferred indefinitely.
 
 ### 2.2 Heads
 
-- **Policy head:** 1×1 conv (8 channels) → flatten (8·11·11=968) → FC → `num_move_indices` (~4206). Already correct.
-- **Value WDL head:** 1×1 conv (32) → global avg pool → FC(256) → FC(3). Already correct. **Mandatory** (notes/03 §1, notes/05 §value, notes/07).
-- **Moves-left head (NEW):** 1×1 conv (16) → global avg pool → FC(64) → FC(1). Predicts plies-to-end. Critical for hex chess to avoid shuffle-loops in won positions (notes/03 §2, notes/10 §3, notes/12 §8). Loss: Huber on plies remaining, weight `λ_mlh = 0.1` of value loss.
-- **Short-term value head (NEW, KataGo §4):** 1×1 conv → GAP → FC(3 logits) for Win/Draw/Loss at horizon h=8 plies. Provides a denser, lower-variance value signal that helps especially in early training (notes/02 §4, notes/05 §aux, notes/07 §aux). Weight `λ_stv = 0.15`.
-- **Auxiliary opponent-reply policy head (NEW, KataGo §4):** another `num_move_indices` softmax predicting the next move *after* ours, trained against the visit distribution of the second ply of MCTS. This gives the trunk a forcing-sequence supervision signal at almost no cost. Weight `λ_aux_pol = 0.15`.
+- **Policy head:** 1×1 conv (4 channels) → flatten (4·11·11=484) → FC → 4206. ~2M FC params.
+- **Value WDL head:** 1×1 conv (32) → global avg pool → FC(256) → FC(3). **Mandatory** (notes/03, /05, /07, /12 §8).
+- **Moves-left head (MLH):** 1×1 conv (16) → BN → ReLU → GAP → FC(64) → FC(1). Predicts plies-to-end. **Mandatory for hex chess** — see notes/12 §7 (engine shuffles to the move limit even at minimax-d3 without progress pressure).
+- **Short-term value head (STV):** 1×1 conv (32) → BN → ReLU → GAP → FC(128) → FC(3) for WDL at horizon h=8 plies.
+- **Auxiliary opponent-reply policy head:** 1×1 conv (**2 channels**, narrower than main) → flatten → FC → 4206. Target is the second-ply visit distribution exposed by `MctsSearch::aux_opponent_policy` (added in the TODO Rust pass).
+
+Loss weights: λ_v=1.5, λ_p=1.0, λ_mlh=0.1, λ_stv=0.15, λ_aux_pol=0.15. WDL gets ε=0.05 label smoothing; nothing else does.
 
 We're not adding KataGo's ownership/score (Go-specific, no analog). We're not adding Lc0's contempt/WDL-rescale yet — that's an eval-time-only feature (notes/03 §7).
 
@@ -179,7 +181,11 @@ These are all cheap (notes/05 §inputs principle).
 
 ### 2.4 Symmetries
 
-Glinski breaks rotational symmetry because pawns have a privileged direction (notes/12 §9). The only safe symmetry is **left/right reflection** (mirror across the vertical axis). Add a reflection-augmentation pass during training that randomly mirrors 50% of samples and mirrors the policy via a precomputed `mirror_index[move_idx]` table. Cheap 2× data multiplier — must validate the mirror table by round-trip test in CI.
+**Correction from the original plan: the only valid symmetry is *central inversion* `(q,r) → (-q,-r)`, NOT horizontal reflection.** The naive horizontal-reflection transform `(q,r) → (-q-r, r)` does not preserve the pawn-promotion-pair set in Glinski. Central inversion does, because it maps white→black pawn directions and white→black promotion edges in one shot. See notes/12 §9 for the full reasoning and `engine/src/serialization.rs::test_mirror_symmetry_exhaustive` for the proof.
+
+In CHW board encoding, central inversion is **flip both axis-2 (rows) and axis-3 (columns)** of the 11×11 grid. The Rust mirror table is precomputed at `MIRROR_INDEX` and exposed to Python via `hexchess.mirror_indices_array()`. The v2 trainer loader applies `mirror_batch` with p=0.5. Cheap 2× data multiplier.
+
+No 6-fold rotational augmentation is possible — pawn direction breaks 5 of the 6 hex rotations.
 
 ---
 
@@ -638,17 +644,52 @@ Tool: `python -m training.audit_buffer` lists every file in the current window, 
 
 ---
 
-## 9. Risks and open questions for human review
+## 9. Risks and open questions
 
-1. **Branching factor estimate.** I assume 30–50 average legal moves; the only data point in CLAUDE.md is "51 at start." Need an empirical histogram from 10k random games before locking `α=0.25`. If actual mean is closer to 25, we want `α≈0.4`.
-2. **Draw rate.** Glinski draw frequency is unknown. If it's near zero (no insufficient-material draws because of 3 bishops), we may want to drop the WDL label smoothing. If >40%, MLH becomes essential and STV weight should rise.
-3. **`c_puct` choice.** I picked 2.5 by interpolation. The cleanest way to lock this is a 200-game sweep at v1 against `anchor_v0`. We should budget for the sweep before committing.
-4. **Auxiliary opponent-policy head cost.** Adds ~5% trunk params and ~25% policy-head FLOPs. Worth it in KataGo Go but unproven for hex chess. Ablate at v3 if cost-cutting needed.
-5. **BatchNorm vs FixUp.** I recommended starting with BN + a hard eval-mode invariant, and considering moving to FixUp later. Lc0 had multiple BN-related bugs over years. We may want to bite the bullet and ship FixUp from day one — but it adds risk of an unexplained training instability we can't debug. Open question.
-6. **Mirror symmetry usage.** Need to verify mathematically that horizontal mirror is the *only* preserved symmetry given Glinski's pawn directions; an erroneous symmetry would inject training-data poison. Recommend doing a proof by exhaustive testing (apply mirror to 10k random positions, verify that every legal move stays legal under the mirror).
-7. **PCR record-keeping.** If we don't save fast-search positions at all, we may want to still use them for the MLH and STV heads (those need long horizons of dense data). Open: should fast positions contribute to aux losses only?
-8. **Concurrent self-play within a process.** I deferred the leaf-batched in-process design to phase 2. If the GPU is idle most of the time on the kevz-gpu node, we'll need this sooner. Open: how saturated is the GPU at 12 processes × 1 game?
-9. **Replay window `c=25k`.** Notes recommend it but our move count per game is shorter than chess; we might want `c=15k` to keep early staleness lower. Empirical first-week tuning.
-10. **Bootstrap purity.** Imitation bootstrap saves a day but means the run is no longer "from zero." If purity matters (research framing), do random init for 6 hours instead. Open product question.
-11. **Resignation threshold `0.05`.** The KataGo number is for Go where games are long and draws are rare; in shorter, draw-prone games this may be too aggressive. Plan to monitor false-positive rate and let the auto-tightening loop adjust within `[0.02, 0.10]`.
-12. **Are we keeping minimax in the engine?** Useful as an anchor opponent but ~2k LOC. Recommend keeping for anchors (notes/09 §anchors) but freezing it.
+### Resolved by empirical measurement / implementation
+
+1. ~~**Branching factor estimate.**~~ **Resolved.** Random play (n=75k positions) shows mean 39.8, median 40. `α = 10/40 = 0.25` confirmed. p5=6, p95=73 — wide distribution but the mean is what calibrates noise.
+2. **Draw rate** — partially resolved. Random play shows ~11% formal draws + dominant timeout-by-shuffle. Real engine play likely 30%+ draws because Glinski's piece interaction is shuffle-prone. **MLH and STV are mandatory; WDL label smoothing kept at ε=0.05.**
+3. ~~**Mirror symmetry.**~~ **Resolved.** Central inversion `(q,r) → (-q,-r)` is the only valid symmetry — exhaustively verified in `test_mirror_symmetry_exhaustive`. Horizontal reflection breaks promotion-pair closure. Updated notes/12 §9.
+4. ~~**Move encoding hash guard.**~~ **Resolved.** `test_move_table_hash_is_stable` pins count=4206, hash=0x84d424aff5f7c2fd.
+
+### Still open
+
+5. **`c_puct` choice.** Locked at 2.5 / 3.5 by interpolation. Should sweep `{1.5, 2.0, 2.5, 3.0, 3.5}` against `anchor_v0` after the first 1M positions and re-lock if needed.
+6. **Game length.** Notes/12 originally guessed 80–120 plies; empirical evidence (random and minimax+softmax) suggests games run much longer because both sides shuffle when balanced. Real number is unknown until MCTS self-play kicks off. Move-limit cap should be ≥ 250 plies, not 80.
+7. **Aux-policy head cost.** Built at 2 channels (~1M FC params, narrower than the main 4-channel head). Worth it? Ablate at v3 if shrink is needed.
+8. **BatchNorm vs FixUp.** Shipped with BN + strict eval-mode invariant. FixUp migration deferred; revisit only if we hit BN-related divergence.
+9. **PCR record-keeping.** Currently only full-search positions become training samples. Fast positions could contribute to MLH/STV alone (denser horizon-8 supervision), but the worker doesn't do this. Defer until first run shows whether MLH signal is starved.
+10. **Concurrent self-play within a process.** Deferred leaf-batched evaluator. Will revisit after measuring GPU saturation on kevz-gpu under 12 processes × 1 game.
+11. **Replay window `c=25k`.** Locked. Empirical first-week tuning may bring it down to 15k if shorter Glinski games make 25k stale-prone.
+12. **Bootstrap purity.** Shipped with imitation bootstrap (`training/imitation.py`). Pure-zero training is not pursued.
+13. **Resignation threshold `0.05`.** Locked. `resign_skip_prob=0.10` means 10% of games run to natural termination so the false-positive rate is observable; auto-tighten within `[0.02, 0.10]` if FP rate climbs.
+14. **Endgame / drawn benchmark fixtures.** Auto-generation produced 4 tactical (capture-finding) and 3 quiet middlegame positions. Endgame and drawn fixtures still need hand-curation (`benchmarks/positions.json` TODO).
+15. **Dashboard pages 3-4.** Wired pages 1-2 against existing data; pages 3-4 wait on loss-snapshot and TT-stats pipelines that don't exist yet.
+16. **Engine-level RNG determinism for replay.** Seeded RNG plumbed through Dirichlet noise (chunk 2 + Rust TODO pass). Full bit-identical replay would also need to seed any other RNG-consuming code path (none currently exist).
+
+## 10. What was actually built (snapshot post-merge)
+
+| Component | File(s) | Status |
+|---|---|---|
+| Move-table hash guard | `engine/src/serialization.rs` | ✓ Pinned at 4206 / `0x84d424aff5f7c2fd` |
+| MCTS dynamic PUCT, FPU, shaped Dirichlet | `engine/src/mcts.rs` | ✓ |
+| PCR + forced playouts + PTP + LCB + 2-fold-as-draw | `engine/src/mcts.rs` | ✓ |
+| Resignation state machine | `engine/src/mcts.rs` | ✓ (10% skip in worker) |
+| Seeded RNG (Dirichlet) | `engine/src/mcts.rs` | ✓ |
+| Opponent-reply visit dist accessor | `engine/src/mcts.rs` + bindings | ✓ Used by worker |
+| Mirror move-index table + exhaustive verification | `engine/src/serialization.rs` | ✓ Central inversion |
+| 22-channel input encoder | `engine/src/serialization.rs` | ✓ |
+| Network: 8×144 trunk, 5 heads | `training/model.py` | ✓ 6.3M params |
+| Loss module (6 weighted terms + label smoothing) | `training/losses.py` | ✓ |
+| Worker: PCR self-play, rich npz schema, sidecars | `training/worker.py` | ✓ |
+| Trainer: sublinear window, SWA, gating-first-5 | `training/trainer_loop.py` | ✓ |
+| Health checks (11 invariants, strict + runtime modes) | `training/health_checks.py` | ✓ |
+| Structured JSONL logging | `training/logging_setup.py` | ✓ |
+| Replay tool (CLI) | `training/replay_game.py` | ✓ |
+| Buffer audit tool (CLI) | `training/audit_buffer.py` | ✓ |
+| Benchmark suite (10 positions) | `benchmarks/`, `training/benchmark_runner.py` | ✓ (endgame TODO) |
+| Dashboard pages 1-2 wired | `training/dashboard.html` | ✓ (3-4 placeholder) |
+| Mirror augmentation in v2 loader | `training/data_v2.py` | ✓ |
+| Config audit, run_id, validate() | `training/config.py` | ✓ |
+| Trainer constants → cfg fields | `training/trainer_loop.py` | ✓ |
