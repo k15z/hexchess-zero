@@ -407,8 +407,8 @@ static MIRROR_INDEX: LazyLock<Vec<usize>> = LazyLock::new(|| {
         let mto = mirror_coord(to);
         let mfi = crate::board::coord_to_index(mfrom)
             .expect("mirror_coord must land on a valid cell") as u8;
-        let mti = crate::board::coord_to_index(mto)
-            .expect("mirror_coord must land on a valid cell") as u8;
+        let mti = crate::board::coord_to_index(mto).expect("mirror_coord must land on a valid cell")
+            as u8;
         let key = (mfi, mti, promotion_ordinal(e.promotion));
         out[i] = *MOVE_INDEX
             .reverse
