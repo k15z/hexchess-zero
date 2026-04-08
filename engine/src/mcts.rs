@@ -3,14 +3,232 @@
 //! Uses arena-style allocation with nodes stored in a `Vec<MctsNode>` and
 //! referenced by index, avoiding pointer overhead and improving cache locality.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
+/// 95% one-sided normal z-score, used for LCB confidence intervals.
+const LCB_Z_95: f64 = 1.96;
+
+use crate::board::Color;
 use crate::eval;
 use crate::game::GameState;
 use crate::movegen::Move;
 use crate::serialization;
 
 use rand::Rng;
+
+// ---------------------------------------------------------------------------
+// SearchConfig
+// ---------------------------------------------------------------------------
+
+/// Optional Dirichlet noise parameters for root exploration.
+#[derive(Clone, Debug)]
+pub struct DirichletConfig {
+    /// Mixing weight for noise (typically 0.25).
+    pub epsilon: f32,
+    /// Dirichlet concentration parameter (typically 0.25 for hex chess).
+    pub alpha: f64,
+}
+
+impl Default for DirichletConfig {
+    fn default() -> Self {
+        Self {
+            epsilon: 0.25,
+            alpha: 0.25,
+        }
+    }
+}
+
+/// Playout Cap Randomization config (KataGo §3.1).
+#[derive(Clone, Debug)]
+pub struct PcrConfig {
+    /// Probability of running a full (noisy, recorded) search.
+    pub p_full: f32,
+    /// Simulation count for full searches.
+    pub n_full: u32,
+    /// Simulation count for fast (non-recorded) searches.
+    pub n_fast: u32,
+}
+
+impl Default for PcrConfig {
+    fn default() -> Self {
+        Self {
+            p_full: 0.25,
+            n_full: 800,
+            n_fast: 160,
+        }
+    }
+}
+
+/// Resignation config (KataGo §3.3).
+#[derive(Clone, Debug)]
+pub struct ResignConfig {
+    /// Whether resignation is active at all for this game.
+    pub enabled: bool,
+    /// Win-probability threshold below which STM is considered resigning.
+    pub v_resign: f32,
+    /// Number of consecutive moves below threshold required to resign.
+    pub k: usize,
+}
+
+impl Default for ResignConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            v_resign: 0.05,
+            k: 5,
+        }
+    }
+}
+
+/// Temperature-decay schedule for training-time move selection.
+#[derive(Clone, Debug)]
+pub struct TemperatureSchedule {
+    /// Maximum temperature at ply 0.
+    pub tau_max: f32,
+    /// Minimum temperature floor before hard-greedy cutoff.
+    pub tau_min: f32,
+    /// Half-life in plies for the exponential decay.
+    pub halflife: f32,
+    /// Ply at which to force hard-greedy (tau = 0).
+    pub hard_greedy_ply: u32,
+}
+
+impl Default for TemperatureSchedule {
+    fn default() -> Self {
+        Self {
+            tau_max: 1.0,
+            tau_min: 0.1,
+            halflife: 20.0,
+            hard_greedy_ply: 60,
+        }
+    }
+}
+
+impl TemperatureSchedule {
+    /// Return the effective temperature for a given ply.
+    pub fn temperature_at(&self, ply: u32) -> f32 {
+        if ply >= self.hard_greedy_ply {
+            return 0.0;
+        }
+        let raw = self.tau_max * (-(ply as f32) / self.halflife).exp();
+        raw.clamp(self.tau_min, self.tau_max)
+    }
+}
+
+/// Unified configuration for one `MctsSearch`. Training vs eval settings
+/// should differ only in a handful of fields.
+#[derive(Clone, Debug)]
+pub struct SearchConfig {
+    /// Base PUCT constant used at non-root nodes (this is the `c1` in the
+    /// AlphaZero dynamic formula for interior nodes).
+    pub c_puct: f32,
+    /// Base PUCT constant used at the root only.
+    pub c_puct_root: f32,
+    /// Dynamic PUCT denominator constant (`c2` in AlphaZero formula).
+    pub c2: f32,
+    /// FPU reduction applied to unvisited children: `Q_FPU = Q_parent - fpu_reduction`.
+    pub fpu_reduction: f32,
+    /// Virtual loss applied during leaf-batched selection.
+    pub virtual_loss: f32,
+    /// Leaf batch size. 1 means sequential path.
+    pub batch_size: usize,
+    /// Transposition-table capacity (in entries).
+    pub tt_capacity: usize,
+    /// Optional Dirichlet noise applied at the root.
+    pub dirichlet: Option<DirichletConfig>,
+    /// Top-K count used by shaped Dirichlet (half the noise mass is placed on
+    /// the top-K prior moves).
+    pub dirichlet_top_k: usize,
+    /// Forced-playout exponent `k` (KataGo §3.2). 0 disables forced playouts.
+    pub forced_playout_k: f32,
+    /// Whether to apply policy-target pruning when exporting the training target.
+    pub policy_target_pruning: bool,
+    /// Temperature schedule for training move selection.
+    pub temperature: TemperatureSchedule,
+    /// Playout Cap Randomization settings.
+    pub pcr: PcrConfig,
+    /// Resignation settings.
+    pub resign: ResignConfig,
+    /// Use LCB (lower confidence bound) for final move selection.
+    pub use_lcb: bool,
+    /// Treat 2-fold repetition encountered within a search path as an immediate draw.
+    pub two_fold_as_draw: bool,
+}
+
+impl SearchConfig {
+    /// Default training configuration.
+    pub fn training() -> Self {
+        Self {
+            c_puct: 2.5,
+            c_puct_root: 3.5,
+            c2: 19652.0,
+            fpu_reduction: 0.0,
+            virtual_loss: 1.0,
+            batch_size: 32,
+            tt_capacity: 500_000,
+            dirichlet: Some(DirichletConfig::default()),
+            dirichlet_top_k: 10,
+            forced_playout_k: 2.0,
+            policy_target_pruning: true,
+            temperature: TemperatureSchedule::default(),
+            pcr: PcrConfig::default(),
+            resign: ResignConfig::default(),
+            use_lcb: false,
+            two_fold_as_draw: true,
+        }
+    }
+
+    /// Default evaluation / match-play configuration.
+    pub fn eval() -> Self {
+        Self {
+            c_puct: 2.5,
+            c_puct_root: 3.5,
+            c2: 19652.0,
+            fpu_reduction: 0.2,
+            virtual_loss: 1.0,
+            batch_size: 32,
+            tt_capacity: 500_000,
+            dirichlet: None,
+            dirichlet_top_k: 10,
+            forced_playout_k: 0.0,
+            policy_target_pruning: false,
+            temperature: TemperatureSchedule {
+                tau_max: 0.0,
+                tau_min: 0.0,
+                halflife: 1.0,
+                hard_greedy_ply: 0,
+            },
+            pcr: PcrConfig {
+                p_full: 1.0,
+                n_full: 800,
+                n_fast: 800,
+            },
+            resign: ResignConfig {
+                enabled: false,
+                ..ResignConfig::default()
+            },
+            use_lcb: true,
+            two_fold_as_draw: true,
+        }
+    }
+}
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        Self::training()
+    }
+}
+
+/// Dynamic PUCT coefficient: `base + log((1 + N + c2) / c2)`.
+///
+/// `base` is the node-type constant (`c_puct` for interior nodes,
+/// `c_puct_root` for the root). At low parent-visit counts the log term is
+/// near zero and the constant dominates; past `c2 ≈ 19652` the log term
+/// begins to meaningfully scale up exploration.
+pub fn dynamic_c_puct(base: f32, c2: f32, parent_visits: u32) -> f32 {
+    let n = parent_visits as f32;
+    base + ((1.0 + n + c2) / c2).ln()
+}
 
 // ---------------------------------------------------------------------------
 // Evaluator trait
@@ -136,19 +354,15 @@ impl Evaluator for WeightedHeuristicEvaluator {
 // ---------------------------------------------------------------------------
 
 struct MctsNode {
-    /// Move that led to this node (None for root).
     action: Option<Move>,
-    /// Index of action in the policy vector.
     action_index: Option<usize>,
-    /// Children node indices in the arena.
     children: Vec<usize>,
-    /// Number of times this node was visited.
     visit_count: u32,
-    /// Sum of value estimates through this node.
     value_sum: f64,
-    /// Prior probability from the policy network.
+    /// Welford M2 accumulator (sum of squared deviations) of backed-up
+    /// values at this node, used for LCB variance estimates.
+    m2: f64,
     prior: f32,
-    /// Whether this node has been expanded.
     is_expanded: bool,
 }
 
@@ -160,17 +374,27 @@ impl MctsNode {
             children: Vec::new(),
             visit_count: 0,
             value_sum: 0.0,
+            m2: 0.0,
             prior,
             is_expanded: false,
         }
     }
 
-    /// Mean value Q(node) = value_sum / visit_count.
     fn q_value(&self) -> f64 {
         if self.visit_count == 0 {
             0.0
         } else {
             self.value_sum / self.visit_count as f64
+        }
+    }
+
+    /// Sample variance of backed-up values (Welford / (n-1)). Zero when
+    /// fewer than 2 samples are present.
+    fn variance(&self) -> f64 {
+        if self.visit_count < 2 {
+            0.0
+        } else {
+            self.m2 / (self.visit_count as f64 - 1.0)
         }
     }
 }
@@ -191,34 +415,8 @@ pub struct SearchResult {
 }
 
 // ---------------------------------------------------------------------------
-// MCTS configuration
-// ---------------------------------------------------------------------------
-
-/// Optional Dirichlet noise parameters for root exploration.
-#[derive(Clone, Debug)]
-pub struct DirichletConfig {
-    /// Mixing weight for noise (typically 0.25).
-    pub epsilon: f32,
-    /// Dirichlet concentration parameter (typically 0.3 for chess).
-    pub alpha: f64,
-}
-
-impl Default for DirichletConfig {
-    fn default() -> Self {
-        Self {
-            epsilon: 0.25,
-            alpha: 0.3,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // MCTS Search
 // ---------------------------------------------------------------------------
-
-/// Virtual loss value applied during batched selection to discourage
-/// multiple paths from converging on the same leaf node.
-const VIRTUAL_LOSS: f64 = 3.0;
 
 /// Cumulative transposition table statistics.
 #[derive(Clone, Debug, Default)]
@@ -229,27 +427,60 @@ pub struct TtStats {
     pub current_size: usize,
 }
 
+/// Transposition-table key. Positions with identical zobrist/side but
+/// different repetition counts are semantically distinct because a
+/// third occurrence is a forced draw.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct TtKey {
+    /// Raw zobrist hash of the board.
+    pub zobrist: u64,
+    /// Side to move (0 = white, 1 = black).
+    pub side: u8,
+    /// Repetition count of this exact position in the game history.
+    pub repetition: u32,
+}
+
+impl TtKey {
+    pub fn from_state(state: &GameState) -> Self {
+        Self {
+            zobrist: state.board.zobrist_hash,
+            side: state.board.side_to_move.index() as u8,
+            repetition: state.repetition_count(),
+        }
+    }
+}
+
+/// Outcome of walking the tree from root to a leaf in one simulation.
+enum DescendOutcome {
+    /// Reached an unexpanded leaf (or a terminal state).
+    Leaf,
+    /// Selection hit a position already seen earlier on the same descent
+    /// path, which `two_fold_as_draw` treats as an immediate draw.
+    TwoFoldDraw,
+}
+
+struct LeafInfo {
+    path: Vec<usize>,
+    leaf_state: Option<GameState>,
+    terminal_value: f64,
+    key: TtKey,
+}
+
 pub struct MctsSearch {
     nodes: Vec<MctsNode>,
     evaluator: Box<dyn Evaluator>,
-    /// Exploration constant for PUCT (default ~1.5).
-    c_puct: f32,
-    /// Number of leaves to accumulate before a single batched NN evaluation.
-    /// A value of 1 disables batching (sequential mode). Default: 8.
-    batch_size: usize,
-    /// Optional Dirichlet noise config for root priors.
-    dirichlet: Option<DirichletConfig>,
-    /// Transposition table: zobrist_hash -> (policy, value).
-    /// Avoids re-running NN inference for positions seen before.
-    tt: HashMap<u64, (Vec<f32>, f32)>,
-    /// Maximum number of entries in the transposition table. When exceeded,
-    /// the table is cleared to prevent unbounded memory growth. Default: 500k
-    /// entries (~8.5 GB with ~17KB policy vectors).
-    tt_capacity: usize,
-    /// Cumulative TT statistics (hits, misses, clears).
+    config: SearchConfig,
+    tt: HashMap<TtKey, (Vec<f32>, f32)>,
     tt_hits: u64,
     tt_misses: u64,
     tt_clears: u64,
+    /// Rolling buffer of STM P(W) at the root for the last `k` moves of
+    /// each side, used by `should_resign`.
+    resign_history: [VecDeque<f32>; 2],
+    /// Reusable scratch path buffer for `simulate` (avoids per-sim alloc).
+    path_scratch: Vec<usize>,
+    /// Reusable buffer of leaves for `simulate_batched`.
+    leaves_scratch: Vec<LeafInfo>,
 }
 
 impl MctsSearch {
@@ -257,51 +488,63 @@ impl MctsSearch {
         Self {
             nodes: Vec::new(),
             evaluator,
-            c_puct: 1.5,
-            batch_size: 32,
-            dirichlet: None,
+            config: SearchConfig::training(),
             tt: HashMap::new(),
-            tt_capacity: 500_000,
             tt_hits: 0,
             tt_misses: 0,
             tt_clears: 0,
+            resign_history: [VecDeque::new(), VecDeque::new()],
+            path_scratch: Vec::new(),
+            leaves_scratch: Vec::new(),
         }
     }
 
-    /// Set the PUCT exploration constant.
+    /// Replace the entire search configuration.
+    pub fn set_config(&mut self, config: SearchConfig) {
+        self.config = config;
+    }
+
+    /// Immutable view of the current search configuration.
+    pub fn config(&self) -> &SearchConfig {
+        &self.config
+    }
+
+    /// Mutable view of the current search configuration.
+    pub fn config_mut(&mut self) -> &mut SearchConfig {
+        &mut self.config
+    }
+
+    /// Compatibility shim for legacy bindings that only knew a single
+    /// `c_puct`. Sets `c_puct` to the given value and `c_puct_root` to
+    /// `c_puct + 1.0` (the historical offset). New code should prefer
+    /// `config_mut()` and set both fields explicitly.
     pub fn set_c_puct(&mut self, c_puct: f32) {
-        self.c_puct = c_puct;
+        self.config.c_puct = c_puct;
+        self.config.c_puct_root = c_puct + 1.0;
     }
 
-    /// Set the maximum transposition table capacity (number of entries).
-    /// When the table exceeds this limit, it is cleared entirely.
     pub fn set_tt_capacity(&mut self, capacity: usize) {
-        self.tt_capacity = capacity;
+        self.config.tt_capacity = capacity;
     }
 
-    /// Set the batch size for batched NN inference. A value of 1 disables
-    /// batching and falls back to the sequential code path.
     pub fn set_batch_size(&mut self, batch_size: usize) {
-        self.batch_size = batch_size.max(1);
+        self.config.batch_size = batch_size.max(1);
     }
 
-    /// Enable Dirichlet noise at the root.
     pub fn set_dirichlet(&mut self, config: Option<DirichletConfig>) {
-        self.dirichlet = config;
+        self.config.dirichlet = config;
     }
 
-    /// Clear the tree for a new search. Keeps the transposition table.
     pub fn reset(&mut self) {
         self.nodes.clear();
     }
 
-    /// Insert into the transposition table, clearing it first if at capacity.
-    fn tt_insert(&mut self, hash: u64, entry: (Vec<f32>, f32)) {
-        if self.tt.len() >= self.tt_capacity {
+    fn tt_insert(&mut self, key: TtKey, entry: (Vec<f32>, f32)) {
+        if self.tt.len() >= self.config.tt_capacity {
             self.tt.clear();
             self.tt_clears += 1;
         }
-        self.tt.insert(hash, entry);
+        self.tt.insert(key, entry);
     }
 
     /// Return cumulative transposition table statistics.
@@ -322,7 +565,7 @@ impl MctsSearch {
 
     /// Run MCTS for `num_simulations` iterations (greedy, temperature = 0).
     pub fn search(&mut self, state: &GameState, num_simulations: u32) -> SearchResult {
-        self.search_with_temperature(state, num_simulations, 0.0)
+        self.search_with_options(state, num_simulations, 0.0, true)
     }
 
     /// Run MCTS for `num_simulations` iterations with the given temperature.
@@ -336,22 +579,44 @@ impl MctsSearch {
         num_simulations: u32,
         temperature: f32,
     ) -> SearchResult {
+        self.search_with_options(state, num_simulations, temperature, true)
+    }
+
+    /// Core search entry point. `enable_noise = false` disables root Dirichlet
+    /// noise for this call only, without mutating `self.config`.
+    fn search_with_options(
+        &mut self,
+        state: &GameState,
+        num_simulations: u32,
+        temperature: f32,
+        enable_noise: bool,
+    ) -> SearchResult {
         self.reset();
 
-        // Create root node.
         let root = MctsNode::new(None, None, 1.0);
         self.nodes.push(root);
 
         let mut working_state = state.clone();
 
-        if self.batch_size <= 1 {
-            // Sequential path: one simulation at a time.
+        let noise_gate = enable_noise;
+        let saved = if !noise_gate {
+            self.config.dirichlet.take()
+        } else {
+            None
+        };
+
+        // Scope guard via a local helper struct would be nicer, but we
+        // explicitly restore below — `expand` never panics in practice.
+        if self.config.batch_size <= 1 {
             for _ in 0..num_simulations {
                 self.simulate(0, &mut working_state);
             }
         } else {
-            // Batched path: accumulate leaves, evaluate in one batch.
             self.simulate_batched(0, &mut working_state, num_simulations);
+        }
+
+        if !noise_gate {
+            self.config.dirichlet = saved;
         }
 
         self.extract_result(state, temperature)
@@ -361,48 +626,82 @@ impl MctsSearch {
     // Internal helpers — sequential path
     // ------------------------------------------------------------------
 
-    /// One simulation: select -> expand/evaluate -> backpropagate.
-    ///
-    /// The state must be at the root position on entry and is restored before return.
-    fn simulate(&mut self, root_idx: usize, state: &mut GameState) {
-        // Phase 1: SELECT — walk down tree using PUCT.
+    /// Walk from `root_idx` to an unexpanded leaf (or terminal / 2-fold
+    /// draw). `state` is mutated via `apply_move`; the caller is
+    /// responsible for undoing the applied moves. `path` is cleared and
+    /// populated with the traversed node indices.
+    fn descend_to_leaf(
+        &self,
+        root_idx: usize,
+        state: &mut GameState,
+        path: &mut Vec<usize>,
+    ) -> DescendOutcome {
+        path.clear();
+        path.push(root_idx);
         let mut node_idx = root_idx;
-        let mut path = vec![node_idx];
 
         while self.nodes[node_idx].is_expanded && !self.nodes[node_idx].children.is_empty() {
-            node_idx = self.select_child(node_idx);
+            node_idx = self.select_child(node_idx, node_idx == root_idx);
             let action = self.nodes[node_idx]
                 .action
                 .expect("non-root node must have an action");
             state.apply_move(action);
             path.push(node_idx);
+            if self.config.two_fold_as_draw && state.repetition_count() >= 1 {
+                return DescendOutcome::TwoFoldDraw;
+            }
         }
+        DescendOutcome::Leaf
+    }
 
-        // Phase 2: EXPAND + EVALUATE.
-        let value = if state.is_game_over() {
-            state.outcome_value().unwrap_or(0.0) as f64
-        } else {
-            let hash = state.board.zobrist_hash;
-            let (policy, value) = if let Some(cached) = self.tt.get(&hash) {
-                self.tt_hits += 1;
-                cached.clone()
-            } else {
-                self.tt_misses += 1;
-                let result = self.evaluator.evaluate(state);
-                self.tt_insert(hash, result.clone());
-                result
-            };
-            self.expand(node_idx, state, &policy);
-            value as f64
+    fn simulate(&mut self, root_idx: usize, state: &mut GameState) {
+        let mut path = std::mem::take(&mut self.path_scratch);
+        let outcome = self.descend_to_leaf(root_idx, state, &mut path);
+        let node_idx = *path.last().unwrap();
+        let moves_made = path.len() - 1;
+
+        let value = match outcome {
+            DescendOutcome::TwoFoldDraw => 0.0,
+            DescendOutcome::Leaf => {
+                if state.is_game_over() {
+                    state.outcome_value().unwrap_or(0.0) as f64
+                } else {
+                    let key = TtKey::from_state(state);
+                    if let Some(cached) = self.tt.get(&key) {
+                        self.tt_hits += 1;
+                        let value_f64 = cached.1 as f64;
+                        Self::expand_nodes(
+                            &mut self.nodes,
+                            &self.config,
+                            node_idx,
+                            state,
+                            &cached.0,
+                        );
+                        value_f64
+                    } else {
+                        self.tt_misses += 1;
+                        let (policy, value) = self.evaluator.evaluate(state);
+                        Self::expand_nodes(
+                            &mut self.nodes,
+                            &self.config,
+                            node_idx,
+                            state,
+                            &policy,
+                        );
+                        self.tt_insert(key, (policy, value));
+                        value as f64
+                    }
+                }
+            }
         };
 
-        // Phase 3: BACKPROPAGATE.
         self.backpropagate(&path, value);
 
-        // Undo all moves to restore state to root position.
-        for _ in 0..path.len() - 1 {
+        for _ in 0..moves_made {
             state.undo_move();
         }
+
+        self.path_scratch = path;
     }
 
     // ------------------------------------------------------------------
@@ -410,94 +709,85 @@ impl MctsSearch {
     // ------------------------------------------------------------------
 
     /// Run `num_simulations` simulations using batched NN inference.
-    ///
-    /// Accumulates up to `batch_size` leaf nodes per round:
-    /// 1. **Select** a leaf for each slot using PUCT, applying virtual loss to
-    ///    discourage duplicate paths within the same batch.
-    /// 2. **Batch evaluate** all leaves that need NN inference in one call.
-    /// 3. **Expand + backpropagate** each leaf, removing virtual loss.
     fn simulate_batched(&mut self, root_idx: usize, state: &mut GameState, num_simulations: u32) {
-        struct LeafInfo {
-            path: Vec<usize>,
-            leaf_state: Option<GameState>,
-            terminal_value: f64,
-            hash: u64,
-        }
-
+        let batch_size = self.config.batch_size;
         let mut done = 0u32;
-        let mut leaves: Vec<LeafInfo> = Vec::with_capacity(self.batch_size);
-        let mut eval_indices: Vec<usize> = Vec::with_capacity(self.batch_size);
+        let mut leaves = std::mem::take(&mut self.leaves_scratch);
+        let mut eval_indices: Vec<usize> = Vec::with_capacity(batch_size);
 
         while done < num_simulations {
-            let batch_count = ((num_simulations - done) as usize).min(self.batch_size);
+            let batch_count = ((num_simulations - done) as usize).min(batch_size);
             leaves.clear();
             eval_indices.clear();
 
-            // --- Phase 1: SELECT leaves with virtual loss ---
             for _ in 0..batch_count {
-                let mut node_idx = root_idx;
-                let mut path = vec![node_idx];
+                let mut path: Vec<usize> = Vec::new();
+                let outcome = self.descend_to_leaf(root_idx, state, &mut path);
+                let node_idx = *path.last().unwrap();
+                let key = TtKey::from_state(state);
+                let moves_made = path.len() - 1;
 
-                while self.nodes[node_idx].is_expanded && !self.nodes[node_idx].children.is_empty()
-                {
-                    node_idx = self.select_child(node_idx);
-                    let action = self.nodes[node_idx]
-                        .action
-                        .expect("non-root node must have an action");
-                    state.apply_move(action);
-                    path.push(node_idx);
+                match outcome {
+                    DescendOutcome::TwoFoldDraw => {
+                        self.apply_virtual_loss(&path);
+                        leaves.push(LeafInfo {
+                            path,
+                            leaf_state: None,
+                            terminal_value: 0.0,
+                            key,
+                        });
+                    }
+                    DescendOutcome::Leaf if state.is_game_over() => {
+                        let val = state.outcome_value().unwrap_or(0.0) as f64;
+                        self.apply_virtual_loss(&path);
+                        leaves.push(LeafInfo {
+                            path,
+                            leaf_state: None,
+                            terminal_value: val,
+                            key,
+                        });
+                    }
+                    DescendOutcome::Leaf => {
+                        if let Some(cached) = self.tt.get(&key) {
+                            self.tt_hits += 1;
+                            let val = cached.1 as f64;
+                            Self::expand_nodes(
+                                &mut self.nodes,
+                                &self.config,
+                                node_idx,
+                                state,
+                                &cached.0,
+                            );
+                            self.apply_virtual_loss(&path);
+                            leaves.push(LeafInfo {
+                                path,
+                                leaf_state: None,
+                                terminal_value: val,
+                                key,
+                            });
+                        } else {
+                            self.tt_misses += 1;
+                            let snapshot = state.clone();
+                            self.apply_virtual_loss(&path);
+                            leaves.push(LeafInfo {
+                                path,
+                                leaf_state: Some(snapshot),
+                                terminal_value: 0.0,
+                                key,
+                            });
+                        }
+                    }
                 }
 
-                let hash = state.board.zobrist_hash;
-                let moves_made = path.len() - 1; // root doesn't count
-
-                if state.is_game_over() {
-                    let val = state.outcome_value().unwrap_or(0.0) as f64;
-                    self.apply_virtual_loss(&path);
-                    leaves.push(LeafInfo {
-                        path,
-                        leaf_state: None,
-                        terminal_value: val,
-                        hash: 0,
-                    });
-                } else if let Some(cached) = self.tt.get(&hash) {
-                    // TT hit — expand immediately, no NN call needed.
-                    self.tt_hits += 1;
-                    let (policy, value) = cached.clone();
-                    self.expand(node_idx, state, &policy);
-                    let val = value as f64;
-                    self.apply_virtual_loss(&path);
-                    leaves.push(LeafInfo {
-                        path,
-                        leaf_state: None,
-                        terminal_value: val,
-                        hash,
-                    });
-                } else {
-                    // Needs NN evaluation — snapshot the state.
-                    self.tt_misses += 1;
-                    let snapshot = state.clone();
-                    self.apply_virtual_loss(&path);
-                    leaves.push(LeafInfo {
-                        path,
-                        leaf_state: Some(snapshot),
-                        terminal_value: 0.0,
-                        hash,
-                    });
-                }
-
-                // Undo moves to return to root.
                 for _ in 0..moves_made {
                     state.undo_move();
                 }
             }
 
-            // --- Phase 2: BATCH EVALUATE leaves needing NN inference ---
-            // De-duplicate by hash so we don't evaluate the same position twice.
-            let mut seen_hashes: HashMap<u64, usize> = HashMap::new();
+            let mut seen_keys: HashMap<TtKey, usize> = HashMap::new();
             for (i, l) in leaves.iter().enumerate() {
-                if l.leaf_state.is_some() && !seen_hashes.contains_key(&l.hash) {
-                    seen_hashes.insert(l.hash, eval_indices.len());
+                if l.leaf_state.is_some() && !seen_keys.contains_key(&l.key) {
+                    seen_keys.insert(l.key, eval_indices.len());
                     eval_indices.push(i);
                 }
             }
@@ -512,18 +802,23 @@ impl MctsSearch {
                 self.evaluator.evaluate_batch(&states_for_eval)
             };
 
-            // --- Phase 3: EXPAND + BACKPROP each leaf, removing virtual loss ---
             for leaf in &mut leaves {
                 self.remove_virtual_loss(&leaf.path);
 
                 let value = if let Some(ref leaf_state) = leaf.leaf_state {
-                    let result_idx = seen_hashes[&leaf.hash];
+                    let result_idx = seen_keys[&leaf.key];
                     let (policy, val) = &eval_results[result_idx];
                     let node_idx = *leaf.path.last().unwrap();
 
                     if !self.nodes[node_idx].is_expanded {
-                        self.tt_insert(leaf.hash, (policy.clone(), *val));
-                        self.expand(node_idx, leaf_state, policy);
+                        Self::expand_nodes(
+                            &mut self.nodes,
+                            &self.config,
+                            node_idx,
+                            leaf_state,
+                            policy,
+                        );
+                        self.tt_insert(leaf.key, (policy.clone(), *val));
                     }
                     *val as f64
                 } else {
@@ -535,6 +830,9 @@ impl MctsSearch {
 
             done += batch_count as u32;
         }
+
+        leaves.clear();
+        self.leaves_scratch = leaves;
     }
 
     /// Apply virtual loss along a path: increment visit counts and add
@@ -545,34 +843,61 @@ impl MctsSearch {
     /// so `-q_value()` becomes more negative, lowering the PUCT score and
     /// discouraging the parent from re-selecting this child.
     fn apply_virtual_loss(&mut self, path: &[usize]) {
+        let vl = self.config.virtual_loss as f64;
         for &idx in path {
             self.nodes[idx].visit_count += 1;
-            self.nodes[idx].value_sum += VIRTUAL_LOSS;
+            self.nodes[idx].value_sum += vl;
         }
     }
 
-    /// Remove virtual loss along a path (undo the effect of `apply_virtual_loss`).
     fn remove_virtual_loss(&mut self, path: &[usize]) {
+        let vl = self.config.virtual_loss as f64;
         for &idx in path {
             self.nodes[idx].visit_count -= 1;
-            self.nodes[idx].value_sum -= VIRTUAL_LOSS;
+            self.nodes[idx].value_sum -= vl;
         }
     }
 
-    /// Select the child of `node_idx` with the highest PUCT score.
-    fn select_child(&self, node_idx: usize) -> usize {
+    /// Select the child of `node_idx` with the highest PUCT score. Root nodes
+    /// also honor the forced-playout rule (KataGo §3.2).
+    fn select_child(&self, node_idx: usize, is_root: bool) -> usize {
         let parent = &self.nodes[node_idx];
-        let parent_visits_sqrt = (parent.visit_count as f64).sqrt();
+        let parent_visits = parent.visit_count;
+        let parent_visits_sqrt = (parent_visits as f64).sqrt();
+        let parent_q = parent.q_value();
+
+        let base = if is_root {
+            self.config.c_puct_root
+        } else {
+            self.config.c_puct
+        };
+        let c = dynamic_c_puct(base, self.config.c2, parent_visits) as f64;
+        let fpu = self.config.fpu_reduction as f64;
+        let q_fpu = parent_q - fpu;
+
+        if is_root && self.config.forced_playout_k > 0.0 {
+            let k = self.config.forced_playout_k as f64;
+            let sqrt_n = parent_visits_sqrt;
+            for &child_idx in &parent.children {
+                let child = &self.nodes[child_idx];
+                let n_forced = (k * child.prior as f64 * sqrt_n).ceil() as u32;
+                if child.visit_count < n_forced && child.prior > 0.0 {
+                    return child_idx;
+                }
+            }
+        }
 
         let mut best_idx = parent.children[0];
         let mut best_score = f64::NEG_INFINITY;
 
         for &child_idx in &parent.children {
             let child = &self.nodes[child_idx];
-            // Negate: child stores value from its own side-to-move perspective,
-            // but the parent wants to maximize from the parent's perspective.
-            let q = -child.q_value();
-            let u = self.c_puct as f64 * child.prior as f64 * parent_visits_sqrt
+            let q = if child.visit_count == 0 {
+                q_fpu
+            } else {
+                -child.q_value()
+            };
+            let u = c * child.prior as f64 * parent_visits_sqrt
                 / (1.0 + child.visit_count as f64);
             let score = q + u;
             if score > best_score {
@@ -585,13 +910,22 @@ impl MctsSearch {
     }
 
     /// Expand `node_idx` by creating children for all legal moves.
-    fn expand(&mut self, node_idx: usize, state: &GameState, policy: &[f32]) {
+    ///
+    /// Takes explicit `&mut Vec<MctsNode>` and `&SearchConfig` (rather than
+    /// `&mut self`) so that callers can hold a live borrow on `self.tt`
+    /// across the call.
+    fn expand_nodes(
+        nodes: &mut Vec<MctsNode>,
+        config: &SearchConfig,
+        node_idx: usize,
+        state: &GameState,
+        policy: &[f32],
+    ) {
         let legal_moves = state.legal_moves();
         if legal_moves.is_empty() {
             return;
         }
 
-        // Map legal moves to (move, index, raw_prior).
         let mut children_info: Vec<(Move, usize, f32)> = Vec::with_capacity(legal_moves.len());
         let mut prior_sum = 0.0f32;
 
@@ -606,7 +940,6 @@ impl MctsSearch {
             }
         }
 
-        // Renormalize priors over legal moves.
         if prior_sum > 1e-8 {
             for info in &mut children_info {
                 info.2 /= prior_sum;
@@ -619,14 +952,18 @@ impl MctsSearch {
             }
         }
 
-        // Apply Dirichlet noise at the root (node_idx == 0).
         if node_idx == 0
-            && let Some(ref config) = self.dirichlet
+            && let Some(ref dcfg) = config.dirichlet
         {
-            self.apply_dirichlet_noise(&mut children_info, config.epsilon, config.alpha);
+            let top_k = config.dirichlet_top_k;
+            apply_shaped_dirichlet_noise(
+                &mut children_info,
+                dcfg.epsilon,
+                dcfg.alpha,
+                top_k,
+            );
         }
 
-        // Create child nodes.
         for (mv, mv_idx, prior) in children_info {
             let action_index = if mv_idx == usize::MAX {
                 None
@@ -634,40 +971,36 @@ impl MctsSearch {
                 Some(mv_idx)
             };
             let child = MctsNode::new(Some(mv), action_index, prior);
-            let child_idx = self.nodes.len();
-            self.nodes.push(child);
-            self.nodes[node_idx].children.push(child_idx);
+            let child_idx = nodes.len();
+            nodes.push(child);
+            nodes[node_idx].children.push(child_idx);
         }
 
-        self.nodes[node_idx].is_expanded = true;
+        nodes[node_idx].is_expanded = true;
     }
 
-    /// Apply Dirichlet noise to the priors in children_info.
-    fn apply_dirichlet_noise(
-        &self,
-        children_info: &mut [(Move, usize, f32)],
-        epsilon: f32,
-        alpha: f64,
-    ) {
-        let n = children_info.len();
-        if n == 0 {
-            return;
-        }
 
-        let noise = sample_dirichlet(n, alpha);
-        for (i, info) in children_info.iter_mut().enumerate() {
-            info.2 = (1.0 - epsilon) * info.2 + epsilon * noise[i] as f32;
-        }
-    }
-
-    /// Backpropagate value up the path, negating at each level.
     fn backpropagate(&mut self, path: &[usize], leaf_value: f64) {
-        // `leaf_value` is from the perspective of the side to move at the leaf.
-        // As we go up, alternate the sign.
         let mut value = leaf_value;
+        let track_variance = self.config.use_lcb;
         for &node_idx in path.iter().rev() {
-            self.nodes[node_idx].visit_count += 1;
-            self.nodes[node_idx].value_sum += value;
+            let node = &mut self.nodes[node_idx];
+            if track_variance {
+                let old_mean = if node.visit_count == 0 {
+                    0.0
+                } else {
+                    node.value_sum / node.visit_count as f64
+                };
+                node.visit_count += 1;
+                node.value_sum += value;
+                let new_mean = node.value_sum / node.visit_count as f64;
+                let delta = value - old_mean;
+                let delta2 = value - new_mean;
+                node.m2 += delta * delta2;
+            } else {
+                node.visit_count += 1;
+                node.value_sum += value;
+            }
             value = -value;
         }
     }
@@ -678,14 +1011,12 @@ impl MctsSearch {
         let num_indices = serialization::num_move_indices();
         let mut policy = vec![0.0f32; num_indices];
 
-        // Build visit-count distribution.
         let total_child_visits: u32 = root
             .children
             .iter()
             .map(|&i| self.nodes[i].visit_count)
             .sum();
 
-        // Populate policy with raw visit counts (will normalize later).
         for &child_idx in &root.children {
             let child = &self.nodes[child_idx];
             if let Some(mv_idx) = child.action_index
@@ -695,16 +1026,13 @@ impl MctsSearch {
             }
         }
 
-        // Select best move.
         let best_child_idx = if temperature < 1e-4 {
-            // Greedy: highest visit count.
             *root
                 .children
                 .iter()
                 .max_by_key(|&&i| self.nodes[i].visit_count)
                 .expect("root must have children")
         } else {
-            // Temperature-based selection.
             self.select_by_temperature(root, temperature)
         };
 
@@ -712,7 +1040,6 @@ impl MctsSearch {
             .action
             .expect("child must have an action");
 
-        // Normalize policy to sum to 1.
         if total_child_visits > 0 {
             if temperature < 1e-4 {
                 // For greedy, just normalize raw visit counts.
@@ -784,14 +1111,245 @@ impl MctsSearch {
                 return root.children[i];
             }
         }
-        // Fallback (rounding).
         *root.children.last().unwrap()
     }
+
+    // ------------------------------------------------------------------
+    // Public high-level API (v2 rebuild)
+    // ------------------------------------------------------------------
+
+    /// Run a search using the current config's temperature schedule for
+    /// the given ply. Used by the self-play worker for training games.
+    pub fn run_for_ply(&mut self, state: &GameState, ply: u32, num_simulations: u32) -> SearchResult {
+        let temperature = self.config.temperature.temperature_at(ply);
+        self.search_with_temperature(state, num_simulations, temperature)
+    }
+
+    /// Playout Cap Randomization outcome: the caller flips the PCR coin via
+    /// `run_pcr`, which dispatches internally to a full (noisy, recorded)
+    /// search or a fast (clean, unrecorded) search.
+    pub fn run_pcr<R: Rng + ?Sized>(
+        &mut self,
+        state: &GameState,
+        ply: u32,
+        rng: &mut R,
+    ) -> PcrOutcome {
+        let pcr = self.config.pcr.clone();
+        let coin: f32 = rng.random();
+        let was_full = coin < pcr.p_full;
+        let sims = if was_full { pcr.n_full } else { pcr.n_fast };
+        let temperature = self.config.temperature.temperature_at(ply);
+        let result = self.search_with_options(state, sims, temperature, was_full);
+
+        let policy_target = if was_full {
+            if self.config.policy_target_pruning {
+                Some(self.policy_target_pruned())
+            } else {
+                Some(result.policy.clone())
+            }
+        } else {
+            None
+        };
+
+        PcrOutcome {
+            best_move: result.best_move,
+            value: result.value,
+            nodes_searched: result.nodes_searched,
+            was_full_search: was_full,
+            policy_target,
+        }
+    }
+
+    /// Compute the PTP-pruned visit-count policy target from the current root.
+    ///
+    /// Children whose visit count exceeds `n_forced(a) = ceil(k·P·sqrt(N))`
+    /// are unaffected; forced children are processed in increasing-visit
+    /// order and have their forced visits subtracted from the emitted target
+    /// so long as the subtraction does not change the argmax.
+    pub fn policy_target_pruned(&self) -> Vec<f32> {
+        let num_indices = serialization::num_move_indices();
+        let mut policy = vec![0.0f32; num_indices];
+        if self.nodes.is_empty() {
+            return policy;
+        }
+        let root = &self.nodes[0];
+        if root.children.is_empty() {
+            return policy;
+        }
+
+        let parent_visits_sqrt = (root.visit_count as f64).sqrt();
+        let k = self.config.forced_playout_k as f64;
+
+        let mut adjusted: Vec<(usize, i64, i64)> = root
+            .children
+            .iter()
+            .map(|&ci| {
+                let c = &self.nodes[ci];
+                let n_forced = if k > 0.0 {
+                    (k * c.prior as f64 * parent_visits_sqrt).ceil() as i64
+                } else {
+                    0
+                };
+                (ci, c.visit_count as i64, n_forced)
+            })
+            .collect();
+
+        let raw_argmax_visits = adjusted.iter().map(|e| e.1).max().unwrap_or(0);
+        let argmax_child = adjusted
+            .iter()
+            .find(|e| e.1 == raw_argmax_visits)
+            .map(|e| e.0)
+            .unwrap_or(root.children[0]);
+
+        let mut forced_order: Vec<usize> = (0..adjusted.len())
+            .filter(|&i| adjusted[i].2 > 0 && adjusted[i].0 != argmax_child)
+            .collect();
+        forced_order.sort_by_key(|&i| adjusted[i].1);
+
+        // Invariant: `forced_order` excludes the argmax child, so subtracting
+        // `n_forced` from any entry in it can only lower that entry's visit
+        // count — the argmax child is untouched and therefore the argmax
+        // cannot change. No tentative recomputation is needed.
+        for i in forced_order {
+            let (_ci, n_visits, n_forced) = adjusted[i];
+            let target = (n_visits - n_forced).max(0);
+            adjusted[i].1 = target;
+        }
+        let _ = raw_argmax_visits;
+
+        let total: i64 = adjusted.iter().map(|e| e.1).sum();
+        if total <= 0 {
+            return policy;
+        }
+        let inv = 1.0 / total as f32;
+        for (ci, n, _) in &adjusted {
+            let child = &self.nodes[*ci];
+            if let Some(mv_idx) = child.action_index
+                && mv_idx < num_indices
+            {
+                policy[mv_idx] = (*n as f32) * inv;
+            }
+        }
+        policy
+    }
+
+    /// Select the best root child using LCB: `Q(a) − 1.96·sqrt(Var(a)/N(a))`.
+    /// Children with fewer than 2 visits fall back to raw Q.
+    pub fn lcb_best_move(&self) -> Option<Move> {
+        if self.nodes.is_empty() {
+            return None;
+        }
+        let root = &self.nodes[0];
+        if root.children.is_empty() {
+            return None;
+        }
+        let mut best_idx = root.children[0];
+        let mut best_score = f64::NEG_INFINITY;
+        for &ci in &root.children {
+            let c = &self.nodes[ci];
+            if c.visit_count == 0 {
+                continue;
+            }
+            let q = -c.q_value();
+            let lcb = if c.visit_count < 2 {
+                q
+            } else {
+                let var = c.variance().max(0.0);
+                q - LCB_Z_95 * (var / c.visit_count as f64).sqrt()
+            };
+            if lcb > best_score {
+                best_score = lcb;
+                best_idx = ci;
+            }
+        }
+        self.nodes[best_idx].action
+    }
+
+    /// Record a root-side win-probability observation for the resignation
+    /// tracker. Must be called with the STM's point-of-view `p_win` for each
+    /// actual move played. Returns `true` when the rolling window has filled
+    /// with consecutive below-threshold values and resignation is warranted.
+    pub fn record_and_check_resign(&mut self, stm: Color, p_win: f32) -> bool {
+        if !self.config.resign.enabled {
+            return false;
+        }
+        let side = stm.index();
+        let cfg = self.config.resign.clone();
+        let hist = &mut self.resign_history[side];
+        hist.push_back(p_win);
+        while hist.len() > cfg.k {
+            hist.pop_front();
+        }
+        hist.len() == cfg.k && hist.iter().all(|&p| p < cfg.v_resign)
+    }
+
+    /// Reset the resignation tracker (e.g. at the start of a new game).
+    pub fn reset_resign_history(&mut self) {
+        self.resign_history[0].clear();
+        self.resign_history[1].clear();
+    }
+}
+
+/// Outcome of a `run_pcr` call.
+#[derive(Clone, Debug)]
+pub struct PcrOutcome {
+    /// The move chosen to actually play.
+    pub best_move: Move,
+    /// Root value estimate from the search.
+    pub value: f32,
+    /// Total arena nodes at the end of the search.
+    pub nodes_searched: u32,
+    /// True iff this call ran a full (high-sim, noisy) search; only full
+    /// searches should be recorded as training positions.
+    pub was_full_search: bool,
+    /// PTP-pruned visit-count policy target. `None` for fast searches.
+    pub policy_target: Option<Vec<f32>>,
 }
 
 // ---------------------------------------------------------------------------
 // Dirichlet sampling
 // ---------------------------------------------------------------------------
+
+/// Apply shaped Dirichlet noise to the priors in `children_info`.
+///
+/// Half the noise mass is drawn from `Dir(alpha/2)` across all legal moves
+/// (a broad, almost-uniform blind-spot distribution); the other half is
+/// concentrated uniformly on the top-`K` children ranked by prior probability.
+/// This is the notes/02 §7 "shaped Dirichlet" recipe.
+fn apply_shaped_dirichlet_noise(
+    children_info: &mut [(Move, usize, f32)],
+    epsilon: f32,
+    alpha: f64,
+    top_k: usize,
+) {
+    let n = children_info.len();
+    if n == 0 {
+        return;
+    }
+
+    let broad = sample_dirichlet(n, alpha * 0.5);
+
+    let mut idxs: Vec<usize> = (0..n).collect();
+    idxs.sort_by(|&a, &b| {
+        children_info[b]
+            .2
+            .partial_cmp(&children_info[a].2)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let k = top_k.min(n);
+    let mut peaked = vec![0.0f64; n];
+    if k > 0 {
+        let share = 1.0 / k as f64;
+        for &i in idxs.iter().take(k) {
+            peaked[i] = share;
+        }
+    }
+
+    for i in 0..n {
+        let noise = 0.5 * broad[i] + 0.5 * peaked[i];
+        children_info[i].2 = (1.0 - epsilon) * children_info[i].2 + epsilon * noise as f32;
+    }
+}
 
 /// Sample from a symmetric Dirichlet distribution Dir(alpha, ..., alpha)
 /// with `n` components.
@@ -1289,10 +1847,10 @@ mod tests {
         // The gap is from the first batch where root wasn't yet expanded —
         // up to batch_size leaves may all land on the unexpanded root.
         let gap = sims - children_visits;
+        let bs = search.config().batch_size as u32;
         assert!(
-            gap <= search.batch_size as u32,
-            "visit gap ({gap}) should be at most batch_size ({})",
-            search.batch_size,
+            gap <= bs,
+            "visit gap ({gap}) should be at most batch_size ({bs})",
         );
     }
 
@@ -1336,5 +1894,258 @@ mod tests {
             "Only {visited}/{num_children} children visited — virtual loss \
              may be funnelling visits into too few children",
         );
+    }
+
+    // ---------------------------------------------------------------
+    // v2 rebuild: config, dynamic PUCT, shaped Dirichlet, PCR, PTP,
+    // LCB, temperature decay, 2-fold draw, TT key
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn dynamic_puct_formula_known_points() {
+        let c2 = 19652.0f32;
+        let v0 = dynamic_c_puct(2.5, c2, 0);
+        let expected0 = 2.5 + ((1.0 + 0.0 + c2) / c2).ln();
+        assert!((v0 - expected0).abs() < 1e-5, "N=0: got {v0}, want {expected0}");
+        assert!(v0 > 2.5 && v0 < 2.5001);
+
+        let v1k = dynamic_c_puct(2.5, c2, 1_000);
+        let expected1k = 2.5 + ((1.0 + 1000.0 + c2) / c2).ln();
+        assert!((v1k - expected1k).abs() < 1e-5);
+
+        let v_large = dynamic_c_puct(3.5, c2, 200_000);
+        assert!(v_large > 3.5 + 1.5 && v_large < 3.5 + 3.0);
+    }
+
+    #[test]
+    fn search_config_defaults_match_spec() {
+        let t = SearchConfig::training();
+        assert_eq!(t.c_puct, 2.5);
+        assert_eq!(t.c_puct_root, 3.5);
+        assert_eq!(t.c2, 19652.0);
+        assert_eq!(t.fpu_reduction, 0.0);
+        assert_eq!(t.virtual_loss, 1.0);
+        assert_eq!(t.forced_playout_k, 2.0);
+        assert!(t.two_fold_as_draw);
+        assert!(t.dirichlet.is_some());
+        assert!(!t.use_lcb);
+
+        let e = SearchConfig::eval();
+        assert_eq!(e.fpu_reduction, 0.2);
+        assert!(e.dirichlet.is_none());
+        assert_eq!(e.forced_playout_k, 0.0);
+        assert!(e.use_lcb);
+        assert_eq!(e.pcr.p_full, 1.0);
+    }
+
+    #[test]
+    fn temperature_schedule_decays_and_clamps() {
+        let ts = TemperatureSchedule::default();
+        assert!((ts.temperature_at(0) - 1.0).abs() < 1e-5);
+        let t10 = ts.temperature_at(10);
+        assert!(t10 > 0.1 && t10 < 1.0);
+        let t100 = ts.temperature_at(50);
+        assert!(t100 >= ts.tau_min - 1e-6);
+        assert_eq!(ts.temperature_at(60), 0.0);
+        assert_eq!(ts.temperature_at(999), 0.0);
+    }
+
+    #[test]
+    fn shaped_dirichlet_returns_valid_distribution() {
+        let legal = GameState::new().legal_moves();
+        assert!(!legal.is_empty());
+        let uniform_prior = 1.0 / legal.len() as f32;
+        let mut ci: Vec<(Move, usize, f32)> = legal
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (*m, i, uniform_prior))
+            .collect();
+        apply_shaped_dirichlet_noise(&mut ci, 0.25, 0.25, 10);
+        let sum: f32 = ci.iter().map(|e| e.2).sum();
+        assert!((sum - 1.0).abs() < 1e-3, "shaped dirichlet sum={sum}");
+        for (_, _, p) in &ci {
+            assert!(*p >= 0.0 && *p <= 1.0);
+        }
+    }
+
+    #[test]
+    fn forced_playout_count_formula() {
+        let k = 2.0f64;
+        let p = 0.25f64;
+        let n = 400u32;
+        let expected = (k * p * (n as f64).sqrt()).ceil() as u32;
+        assert_eq!(expected, 10);
+        let p2 = 0.01f64;
+        let expected2 = (k * p2 * (n as f64).sqrt()).ceil() as u32;
+        assert_eq!(expected2, 1);
+    }
+
+    #[test]
+    fn pcr_branches_on_coin() {
+        use rand::SeedableRng;
+        use rand::rngs::StdRng;
+
+        let state = GameState::new();
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        search.config_mut().pcr = PcrConfig {
+            p_full: 0.5,
+            n_full: 40,
+            n_fast: 20,
+        };
+        search.config_mut().dirichlet = None;
+
+        let mut rng_always_full = StdRng::seed_from_u64(0);
+        let mut full_count = 0;
+        let mut fast_count = 0;
+        for _ in 0..20 {
+            let outcome = search.run_pcr(&state, 0, &mut rng_always_full);
+            if outcome.was_full_search {
+                full_count += 1;
+                assert!(outcome.policy_target.is_some());
+            } else {
+                fast_count += 1;
+                assert!(outcome.policy_target.is_none());
+            }
+        }
+        assert!(full_count > 0 && fast_count > 0, "both branches should fire");
+    }
+
+    #[test]
+    fn ptp_hand_computed_example() {
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        search.config_mut().forced_playout_k = 2.0;
+
+        let mut root = MctsNode::new(None, None, 1.0);
+        root.visit_count = 100;
+        root.is_expanded = true;
+        search.nodes.push(root);
+
+        let mut make_child = |action_idx: usize, visits: u32, prior: f32| {
+            let mut c = MctsNode::new(None, Some(action_idx), prior);
+            c.visit_count = visits;
+            search.nodes.push(c);
+            let ci = search.nodes.len() - 1;
+            search.nodes[0].children.push(ci);
+        };
+        make_child(0, 70, 0.6);
+        make_child(1, 20, 0.3);
+        make_child(2, 10, 0.1);
+
+        let policy = search.policy_target_pruned();
+        let p0 = policy[0];
+        let p1 = policy[1];
+        let p2 = policy[2];
+
+        let sqrt_n = 10.0f64;
+        let n_forced_1 = (2.0 * 0.3f32 as f64 * sqrt_n).ceil() as i64;
+        let n_forced_2 = (2.0 * 0.1f32 as f64 * sqrt_n).ceil() as i64;
+        let adj1 = (20 - n_forced_1).max(0);
+        let adj2 = (10 - n_forced_2).max(0);
+
+        let total = 70.0 + adj1 as f64 + adj2 as f64;
+        let exp0 = 70.0 / total;
+        let exp1 = adj1 as f64 / total;
+        let exp2 = adj2 as f64 / total;
+        assert!(
+            (p0 as f64 - exp0).abs() < 1e-5,
+            "p0={p0} exp={exp0} p1={p1} exp1={exp1} p2={p2} exp2={exp2}"
+        );
+        assert!((p1 as f64 - exp1).abs() < 1e-5);
+        assert!((p2 as f64 - exp2).abs() < 1e-5);
+        assert!(p0 > p1 && p0 > p2, "argmax must be preserved");
+    }
+
+    #[test]
+    fn lcb_picks_lower_variance_child() {
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let legal = GameState::new().legal_moves();
+        assert!(legal.len() >= 2);
+
+        let mut root = MctsNode::new(None, None, 1.0);
+        root.is_expanded = true;
+        search.nodes.push(root);
+
+        let mut c_a = MctsNode::new(Some(legal[0]), Some(0), 0.5);
+        c_a.visit_count = 100;
+        c_a.value_sum = -60.0;
+        c_a.m2 = 1.0;
+        search.nodes.push(c_a);
+        search.nodes[0].children.push(1);
+
+        let mut c_b = MctsNode::new(Some(legal[1]), Some(1), 0.5);
+        c_b.visit_count = 100;
+        c_b.value_sum = -62.0;
+        c_b.m2 = 0.01;
+        search.nodes.push(c_b);
+        search.nodes[0].children.push(2);
+
+        let best = search.lcb_best_move().unwrap();
+        assert_eq!(best.from, legal[1].from);
+        assert_eq!(best.to, legal[1].to);
+    }
+
+    #[test]
+    fn tt_key_discriminates_by_repetition() {
+        let state = GameState::new();
+        let k0 = TtKey::from_state(&state);
+        let k0_again = TtKey::from_state(&state);
+        assert_eq!(k0, k0_again);
+        let k_rep = TtKey {
+            repetition: 1,
+            ..k0
+        };
+        assert_ne!(k0, k_rep);
+        let mut map: HashMap<TtKey, i32> = HashMap::new();
+        map.insert(k0, 1);
+        map.insert(k_rep, 2);
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn two_fold_as_draw_runs_without_hang() {
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        search.config_mut().two_fold_as_draw = true;
+        search.config_mut().batch_size = 1;
+        let state = GameState::new();
+        let result = search.search(&state, 100);
+        assert!(result.nodes_searched > 0);
+    }
+
+    #[test]
+    fn resignation_triggers_after_k_low_values() {
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        search.config_mut().resign = ResignConfig {
+            enabled: true,
+            v_resign: 0.05,
+            k: 5,
+        };
+        for _ in 0..4 {
+            assert!(!search.record_and_check_resign(Color::White, 0.01));
+        }
+        assert!(search.record_and_check_resign(Color::White, 0.01));
+    }
+
+    #[test]
+    fn resignation_resets_on_high_value() {
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        search.config_mut().resign = ResignConfig {
+            enabled: true,
+            v_resign: 0.05,
+            k: 5,
+        };
+        for _ in 0..4 {
+            assert!(!search.record_and_check_resign(Color::White, 0.01));
+        }
+        assert!(!search.record_and_check_resign(Color::White, 0.5));
+        assert!(!search.record_and_check_resign(Color::White, 0.01));
+    }
+
+    #[test]
+    fn resignation_disabled_never_fires() {
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        search.config_mut().resign.enabled = false;
+        for _ in 0..20 {
+            assert!(!search.record_and_check_resign(Color::White, 0.0));
+        }
     }
 }
