@@ -12,11 +12,11 @@ use hexchess_engine::mcts::{
     DirichletConfig, Evaluator, HeuristicEvaluator, MctsSearch as EngineSearch,
     WeightedHeuristicEvaluator,
 };
-use rand::SeedableRng;
-use rand::rngs::StdRng;
 use hexchess_engine::minimax;
 use hexchess_engine::movegen::{self, Move as EngineMove};
 use hexchess_engine::serialization;
+use rand::SeedableRng;
+use rand::rngs::StdRng;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -699,7 +699,10 @@ impl PyMctsSearch {
     ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
         let outcome = self.search.run_pcr(&game.state, ply, &mut self.rng);
         let dict = pyo3::types::PyDict::new(py);
-        dict.set_item("best_move", PyMove::from_engine(&outcome.best_move).into_pyobject(py)?)?;
+        dict.set_item(
+            "best_move",
+            PyMove::from_engine(&outcome.best_move).into_pyobject(py)?,
+        )?;
         dict.set_item("value", outcome.value)?;
         dict.set_item("nodes", outcome.nodes_searched)?;
         dict.set_item("was_full_search", outcome.was_full_search)?;
