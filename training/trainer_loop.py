@@ -28,8 +28,43 @@ from torch.utils.data import DataLoader, IterableDataset
 from . import storage
 from .config import AsyncConfig
 from .export import export_to_onnx
+from .losses import (
+    LossBreakdown,
+    LossWeights,
+    assert_healthy_initial_losses,
+    compute_losses,
+)
 from .model import build_model
 from .slack import notify_training_cycle
+
+
+def _build_targets(
+    policies: torch.Tensor,
+    outcomes: torch.Tensor,
+) -> dict[str, torch.Tensor]:
+    """Build a targets dict for compute_losses from the current .npz schema.
+
+    The chunk-5 worker rewrite will add real MLH / STV / aux-policy
+    targets. Until then we supply neutral placeholders so those heads
+    still produce gradients (weighted small per LossWeights) without
+    biasing the trunk.
+    """
+    batch = policies.shape[0]
+    num_moves = policies.shape[1]
+    device = policies.device
+    # TODO(chunk 5): replace placeholders with real targets from worker.
+    mlh_placeholder = torch.zeros(batch, device=device)
+    stv_placeholder = outcomes.detach().clone()  # terminal ≈ horizon-8 fallback
+    aux_policy_placeholder = torch.full(
+        (batch, num_moves), 1.0 / num_moves, device=device
+    )
+    return {
+        "policy": policies,
+        "wdl": outcomes,
+        "mlh": mlh_placeholder,
+        "stv": stv_placeholder,
+        "aux_policy": aux_policy_placeholder,
+    }
 
 
 def _read_model_version() -> int:
@@ -239,6 +274,10 @@ def _run_bootstrap(cfg: AsyncConfig, model: torch.nn.Module,
     total_steps = 0
     cumulative_policy_loss = 0.0
     cumulative_value_loss = 0.0
+    cumulative_mlh_loss = 0.0
+    cumulative_stv_loss = 0.0
+    cumulative_aux_loss = 0.0
+    loss_weights = LossWeights()
     t0 = time.time()
 
     while total_steps < total_steps_target:
@@ -251,36 +290,42 @@ def _run_bootstrap(cfg: AsyncConfig, model: torch.nn.Module,
             outcomes = outcomes.to(device)
 
             preds = model(boards)
-            pred_policy = preds["policy"]
-            pred_wdl = preds["wdl"]
-            # preds["mlh"], preds["stv"], preds["aux_policy"] computed but
-            # unused in loss until chunk 4 wires up the real loss module.
-
-            log_probs = torch.log_softmax(pred_policy, dim=1)
-            policy_loss = -torch.sum(policies * log_probs, dim=1).mean()
-
-            log_probs_v = torch.log_softmax(pred_wdl, dim=1)
-            value_loss = -torch.sum(outcomes * log_probs_v, dim=1).mean()
-
-            total_loss = policy_loss + value_loss
+            # TODO(chunk 5): pass real legal_mask / mlh / stv / aux targets
+            # from the rewritten worker. For now, the worker still emits
+            # only policy + outcomes, so mlh/stv/aux use placeholders.
+            targets = _build_targets(policies, outcomes)
+            breakdown: LossBreakdown = compute_losses(
+                preds, targets, weights=loss_weights, debug=(total_steps == 0),
+            )
+            if total_steps == 0:
+                try:
+                    assert_healthy_initial_losses(breakdown, num_legal_moves=40)
+                except AssertionError as exc:
+                    logger.warning("Healthy-initial-loss check failed: {}", exc)
 
             optimizer.zero_grad()
-            total_loss.backward()
+            breakdown.total.backward()
             optimizer.step()
 
-            cumulative_policy_loss += policy_loss.item()
-            cumulative_value_loss += value_loss.item()
+            cumulative_policy_loss += breakdown.policy.item()
+            cumulative_value_loss += breakdown.value.item()
+            cumulative_mlh_loss += breakdown.mlh.item()
+            cumulative_stv_loss += breakdown.stv.item()
+            cumulative_aux_loss += breakdown.aux_policy.item()
             total_steps += 1
 
             if total_steps % 100 == 0:
                 elapsed = time.time() - t0
                 avg_p = cumulative_policy_loss / total_steps
                 avg_v = cumulative_value_loss / total_steps
+                avg_mlh = cumulative_mlh_loss / total_steps
+                avg_stv = cumulative_stv_loss / total_steps
+                avg_aux = cumulative_aux_loss / total_steps
                 logger.info(
-                    "  step {:>5}/{:,} | loss: policy={:.4f} value={:.4f} "
-                    "total={:.4f} | {:.1f} steps/s | {:.0f}s elapsed",
+                    "  step {:>5}/{:,} | policy={:.4f} value={:.4f} "
+                    "mlh={:.4f} stv={:.4f} aux={:.4f} | {:.1f} steps/s | {:.0f}s",
                     total_steps, total_steps_target,
-                    avg_p, avg_v, avg_p + avg_v,
+                    avg_p, avg_v, avg_mlh, avg_stv, avg_aux,
                     total_steps / elapsed, elapsed,
                 )
 
@@ -420,6 +465,10 @@ def run_trainer(cfg: AsyncConfig) -> None:
         step = 0
         cycle_policy_loss = 0.0
         cycle_value_loss = 0.0
+        cycle_mlh_loss = 0.0
+        cycle_stv_loss = 0.0
+        cycle_aux_loss = 0.0
+        loss_weights = LossWeights()
         train_t0 = time.time()
 
         logger.info("Training for {} steps (batch_size={})...", cfg.steps_per_cycle, cfg.batch_size)
@@ -442,23 +491,28 @@ def run_trainer(cfg: AsyncConfig) -> None:
                 outcomes = outcomes.to(device)
 
                 preds = model(boards)
-                pred_policy = preds["policy"]
-                pred_wdl = preds["wdl"]
-
-                log_probs = torch.log_softmax(pred_policy, dim=1)
-                policy_loss = -torch.sum(policies * log_probs, dim=1).mean()
-
-                log_probs_v = torch.log_softmax(pred_wdl, dim=1)
-                value_loss = -torch.sum(outcomes * log_probs_v, dim=1).mean()
-
-                total_loss = policy_loss + value_loss
+                # TODO(chunk 5): supply real legal_mask / mlh / stv / aux
+                # targets from the rewritten worker.
+                targets = _build_targets(policies, outcomes)
+                breakdown: LossBreakdown = compute_losses(
+                    preds, targets, weights=loss_weights,
+                    debug=(total_steps_all_time == 0 and step == 0),
+                )
+                if total_steps_all_time == 0 and step == 0:
+                    try:
+                        assert_healthy_initial_losses(breakdown, num_legal_moves=40)
+                    except AssertionError as exc:
+                        logger.warning("Healthy-initial-loss check failed: {}", exc)
 
                 optimizer.zero_grad()
-                total_loss.backward()
+                breakdown.total.backward()
                 optimizer.step()
 
-                cycle_policy_loss += policy_loss.item()
-                cycle_value_loss += value_loss.item()
+                cycle_policy_loss += breakdown.policy.item()
+                cycle_value_loss += breakdown.value.item()
+                cycle_mlh_loss += breakdown.mlh.item()
+                cycle_stv_loss += breakdown.stv.item()
+                cycle_aux_loss += breakdown.aux_policy.item()
                 step += 1
                 total_steps_all_time += 1
                 bucket.consume()
@@ -468,11 +522,14 @@ def run_trainer(cfg: AsyncConfig) -> None:
                     steps_per_sec = step / elapsed if elapsed > 0 else 0
                     avg_p = cycle_policy_loss / step
                     avg_v = cycle_value_loss / step
+                    avg_mlh = cycle_mlh_loss / step
+                    avg_stv = cycle_stv_loss / step
+                    avg_aux = cycle_aux_loss / step
                     logger.info(
-                        "  step {:>5}/{} | loss: policy={:.4f} value={:.4f} total={:.4f} | "
-                        "{:.1f} steps/s | {:.0f}s elapsed",
-                        step, cfg.steps_per_cycle, avg_p, avg_v, avg_p + avg_v,
-                        steps_per_sec, elapsed,
+                        "  step {:>5}/{} | policy={:.4f} value={:.4f} "
+                        "mlh={:.4f} stv={:.4f} aux={:.4f} | {:.1f} steps/s | {:.0f}s",
+                        step, cfg.steps_per_cycle, avg_p, avg_v,
+                        avg_mlh, avg_stv, avg_aux, steps_per_sec, elapsed,
                     )
 
                 if step % cfg.reload_interval == 0 and step < cfg.steps_per_cycle:
