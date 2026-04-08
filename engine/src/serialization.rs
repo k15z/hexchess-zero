@@ -738,6 +738,41 @@ mod tests {
         );
     }
 
+    /// Golden hash guarding the move-index bijection against accidental changes.
+    ///
+    /// The move table must stay byte-identical across commits — any change
+    /// invalidates every existing training sample and every trained model
+    /// (policy head outputs are indexed by this table). If this test fails,
+    /// you almost certainly did not mean to change the move encoding. If you
+    /// really do need to change it, bump a run_id / model version and update
+    /// this constant deliberately.
+    #[test]
+    fn test_move_table_hash_is_stable() {
+        let n = num_move_indices();
+        // Simple deterministic FNV-1a-style 64-bit rolling hash over the
+        // full (from_idx, to_idx, promotion_ordinal) sequence.
+        let mut h: u64 = 0xcbf29ce484222325;
+        for i in 0..n {
+            let e = &MOVE_INDEX.entries[i];
+            for byte in [e.from_idx, e.to_idx, promotion_ordinal(e.promotion)] {
+                h ^= byte as u64;
+                h = h.wrapping_mul(0x100000001b3);
+            }
+        }
+        const EXPECTED_COUNT: usize = 4206;
+        const EXPECTED_HASH: u64 = 0x84d424aff5f7c2fd;
+        // Print on failure so an intentional update is a one-line change.
+        assert_eq!(
+            (n, h),
+            (EXPECTED_COUNT, EXPECTED_HASH),
+            "move table drift detected: got count={}, hash=0x{:016x} — \
+             if this change is intentional, update EXPECTED_COUNT/EXPECTED_HASH \
+             and bump the training run_id",
+            n,
+            h
+        );
+    }
+
     #[test]
     fn test_all_indices_are_unique() {
         let n = num_move_indices();
