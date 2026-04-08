@@ -736,6 +736,19 @@ impl PyMctsSearch {
         }
     }
 
+    /// Return the opponent-reply visit distribution from the previous
+    /// search as a numpy float32 array of length `num_move_indices()`, or
+    /// `None` if unavailable (no search yet, or the best child is
+    /// unexpanded).
+    fn aux_opponent_policy<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> Option<Bound<'py, numpy::PyArray1<f32>>> {
+        self.search
+            .aux_opponent_policy()
+            .map(|v| numpy::PyArray1::from_vec(py, v))
+    }
+
     /// Transposition-table stats.
     fn tt_stats(&self) -> PyTtStats {
         let s = self.search.tt_stats();

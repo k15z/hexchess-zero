@@ -1277,6 +1277,47 @@ impl MctsSearch {
         policy
     }
 
+    /// Build an auxiliary policy target representing the visit distribution
+    /// over the opponent's reply (the grandchildren of the root, from the
+    /// root's most-visited child). Returns `None` if the root has no
+    /// children, or the most-visited child is unexpanded / has no visits.
+    pub fn aux_opponent_policy(&self) -> Option<Vec<f32>> {
+        if self.nodes.is_empty() {
+            return None;
+        }
+        let root = &self.nodes[0];
+        if root.children.is_empty() {
+            return None;
+        }
+        let best_child_idx = *root
+            .children
+            .iter()
+            .max_by_key(|&&i| self.nodes[i].visit_count)?;
+        let best_child = &self.nodes[best_child_idx];
+        if !best_child.is_expanded || best_child.visit_count == 0 {
+            return None;
+        }
+        let num_indices = serialization::num_move_indices();
+        let mut out = vec![0.0f32; num_indices];
+        let mut total: u32 = 0;
+        for &gi in &best_child.children {
+            total += self.nodes[gi].visit_count;
+        }
+        if total == 0 {
+            return Some(out);
+        }
+        let inv = 1.0 / total as f32;
+        for &gi in &best_child.children {
+            let gc = &self.nodes[gi];
+            if let Some(mv_idx) = gc.action_index
+                && mv_idx < num_indices
+            {
+                out[mv_idx] = gc.visit_count as f32 * inv;
+            }
+        }
+        Some(out)
+    }
+
     /// Select the best root child using LCB: `Q(a) − 1.96·sqrt(Var(a)/N(a))`.
     /// Children with fewer than 2 visits fall back to raw Q.
     pub fn lcb_best_move(&self) -> Option<Move> {
@@ -2212,6 +2253,18 @@ mod tests {
         let a = run_one();
         let b = run_one();
         assert_eq!(a, b, "seeded searches must be deterministic");
+    }
+
+    #[test]
+    fn aux_opponent_policy_sums_to_one() {
+        let state = GameState::new();
+        let mut s = MctsSearch::new(Box::new(HeuristicEvaluator));
+        s.config_mut().batch_size = 1;
+        s.set_rng_seed(7);
+        let _ = s.search(&state, 128);
+        let aux = s.aux_opponent_policy().expect("should have aux");
+        let sum: f32 = aux.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-4, "aux sum = {sum}");
     }
 
     #[test]
