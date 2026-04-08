@@ -149,6 +149,12 @@ fn mcts_finds_checkmate_in_1() {
     );
 
     let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+    // Strict tactical test → use eval config (no Dirichlet noise, no shuffling).
+    // The training default injects noise into the root prior which makes
+    // mate-finding probabilistic at low sim counts; eval config is what
+    // production uses for match play and benchmark suites.
+    *search.config_mut() = hexchess_engine::mcts::SearchConfig::eval();
+    search.set_rng_seed(0xC0DE_BEEF);
     let result = search.search(&game, 500);
 
     assert!(
