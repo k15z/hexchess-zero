@@ -28,7 +28,7 @@ from torch.utils.data import DataLoader, IterableDataset
 from . import storage
 from .config import AsyncConfig
 from .logging_setup import log_event, setup_json_logging
-from .data_v2 import V2Batch, load_v2_npz
+from .data_v2 import MIRROR_INDICES, V2Batch, load_v2_npz, mirror_batch
 from .export import export_to_onnx
 from .health_checks import (
     HealthCheckError,
@@ -370,6 +370,10 @@ class ReplayBufferV2(IterableDataset):
                 b = load_v2_npz(chosen)
             except (OSError, ValueError, KeyError):
                 continue
+            # Mirror augmentation: 50% of files get horizontally mirrored
+            # via the Rust mirror table. Cheap 2x effective data multiplier.
+            if MIRROR_INDICES is not None and random.random() < 0.5:
+                b = mirror_batch(b)
             for sample in _yield_from_batch(b):
                 shuffle_buf.append(sample)
             if len(shuffle_buf) >= self.SHUFFLE_BUFFER_SIZE:
