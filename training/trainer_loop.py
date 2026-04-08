@@ -416,7 +416,7 @@ def _run_bootstrap(cfg: AsyncConfig, model: torch.nn.Module,
 
     def reload_buffer():
         ds = ReplayBuffer(cfg.data_cache_dir / "imitation",
-                          max_positions=cfg.replay_buffer_size,
+                          max_positions=cfg.min_positions_to_start,
                           s3_prefix=storage.IMITATION_PREFIX)
         dl = DataLoader(ds, batch_size=cfg.batch_size, num_workers=0)
         return ds, dl
@@ -655,6 +655,7 @@ def _try_gate_promotion(
 def run_trainer(cfg: AsyncConfig) -> None:
     """Run the continuous trainer loop."""
     cfg.ensure_cache_dirs()
+    cfg.validate()
     setup_json_logging("trainer", run_id=cfg.run_id)
     log_event("trainer.start", run_id=cfg.run_id,
               steps_per_cycle=cfg.steps_per_cycle,
