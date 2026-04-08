@@ -27,6 +27,7 @@ from torch.utils.data import DataLoader, IterableDataset
 
 from . import storage
 from .config import AsyncConfig
+from .logging_setup import log_event, setup_json_logging
 from .data_v2 import V2Batch, load_v2_npz
 from .export import export_to_onnx
 from .health_checks import (
@@ -415,7 +416,7 @@ def _run_bootstrap(cfg: AsyncConfig, model: torch.nn.Module,
 
     def reload_buffer():
         ds = ReplayBuffer(cfg.data_cache_dir / "imitation",
-                          max_positions=cfg.replay_buffer_size,
+                          max_positions=cfg.min_positions_to_start,
                           s3_prefix=storage.IMITATION_PREFIX)
         dl = DataLoader(ds, batch_size=cfg.batch_size, num_workers=0)
         return ds, dl
@@ -654,6 +655,11 @@ def _try_gate_promotion(
 def run_trainer(cfg: AsyncConfig) -> None:
     """Run the continuous trainer loop."""
     cfg.ensure_cache_dirs()
+    cfg.validate()
+    setup_json_logging("trainer", run_id=cfg.run_id)
+    log_event("trainer.start", run_id=cfg.run_id,
+              steps_per_cycle=cfg.steps_per_cycle,
+              batch_size=cfg.batch_size)
 
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -844,6 +850,24 @@ def run_trainer(cfg: AsyncConfig) -> None:
                     swa_buf.append(model.state_dict())
                     samples_since_last_snapshot = 0
                     logger.info("  SWA snapshot taken ({} in buffer)", len(swa_buf))
+
+                # Tier-1 per-step structured event (plan §7.2).
+                log_event(
+                    "train.step",
+                    step_id=total_steps_all_time,
+                    cycle=cycle,
+                    version=current_version,
+                    wall_ms=int((time.time() - train_t0) * 1000),
+                    loss_policy=float(breakdown.policy.item()),
+                    loss_value=float(breakdown.value.item()),
+                    loss_mlh=float(breakdown.mlh.item()),
+                    loss_stv=float(breakdown.stv.item()),
+                    loss_aux_policy=float(breakdown.aux_policy.item()),
+                    loss_total=float(breakdown.total.item()),
+                    optim_lr=float(lr),
+                    data_window_size=int(dataset.window_size),
+                    data_cumulative_positions=int(n_total),
+                )
 
                 if step % 100 == 0 or step == cfg.steps_per_cycle:
                     elapsed = time.time() - train_t0
