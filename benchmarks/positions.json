@@ -1,0 +1,69 @@
+{
+  "_comment": "Hand-curated benchmark positions for regression detection (plan §6.3). Each position is reached by applying `moves` in sequence from the Glinski initial position. Moves use the binding's notation (e.g. 'f1-f2', 'f10-f11=Q'). Fields: id, category, description, moves (list[str]), expected_best_move (optional, for regression only), expected_wdl (optional, [W,D,L] hint). TODO: expand tactical/endgame entries with hand-verified mates and draws.",
+  "positions": [
+    {
+      "id": "opening_start",
+      "category": "opening",
+      "description": "Initial Glinski position; 51 legal moves; a standard sanity check.",
+      "moves": []
+    },
+    {
+      "id": "opening_e_pawn",
+      "category": "opening",
+      "description": "After a symmetric center pawn advance (1. f5-f6 f7-f6 — TODO validate notation).",
+      "moves": ["f5-f6"]
+    },
+    {
+      "id": "opening_knight",
+      "category": "opening",
+      "description": "After an opening knight development (TODO validate move).",
+      "moves": ["d1-c3"]
+    },
+    {
+      "id": "tactical_placeholder_1",
+      "category": "tactical",
+      "description": "TODO: hand-verified mate-in-2. Until populated, this entry is skipped by the benchmark runner.",
+      "moves": [],
+      "skip": true
+    },
+    {
+      "id": "tactical_placeholder_2",
+      "category": "tactical",
+      "description": "TODO: hand-verified mate-in-3 with a forcing sequence.",
+      "moves": [],
+      "skip": true
+    },
+    {
+      "id": "endgame_placeholder_1",
+      "category": "endgame",
+      "description": "TODO: known-won K+R vs K endgame (or Glinski equivalent).",
+      "moves": [],
+      "skip": true
+    },
+    {
+      "id": "endgame_placeholder_2",
+      "category": "endgame",
+      "description": "TODO: known-drawn K+B vs K endgame.",
+      "moves": [],
+      "skip": true
+    },
+    {
+      "id": "quiet_middle_1",
+      "category": "middlegame",
+      "description": "Quiet middlegame — opening position stands in until TODO populates real fixtures.",
+      "moves": []
+    },
+    {
+      "id": "quiet_middle_2",
+      "category": "middlegame",
+      "description": "Quiet middlegame placeholder.",
+      "moves": []
+    },
+    {
+      "id": "quiet_middle_3",
+      "category": "middlegame",
+      "description": "Quiet middlegame placeholder.",
+      "moves": []
+    }
+  ]
+}
