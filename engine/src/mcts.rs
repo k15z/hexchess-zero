@@ -3,7 +3,10 @@
 //! Uses arena-style allocation with nodes stored in a `Vec<MctsNode>` and
 //! referenced by index, avoiding pointer overhead and improving cache locality.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
+
+/// 95% one-sided normal z-score, used for LCB confidence intervals.
+const LCB_Z_95: f64 = 1.96;
 
 use crate::board::Color;
 use crate::eval;
@@ -361,9 +364,6 @@ struct MctsNode {
     m2: f64,
     prior: f32,
     is_expanded: bool,
-    /// Zobrist hash of the position this node represents (for 2-fold
-    /// path-repetition detection).
-    hash: u64,
 }
 
 impl MctsNode {
@@ -377,7 +377,6 @@ impl MctsNode {
             m2: 0.0,
             prior,
             is_expanded: false,
-            hash: 0,
         }
     }
 
@@ -445,13 +444,26 @@ impl TtKey {
     pub fn from_state(state: &GameState) -> Self {
         Self {
             zobrist: state.board.zobrist_hash,
-            side: match state.board.side_to_move {
-                Color::White => 0,
-                Color::Black => 1,
-            },
+            side: state.board.side_to_move.index() as u8,
             repetition: state.repetition_count(),
         }
     }
+}
+
+/// Outcome of walking the tree from root to a leaf in one simulation.
+enum DescendOutcome {
+    /// Reached an unexpanded leaf (or a terminal state).
+    Leaf,
+    /// Selection hit a position already seen earlier on the same descent
+    /// path, which `two_fold_as_draw` treats as an immediate draw.
+    TwoFoldDraw,
+}
+
+struct LeafInfo {
+    path: Vec<usize>,
+    leaf_state: Option<GameState>,
+    terminal_value: f64,
+    key: TtKey,
 }
 
 pub struct MctsSearch {
@@ -465,6 +477,10 @@ pub struct MctsSearch {
     /// Rolling buffer of STM P(W) at the root for the last `k` moves of
     /// each side, used by `should_resign`.
     resign_history: [VecDeque<f32>; 2],
+    /// Reusable scratch path buffer for `simulate` (avoids per-sim alloc).
+    path_scratch: Vec<usize>,
+    /// Reusable buffer of leaves for `simulate_batched`.
+    leaves_scratch: Vec<LeafInfo>,
 }
 
 impl MctsSearch {
@@ -478,6 +494,8 @@ impl MctsSearch {
             tt_misses: 0,
             tt_clears: 0,
             resign_history: [VecDeque::new(), VecDeque::new()],
+            path_scratch: Vec::new(),
+            leaves_scratch: Vec::new(),
         }
     }
 
@@ -496,6 +514,10 @@ impl MctsSearch {
         &mut self.config
     }
 
+    /// Compatibility shim for legacy bindings that only knew a single
+    /// `c_puct`. Sets `c_puct` to the given value and `c_puct_root` to
+    /// `c_puct + 1.0` (the historical offset). New code should prefer
+    /// `config_mut()` and set both fields explicitly.
     pub fn set_c_puct(&mut self, c_puct: f32) {
         self.config.c_puct = c_puct;
         self.config.c_puct_root = c_puct + 1.0;
@@ -543,7 +565,7 @@ impl MctsSearch {
 
     /// Run MCTS for `num_simulations` iterations (greedy, temperature = 0).
     pub fn search(&mut self, state: &GameState, num_simulations: u32) -> SearchResult {
-        self.search_with_temperature(state, num_simulations, 0.0)
+        self.search_with_options(state, num_simulations, 0.0, true)
     }
 
     /// Run MCTS for `num_simulations` iterations with the given temperature.
@@ -557,20 +579,44 @@ impl MctsSearch {
         num_simulations: u32,
         temperature: f32,
     ) -> SearchResult {
+        self.search_with_options(state, num_simulations, temperature, true)
+    }
+
+    /// Core search entry point. `enable_noise = false` disables root Dirichlet
+    /// noise for this call only, without mutating `self.config`.
+    fn search_with_options(
+        &mut self,
+        state: &GameState,
+        num_simulations: u32,
+        temperature: f32,
+        enable_noise: bool,
+    ) -> SearchResult {
         self.reset();
 
-        let mut root = MctsNode::new(None, None, 1.0);
-        root.hash = state.board.zobrist_hash;
+        let root = MctsNode::new(None, None, 1.0);
         self.nodes.push(root);
 
         let mut working_state = state.clone();
 
+        let noise_gate = enable_noise;
+        let saved = if !noise_gate {
+            self.config.dirichlet.take()
+        } else {
+            None
+        };
+
+        // Scope guard via a local helper struct would be nicer, but we
+        // explicitly restore below — `expand` never panics in practice.
         if self.config.batch_size <= 1 {
             for _ in 0..num_simulations {
                 self.simulate(0, &mut working_state);
             }
         } else {
             self.simulate_batched(0, &mut working_state, num_simulations);
+        }
+
+        if !noise_gate {
+            self.config.dirichlet = saved;
         }
 
         self.extract_result(state, temperature)
@@ -580,12 +626,19 @@ impl MctsSearch {
     // Internal helpers — sequential path
     // ------------------------------------------------------------------
 
-    fn simulate(&mut self, root_idx: usize, state: &mut GameState) {
+    /// Walk from `root_idx` to an unexpanded leaf (or terminal / 2-fold
+    /// draw). `state` is mutated via `apply_move`; the caller is
+    /// responsible for undoing the applied moves. `path` is cleared and
+    /// populated with the traversed node indices.
+    fn descend_to_leaf(
+        &self,
+        root_idx: usize,
+        state: &mut GameState,
+        path: &mut Vec<usize>,
+    ) -> DescendOutcome {
+        path.clear();
+        path.push(root_idx);
         let mut node_idx = root_idx;
-        let mut path = vec![node_idx];
-        let mut path_hashes: HashSet<u64> = HashSet::new();
-        path_hashes.insert(self.nodes[root_idx].hash);
-        let mut repeated = false;
 
         while self.nodes[node_idx].is_expanded && !self.nodes[node_idx].children.is_empty() {
             node_idx = self.select_child(node_idx, node_idx == root_idx);
@@ -593,38 +646,62 @@ impl MctsSearch {
                 .action
                 .expect("non-root node must have an action");
             state.apply_move(action);
-            self.nodes[node_idx].hash = state.board.zobrist_hash;
             path.push(node_idx);
-            if self.config.two_fold_as_draw && !path_hashes.insert(state.board.zobrist_hash) {
-                repeated = true;
-                break;
+            if self.config.two_fold_as_draw && state.repetition_count() >= 1 {
+                return DescendOutcome::TwoFoldDraw;
             }
         }
+        DescendOutcome::Leaf
+    }
 
-        let value = if repeated {
-            0.0
-        } else if state.is_game_over() {
-            state.outcome_value().unwrap_or(0.0) as f64
-        } else {
-            let key = TtKey::from_state(state);
-            let (policy, value) = if let Some(cached) = self.tt.get(&key) {
-                self.tt_hits += 1;
-                cached.clone()
-            } else {
-                self.tt_misses += 1;
-                let result = self.evaluator.evaluate(state);
-                self.tt_insert(key, result.clone());
-                result
-            };
-            self.expand(node_idx, state, &policy);
-            value as f64
+    fn simulate(&mut self, root_idx: usize, state: &mut GameState) {
+        let mut path = std::mem::take(&mut self.path_scratch);
+        let outcome = self.descend_to_leaf(root_idx, state, &mut path);
+        let node_idx = *path.last().unwrap();
+        let moves_made = path.len() - 1;
+
+        let value = match outcome {
+            DescendOutcome::TwoFoldDraw => 0.0,
+            DescendOutcome::Leaf => {
+                if state.is_game_over() {
+                    state.outcome_value().unwrap_or(0.0) as f64
+                } else {
+                    let key = TtKey::from_state(state);
+                    if let Some(cached) = self.tt.get(&key) {
+                        self.tt_hits += 1;
+                        let value_f64 = cached.1 as f64;
+                        Self::expand_nodes(
+                            &mut self.nodes,
+                            &self.config,
+                            node_idx,
+                            state,
+                            &cached.0,
+                        );
+                        value_f64
+                    } else {
+                        self.tt_misses += 1;
+                        let (policy, value) = self.evaluator.evaluate(state);
+                        Self::expand_nodes(
+                            &mut self.nodes,
+                            &self.config,
+                            node_idx,
+                            state,
+                            &policy,
+                        );
+                        self.tt_insert(key, (policy, value));
+                        value as f64
+                    }
+                }
+            }
         };
 
         self.backpropagate(&path, value);
 
-        for _ in 0..path.len() - 1 {
+        for _ in 0..moves_made {
             state.undo_move();
         }
+
+        self.path_scratch = path;
     }
 
     // ------------------------------------------------------------------
@@ -632,23 +709,10 @@ impl MctsSearch {
     // ------------------------------------------------------------------
 
     /// Run `num_simulations` simulations using batched NN inference.
-    ///
-    /// Accumulates up to `batch_size` leaf nodes per round:
-    /// 1. **Select** a leaf for each slot using PUCT, applying virtual loss to
-    ///    discourage duplicate paths within the same batch.
-    /// 2. **Batch evaluate** all leaves that need NN inference in one call.
-    /// 3. **Expand + backpropagate** each leaf, removing virtual loss.
     fn simulate_batched(&mut self, root_idx: usize, state: &mut GameState, num_simulations: u32) {
-        struct LeafInfo {
-            path: Vec<usize>,
-            leaf_state: Option<GameState>,
-            terminal_value: f64,
-            key: TtKey,
-        }
-
         let batch_size = self.config.batch_size;
         let mut done = 0u32;
-        let mut leaves: Vec<LeafInfo> = Vec::with_capacity(batch_size);
+        let mut leaves = std::mem::take(&mut self.leaves_scratch);
         let mut eval_indices: Vec<usize> = Vec::with_capacity(batch_size);
 
         while done < num_simulations {
@@ -657,71 +721,62 @@ impl MctsSearch {
             eval_indices.clear();
 
             for _ in 0..batch_count {
-                let mut node_idx = root_idx;
-                let mut path = vec![node_idx];
-                let mut path_hashes: HashSet<u64> = HashSet::new();
-                path_hashes.insert(self.nodes[root_idx].hash);
-                let mut repeated = false;
-
-                while self.nodes[node_idx].is_expanded && !self.nodes[node_idx].children.is_empty()
-                {
-                    node_idx = self.select_child(node_idx, node_idx == root_idx);
-                    let action = self.nodes[node_idx]
-                        .action
-                        .expect("non-root node must have an action");
-                    state.apply_move(action);
-                    self.nodes[node_idx].hash = state.board.zobrist_hash;
-                    path.push(node_idx);
-                    if self.config.two_fold_as_draw
-                        && !path_hashes.insert(state.board.zobrist_hash)
-                    {
-                        repeated = true;
-                        break;
-                    }
-                }
-
+                let mut path: Vec<usize> = Vec::new();
+                let outcome = self.descend_to_leaf(root_idx, state, &mut path);
+                let node_idx = *path.last().unwrap();
                 let key = TtKey::from_state(state);
                 let moves_made = path.len() - 1;
 
-                if repeated {
-                    self.apply_virtual_loss(&path);
-                    leaves.push(LeafInfo {
-                        path,
-                        leaf_state: None,
-                        terminal_value: 0.0,
-                        key,
-                    });
-                } else if state.is_game_over() {
-                    let val = state.outcome_value().unwrap_or(0.0) as f64;
-                    self.apply_virtual_loss(&path);
-                    leaves.push(LeafInfo {
-                        path,
-                        leaf_state: None,
-                        terminal_value: val,
-                        key,
-                    });
-                } else if let Some(cached) = self.tt.get(&key) {
-                    self.tt_hits += 1;
-                    let (policy, value) = cached.clone();
-                    self.expand(node_idx, state, &policy);
-                    let val = value as f64;
-                    self.apply_virtual_loss(&path);
-                    leaves.push(LeafInfo {
-                        path,
-                        leaf_state: None,
-                        terminal_value: val,
-                        key,
-                    });
-                } else {
-                    self.tt_misses += 1;
-                    let snapshot = state.clone();
-                    self.apply_virtual_loss(&path);
-                    leaves.push(LeafInfo {
-                        path,
-                        leaf_state: Some(snapshot),
-                        terminal_value: 0.0,
-                        key,
-                    });
+                match outcome {
+                    DescendOutcome::TwoFoldDraw => {
+                        self.apply_virtual_loss(&path);
+                        leaves.push(LeafInfo {
+                            path,
+                            leaf_state: None,
+                            terminal_value: 0.0,
+                            key,
+                        });
+                    }
+                    DescendOutcome::Leaf if state.is_game_over() => {
+                        let val = state.outcome_value().unwrap_or(0.0) as f64;
+                        self.apply_virtual_loss(&path);
+                        leaves.push(LeafInfo {
+                            path,
+                            leaf_state: None,
+                            terminal_value: val,
+                            key,
+                        });
+                    }
+                    DescendOutcome::Leaf => {
+                        if let Some(cached) = self.tt.get(&key) {
+                            self.tt_hits += 1;
+                            let val = cached.1 as f64;
+                            Self::expand_nodes(
+                                &mut self.nodes,
+                                &self.config,
+                                node_idx,
+                                state,
+                                &cached.0,
+                            );
+                            self.apply_virtual_loss(&path);
+                            leaves.push(LeafInfo {
+                                path,
+                                leaf_state: None,
+                                terminal_value: val,
+                                key,
+                            });
+                        } else {
+                            self.tt_misses += 1;
+                            let snapshot = state.clone();
+                            self.apply_virtual_loss(&path);
+                            leaves.push(LeafInfo {
+                                path,
+                                leaf_state: Some(snapshot),
+                                terminal_value: 0.0,
+                                key,
+                            });
+                        }
+                    }
                 }
 
                 for _ in 0..moves_made {
@@ -756,8 +811,14 @@ impl MctsSearch {
                     let node_idx = *leaf.path.last().unwrap();
 
                     if !self.nodes[node_idx].is_expanded {
+                        Self::expand_nodes(
+                            &mut self.nodes,
+                            &self.config,
+                            node_idx,
+                            leaf_state,
+                            policy,
+                        );
                         self.tt_insert(leaf.key, (policy.clone(), *val));
-                        self.expand(node_idx, leaf_state, policy);
                     }
                     *val as f64
                 } else {
@@ -769,6 +830,9 @@ impl MctsSearch {
 
             done += batch_count as u32;
         }
+
+        leaves.clear();
+        self.leaves_scratch = leaves;
     }
 
     /// Apply virtual loss along a path: increment visit counts and add
@@ -846,13 +910,22 @@ impl MctsSearch {
     }
 
     /// Expand `node_idx` by creating children for all legal moves.
-    fn expand(&mut self, node_idx: usize, state: &GameState, policy: &[f32]) {
+    ///
+    /// Takes explicit `&mut Vec<MctsNode>` and `&SearchConfig` (rather than
+    /// `&mut self`) so that callers can hold a live borrow on `self.tt`
+    /// across the call.
+    fn expand_nodes(
+        nodes: &mut Vec<MctsNode>,
+        config: &SearchConfig,
+        node_idx: usize,
+        state: &GameState,
+        policy: &[f32],
+    ) {
         let legal_moves = state.legal_moves();
         if legal_moves.is_empty() {
             return;
         }
 
-        // Map legal moves to (move, index, raw_prior).
         let mut children_info: Vec<(Move, usize, f32)> = Vec::with_capacity(legal_moves.len());
         let mut prior_sum = 0.0f32;
 
@@ -867,7 +940,6 @@ impl MctsSearch {
             }
         }
 
-        // Renormalize priors over legal moves.
         if prior_sum > 1e-8 {
             for info in &mut children_info {
                 info.2 /= prior_sum;
@@ -881,18 +953,17 @@ impl MctsSearch {
         }
 
         if node_idx == 0
-            && let Some(ref config) = self.config.dirichlet
+            && let Some(ref dcfg) = config.dirichlet
         {
-            let top_k = self.config.dirichlet_top_k;
+            let top_k = config.dirichlet_top_k;
             apply_shaped_dirichlet_noise(
                 &mut children_info,
-                config.epsilon,
-                config.alpha,
+                dcfg.epsilon,
+                dcfg.alpha,
                 top_k,
             );
         }
 
-        // Create child nodes.
         for (mv, mv_idx, prior) in children_info {
             let action_index = if mv_idx == usize::MAX {
                 None
@@ -900,29 +971,36 @@ impl MctsSearch {
                 Some(mv_idx)
             };
             let child = MctsNode::new(Some(mv), action_index, prior);
-            let child_idx = self.nodes.len();
-            self.nodes.push(child);
-            self.nodes[node_idx].children.push(child_idx);
+            let child_idx = nodes.len();
+            nodes.push(child);
+            nodes[node_idx].children.push(child_idx);
         }
 
-        self.nodes[node_idx].is_expanded = true;
+        nodes[node_idx].is_expanded = true;
     }
+
 
     fn backpropagate(&mut self, path: &[usize], leaf_value: f64) {
         let mut value = leaf_value;
+        let track_variance = self.config.use_lcb;
         for &node_idx in path.iter().rev() {
             let node = &mut self.nodes[node_idx];
-            let old_mean = if node.visit_count == 0 {
-                0.0
+            if track_variance {
+                let old_mean = if node.visit_count == 0 {
+                    0.0
+                } else {
+                    node.value_sum / node.visit_count as f64
+                };
+                node.visit_count += 1;
+                node.value_sum += value;
+                let new_mean = node.value_sum / node.visit_count as f64;
+                let delta = value - old_mean;
+                let delta2 = value - new_mean;
+                node.m2 += delta * delta2;
             } else {
-                node.value_sum / node.visit_count as f64
-            };
-            node.visit_count += 1;
-            node.value_sum += value;
-            let new_mean = node.value_sum / node.visit_count as f64;
-            let delta = value - old_mean;
-            let delta2 = value - new_mean;
-            node.m2 += delta * delta2;
+                node.visit_count += 1;
+                node.value_sum += value;
+            }
             value = -value;
         }
     }
@@ -933,14 +1011,12 @@ impl MctsSearch {
         let num_indices = serialization::num_move_indices();
         let mut policy = vec![0.0f32; num_indices];
 
-        // Build visit-count distribution.
         let total_child_visits: u32 = root
             .children
             .iter()
             .map(|&i| self.nodes[i].visit_count)
             .sum();
 
-        // Populate policy with raw visit counts (will normalize later).
         for &child_idx in &root.children {
             let child = &self.nodes[child_idx];
             if let Some(mv_idx) = child.action_index
@@ -950,16 +1026,13 @@ impl MctsSearch {
             }
         }
 
-        // Select best move.
         let best_child_idx = if temperature < 1e-4 {
-            // Greedy: highest visit count.
             *root
                 .children
                 .iter()
                 .max_by_key(|&&i| self.nodes[i].visit_count)
                 .expect("root must have children")
         } else {
-            // Temperature-based selection.
             self.select_by_temperature(root, temperature)
         };
 
@@ -967,7 +1040,6 @@ impl MctsSearch {
             .action
             .expect("child must have an action");
 
-        // Normalize policy to sum to 1.
         if total_child_visits > 0 {
             if temperature < 1e-4 {
                 // For greedy, just normalize raw visit counts.
@@ -1065,14 +1137,9 @@ impl MctsSearch {
         let pcr = self.config.pcr.clone();
         let coin: f32 = rng.random();
         let was_full = coin < pcr.p_full;
-        let saved_dirichlet = self.config.dirichlet.clone();
-        if !was_full {
-            self.config.dirichlet = None;
-        }
         let sims = if was_full { pcr.n_full } else { pcr.n_fast };
         let temperature = self.config.temperature.temperature_at(ply);
-        let result = self.search_with_temperature(state, sims, temperature);
-        self.config.dirichlet = saved_dirichlet;
+        let result = self.search_with_options(state, sims, temperature, was_full);
 
         let policy_target = if was_full {
             if self.config.policy_target_pruning {
@@ -1139,22 +1206,16 @@ impl MctsSearch {
             .collect();
         forced_order.sort_by_key(|&i| adjusted[i].1);
 
+        // Invariant: `forced_order` excludes the argmax child, so subtracting
+        // `n_forced` from any entry in it can only lower that entry's visit
+        // count — the argmax child is untouched and therefore the argmax
+        // cannot change. No tentative recomputation is needed.
         for i in forced_order {
             let (_ci, n_visits, n_forced) = adjusted[i];
-            let mut target = n_visits - n_forced;
-            if target < 0 {
-                target = 0;
-            }
-            let tentative_argmax_visits = adjusted
-                .iter()
-                .enumerate()
-                .map(|(j, e)| if j == i { target } else { e.1 })
-                .max()
-                .unwrap_or(0);
-            if tentative_argmax_visits == raw_argmax_visits {
-                adjusted[i].1 = target;
-            }
+            let target = (n_visits - n_forced).max(0);
+            adjusted[i].1 = target;
         }
+        let _ = raw_argmax_visits;
 
         let total: i64 = adjusted.iter().map(|e| e.1).sum();
         if total <= 0 {
@@ -1194,7 +1255,7 @@ impl MctsSearch {
                 q
             } else {
                 let var = c.variance().max(0.0);
-                q - 1.96 * (var / c.visit_count as f64).sqrt()
+                q - LCB_Z_95 * (var / c.visit_count as f64).sqrt()
             };
             if lcb > best_score {
                 best_score = lcb;
@@ -1212,10 +1273,7 @@ impl MctsSearch {
         if !self.config.resign.enabled {
             return false;
         }
-        let side = match stm {
-            Color::White => 0usize,
-            Color::Black => 1usize,
-        };
+        let side = stm.index();
         let cfg = self.config.resign.clone();
         let hist = &mut self.resign_history[side];
         hist.push_back(p_win);
