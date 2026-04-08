@@ -610,6 +610,64 @@ function buildRetired(data) {
   return panelHtml('retired', 'Retired', `${retired.length}`, body, false);
 }
 
+// --- Plan §7.6 pages 1-4: placeholder panels ---
+// These are minimum-viable scaffolds; actual chart wiring is deferred to a
+// follow-up. Each panel shows "awaiting data" and lists the metrics it will
+// eventually display, so the layout is in place for incremental backfill.
+// TODO(plan §7.6 page 5 — benchmark suite stability heatmap): to add.
+// TODO(plan §7.6 page 6 — diff viewer): to add.
+// TODO(plan §7.6 page 7 — replay buffer audit browser): to add.
+function buildRunHealth(data) {
+  const body = `
+    <div class="empty">Awaiting data — TODO wire charts from /api/status.</div>
+    <ul style="margin:8px 0 0 18px;font-size:12px;opacity:0.7">
+      <li>Loss panel (policy/value/mlh/aux dual axes)</li>
+      <li>Policy entropy time series vs log(40) baseline</li>
+      <li>Anchor Elo with ±1σ ribbons (anchor_v0 monotone)</li>
+      <li>Games / hour stacked by worker</li>
+      <li>Mean game length (median + p5/p95 ribbon)</li>
+      <li>Draw / W / L fraction stacked area</li>
+    </ul>`;
+  return panelHtml('run-health', 'Page 1 — Run Health', 'placeholder', body, false);
+}
+
+function buildDataPage(data) {
+  const body = `
+    <div class="empty">Awaiting data — TODO wire window + bucket series.</div>
+    <ul style="margin:8px 0 0 18px;font-size:12px;opacity:0.7">
+      <li>Replay window size vs N_total cumulative</li>
+      <li>Train bucket tokens over time</li>
+      <li>Sample reuse ratio</li>
+      <li>Per-version sample contribution to current window</li>
+      <li>was_full_search distribution (~25%)</li>
+    </ul>`;
+  return panelHtml('data-page', 'Page 2 — Data', 'placeholder', body, false);
+}
+
+function buildModelBehavior(data) {
+  const body = `
+    <div class="empty">Awaiting data — TODO add calibration + entropy panels.</div>
+    <ul style="margin:8px 0 0 18px;font-size:12px;opacity:0.7">
+      <li>WDL calibration plot</li>
+      <li>Policy entropy histogram by step</li>
+      <li>NN argmax vs MCTS argmax agreement</li>
+      <li>KL(old → new) per promotion</li>
+    </ul>`;
+  return panelHtml('model-behavior', 'Page 3 — Model Behavior', 'placeholder', body, false);
+}
+
+function buildSearch(data) {
+  const body = `
+    <div class="empty">Awaiting data — TODO add TT / visits / resign panels.</div>
+    <ul style="margin:8px 0 0 18px;font-size:12px;opacity:0.7">
+      <li>TT hit rate per worker</li>
+      <li>Mean root visits, mean PV length</li>
+      <li>LCB vs argmax-visit divergence</li>
+      <li>Resign false-positive rate vs threshold</li>
+    </ul>`;
+  return panelHtml('search', 'Page 4 — Search', 'placeholder', body, false);
+}
+
 function render(data) {
   if (!data) return;
   lastData = data;
@@ -623,6 +681,10 @@ function render(data) {
   panels.innerHTML = [
     buildRatings(data),
     buildData(data),
+    buildRunHealth(data),
+    buildDataPage(data),
+    buildModelBehavior(data),
+    buildSearch(data),
     buildH2H(data),
     retiredHtml,
     `<div class="two-col">
