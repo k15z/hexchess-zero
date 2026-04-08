@@ -8,10 +8,10 @@ Numbers below are empirically measured against the actual engine where noted.
 | Aspect | Go 19x19 | Chess | Glinski hex chess |
 |---|---|---|---|
 | Board cells | 361 | 64 | 91 |
-| Branching factor | ~250 | ~35 | **mean 39.8, median 40** (random play, n=75k positions) |
+| Branching factor | ~250 | ~35 | **random: mean 40, median 40** / **MCTS-200 self-play: mean 27, median 24** (MCTS visits more constrained positions) |
 | Initial-position legal moves | ~360 | 20 | **51** (verified) |
-| Average game length (plies) | ~250 | ~80 | **unknown — depends on player strength** (random play caps at 400+ via shuffles; minimax-d3 with softmax also shuffles to 200+; real MCTS games TBD) |
-| Draws | very rare (komi) | ~50% top-level | **non-trivial** (random play: ~9% material/fifty draws + 2% stalemate; expect higher under engine play due to shuffle propensity) |
+| Average game length (plies) | ~250 | ~80 | **MCTS-200 self-play: mean 244, median 247, p95 = 500-cap** (n=30 games, heuristic eval). Games are LONG, not the originally-guessed 80–120. |
+| Draws | very rare (komi) | ~50% top-level | **MCTS-200 self-play: 47% formal draws** (27% fifty-move + 20% material), ~7% timeout. Expect 30–50% even under stronger engine play. |
 | Repetition rules | superko | threefold | threefold (verified — `is_game_over()` returns `draw_repetition`) |
 | Move encoding size | ~362 | ~4672 | **4206** (pinned by golden hash test) |
 | Symmetries | 8 (D4) | none | **central inversion only** — `(q,r) → (-q,-r)` (see §9 below) |
@@ -77,24 +77,26 @@ faster game generation, so scaling `c` down by ~10x is reasonable.
 
 ### 7. Game length and resignation
 
-**Game length is unproven and highly player-strength-dependent.**
-- Random self-play: 78% timeout at 400 plies (random doesn't push for mate); minority that finished did so in 50–250 plies.
-- Minimax depth-2 deterministic self-play: 48 plies (one repeated game; deterministic pathology).
-- Minimax depth-3 + softmax sampling: timed out at 200 plies on every game I sampled — both sides oscillate when the position is "balanced". Glinski's dense piece interaction makes shuffles very easy.
+**Empirical numbers from MCTS-200 self-play (heuristic eval, no NN, n=30 games):**
+- Mean game length: **244 plies**, median 247, max 500 (timeout cap)
+- p5 = 20 plies, p95 = 500 plies
+- 47% formal draws (27% fifty-move + 20% material), 47% checkmates, 7% timeout
+
+The original "~80–120 plies" guess was wrong by 2-3×. **Plan for self-play move-limit cap ≥ 500 plies; budget compute accordingly.**
 
 Implications:
-- **Don't trust the original "~80–120 plies" guess.** Plan for game-length p95 in the 200+ range until measured.
-- MLH is critical to break shuffles (already in chunk 3). Without MLH, expect timeouts to dominate.
-- Resignation is genuinely useful here, not optional — many "drawn-by-shuffle" games could be resigned earlier if one side has a meaningful disadvantage.
-- Per-game move-limit cap should be > 250 plies in self-play config to avoid truncating real games.
+- MLH is critical to break shuffles (already in chunk 3). Without MLH, expect even more timeouts/draws.
+- Resignation is genuinely useful — at heuristic strength, ~half of games drift into 200+ ply shuffle zones that resign should clip.
+- A trained NN should produce sharper games and shorter average length (Lc0/KataGo evidence) but baseline starting from heuristic is what bootstrap will do, so prepare for the long-game regime.
+- Per-game move-limit cap should be ≥ 500 plies in self-play config (we currently default to 200 in some places — needs audit).
 
 ### 8. Draws and repetition
 
-Draws are **common** in Glinski:
-- Random play: 9% material/fifty-move + 2% stalemate = ~11% formal draws; another ~78% are 400-ply timeouts that would mostly become draws under a stricter shuffle detector.
-- Minimax sampling: virtually all games shuffle to the move limit.
+Draws are **very common** in Glinski:
+- MCTS-200 self-play (heuristic eval): **47% formal draws** (27% fifty-move + 20% insufficient material).
+- Random play: ~11% formal + dominant timeout-by-shuffle.
 
-WDL value head is **mandatory** (chunk 3 ✓). MLH is **mandatory** (chunk 3 ✓), not optional. Without MLH the policy will shuffle in plus-equal positions and the trainer will see degenerate target distributions. The plan's "draw rate explosion" failure-mode detector (notes/10 §3) should be wired with a generous threshold (Glinski may sit at 30–50% draws even when healthy).
+WDL value head is **mandatory** (chunk 3 ✓). MLH is **mandatory** (chunk 3 ✓), not optional. Without MLH the policy will shuffle in plus-equal positions and the trainer will see degenerate target distributions. The plan's "draw rate explosion" failure-mode detector (notes/10 §3) should be **calibrated for a 30–50% baseline draw rate** — the default 75% threshold is fine, but anything below 25% might indicate the engine has stopped exploring drawn lines (also a problem).
 
 ### 9. Symmetries — central inversion, not horizontal mirror
 

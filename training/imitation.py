@@ -109,7 +109,9 @@ def play_imitation_game(cfg: AsyncConfig, log_interval: int = 50) -> list[dict]:
     pending = []  # (board_tensor, policy, eval_score, side_to_move)
 
     ply = 0
-    max_ply = 300
+    # Glinski self-play games can run 500+ plies (notes/12 §7); cap at 600
+    # so the bootstrap doesn't truncate real games into degenerate samples.
+    max_ply = 600
     game_t0 = time.time()
 
     # Pass 1: play the game, collect raw data.

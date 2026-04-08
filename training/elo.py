@@ -89,7 +89,7 @@ def baselines(simulations: int = 800) -> list[Player]:
 # ---------------------------------------------------------------------------
 
 
-def play_game(white: Player, black: Player, max_moves: int = 300,
+def play_game(white: Player, black: Player, max_moves: int = 600,
               random_opening_plies: int = 0) -> dict:
     """Play one game. Returns dict with outcome and per-player timing stats.
 
