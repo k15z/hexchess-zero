@@ -57,14 +57,9 @@ from .swa import SwaSnapshotBuffer, update_bn_stats
 # Trainer tunables that aren't in AsyncConfig yet. notes/13 §4.3–§4.6.
 # Chunk 13 will promote these into the config dataclass.
 # ---------------------------------------------------------------------------
-LR_WARMUP_STEPS = 2_000
-GRAD_CLIP_NORM = 5.0
-WEIGHT_DECAY = 3e-5
-BASE_LR = 1e-3
-SWA_SNAPSHOT_EVERY_SAMPLES = 250_000
-RUNTIME_HEALTH_CHECK_EVERY_STEPS = 500
-PROMOTE_EVERY_NEW_POSITIONS = 500_000
-GAUNTLET_GAMES = 200
+# Module-level constants are gone — read everything off the active config
+# instance via cfg.foo. See training/config.py for the field definitions
+# and validate() ranges.
 
 
 def _build_imitation_targets(
@@ -545,18 +540,17 @@ def _promote_model(
 # Optimizer + LR + autocast helpers (chunk 6)
 # ---------------------------------------------------------------------------
 
-def _make_optimizer(model: torch.nn.Module) -> optim.Optimizer:
-    """SGD momentum 0.9, wd 3e-5 (notes/13 §4.3)."""
+def _make_optimizer(model: torch.nn.Module, cfg: AsyncConfig) -> optim.Optimizer:
+    """SGD momentum 0.9, wd from cfg (notes/13 §4.3)."""
     return optim.SGD(
         model.parameters(),
-        lr=BASE_LR,
-        momentum=0.9,
-        weight_decay=WEIGHT_DECAY,
+        lr=cfg.learning_rate,
+        momentum=cfg.momentum,
+        weight_decay=cfg.l2_regularization,
     )
 
 
-def _lr_for_step(step: int, *, base_lr: float = BASE_LR,
-                 warmup: int = LR_WARMUP_STEPS) -> float:
+def _lr_for_step(step: int, *, base_lr: float, warmup: int) -> float:
     """Linear warmup 0 -> base_lr over the first ``warmup`` fresh-run steps."""
     if warmup <= 0 or step >= warmup:
         return base_lr
@@ -580,7 +574,7 @@ def _autocast_dtype(device: torch.device) -> torch.dtype | None:
 # ---------------------------------------------------------------------------
 
 def _default_gauntlet(candidate_onnx: Path, current_onnx: Path,
-                      *, simulations: int, n_games: int = GAUNTLET_GAMES) -> float:
+                      *, simulations: int, n_games: int) -> float:
     """Play ``n_games`` between candidate and current ONNX models.
 
     Returns candidate's score fraction in [0, 1]. Lazy-imports from
@@ -642,7 +636,9 @@ def _try_gate_promotion(
     if gauntlet is None:
         def gauntlet(_c, _cur):
             return _default_gauntlet(
-                scratch_onnx, current_onnx, simulations=cfg.num_simulations,
+                scratch_onnx, current_onnx,
+                simulations=cfg.num_simulations,
+                n_games=cfg.gating_games,
             )
 
     decision = decide_promotion(
@@ -686,7 +682,7 @@ def run_trainer(cfg: AsyncConfig) -> None:
         logger.info("Loading checkpoint v{}", current_version)
         model.load_state_dict(torch.load(local_pt, map_location=device, weights_only=True))
 
-    optimizer = _make_optimizer(model)
+    optimizer = _make_optimizer(model, cfg)
 
     # Hard invariants (plan §7.5). Crash the trainer if any of these fail —
     # this is intentional CrashLoopBackoff behavior so encoding/shape bugs
@@ -705,7 +701,7 @@ def run_trainer(cfg: AsyncConfig) -> None:
     # Bootstrap if no model exists
     if current_version == 0:
         current_version = _run_bootstrap(cfg, model, optimizer, device)
-        optimizer = _make_optimizer(model)
+        optimizer = _make_optimizer(model, cfg)
 
     cycle = 0
     total_steps_all_time = 0
@@ -807,7 +803,11 @@ def run_trainer(cfg: AsyncConfig) -> None:
                     held_out_batch = boards.detach().clone()
 
                 # LR warmup.
-                lr = _lr_for_step(fresh_run_steps)
+                lr = _lr_for_step(
+                    fresh_run_steps,
+                    base_lr=cfg.learning_rate,
+                    warmup=cfg.lr_warmup_steps,
+                )
                 _set_lr(optimizer, lr)
 
                 optimizer.zero_grad()
@@ -834,7 +834,7 @@ def run_trainer(cfg: AsyncConfig) -> None:
                         logger.warning("Healthy-initial-loss check failed: {}", exc)
 
                 breakdown.total.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP_NORM)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip_norm)
                 optimizer.step()
 
                 cycle_policy_loss += breakdown.policy.item()
@@ -850,7 +850,7 @@ def run_trainer(cfg: AsyncConfig) -> None:
                 samples_since_last_snapshot += cfg.batch_size
 
                 # SWA snapshot.
-                if samples_since_last_snapshot >= SWA_SNAPSHOT_EVERY_SAMPLES:
+                if samples_since_last_snapshot >= cfg.swa_snapshot_every_samples:
                     swa_buf.append(model.state_dict())
                     samples_since_last_snapshot = 0
                     logger.info("  SWA snapshot taken ({} in buffer)", len(swa_buf))
@@ -887,7 +887,7 @@ def run_trainer(cfg: AsyncConfig) -> None:
                         sps, elapsed,
                     )
 
-                if step % RUNTIME_HEALTH_CHECK_EVERY_STEPS == 0:
+                if step % cfg.runtime_health_check_every_steps == 0:
                     rt_report = run_runtime_checks(
                         model,
                         breakdown.total.detach(),
@@ -918,13 +918,13 @@ def run_trainer(cfg: AsyncConfig) -> None:
             cycle_aux_loss / max(step, 1),
         )
 
-        # Promotion gate: only promote every PROMOTE_EVERY_NEW_POSITIONS new positions.
+        # Promotion gate: only promote every cfg.promote_every_new_positions new positions.
         new_positions = n_total - positions_at_last_promote
-        if new_positions < PROMOTE_EVERY_NEW_POSITIONS:
+        if new_positions < cfg.promote_every_new_positions:
             logger.info(
                 "Skipping promotion — only {:,} new positions since v{} "
                 "(need {:,})",
-                new_positions, current_version, PROMOTE_EVERY_NEW_POSITIONS,
+                new_positions, current_version, cfg.promote_every_new_positions,
             )
             continue
 

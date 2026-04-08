@@ -143,6 +143,10 @@ class AsyncConfig(_BaseConfig):
         _check(self.l2_regularization >= 0, "l2_regularization must be >= 0")
         _check(self.grad_clip_norm > 0, "grad_clip_norm must be > 0")
         _check(self.lr_warmup_steps >= 0, "lr_warmup_steps must be >= 0")
+        _check(self.runtime_health_check_every_steps > 0,
+               "runtime_health_check_every_steps must be > 0")
+        _check(self.promote_every_new_positions > 0,
+               "promote_every_new_positions must be > 0")
         _check(self.num_simulations > 0, "num_simulations must be > 0")
 
         _check(self.window_c > 0, "window_c must be > 0")
