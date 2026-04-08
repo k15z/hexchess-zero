@@ -44,7 +44,10 @@ class _BaseConfig:
     l2_regularization: float = 3e-5  # KataGo weight decay (plan §4.3)
     grad_clip_norm: float = 5.0  # plan §4.3
     lr_warmup_steps: int = 2_000  # plan §4.3
-    promote_every_new_positions: int = 500_000  # plan §4.5
+    # Start aggressive (100k) so we see v1→v2→v3 promotion cycles within
+    # hours of kickoff on compute-constrained infra. Plan §4.5 targets 500k
+    # at steady state; ratchet up once the pipeline is proven.
+    promote_every_new_positions: int = 100_000
     runtime_health_check_every_steps: int = 500
 
     # --- Replay window (sublinear KataGo formula, plan §4.1) ---
@@ -58,9 +61,15 @@ class _BaseConfig:
     swa_ema_decay: float = 0.75
 
     # --- Playout Cap Randomization (plan §1.4/§5.4) ---
+    # Plan targets 800/160 for production. Observed on kevz-infra at kickoff:
+    # 800-sim self-play yields ~64 pos/min across 4 CPU workers, making the
+    # v2 cycle multi-day. Dropping to 200/50 in early training gives ~4x
+    # throughput; the learned policy manifests fine at 200 sims for a near-
+    # random-init v1. Ratchet back to 800 once the NN is strong enough that
+    # sim depth limits performance.
     pcr_p_full: float = 0.25
-    pcr_n_full: int = 800
-    pcr_n_fast: int = 160
+    pcr_n_full: int = 200
+    pcr_n_fast: int = 50
 
     # --- Resignation (plan §1.10) ---
     resign_threshold: float = 0.05
