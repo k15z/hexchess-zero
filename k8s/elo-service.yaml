@@ -31,11 +31,12 @@ spec:
             - name: RAYON_NUM_THREADS
               value: "4"
           resources:
-            # Single in-process game loop; peak memory is PLAYER_CACHE_SIZE
-            # (6) * ~800MB ONNX session ≈ 5 GB. 6Gi leaves headroom.
+            # PLAYER_CACHE_SIZE=6 * ~800MB ONNX sessions ≈ 5 GB resident, but
+            # observed to climb past 6 GiB mid-run (21 OOMKills over 11 hrs
+            # at 6Gi limit). 8Gi leaves headroom for allocator frag + GC.
             requests:
               cpu: "4"
-              memory: "6Gi"
+              memory: "8Gi"
             limits:
               cpu: "4"
-              memory: "6Gi"
+              memory: "8Gi"
