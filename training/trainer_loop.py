@@ -715,7 +715,12 @@ def run_trainer(cfg: AsyncConfig) -> None:
     swa_buf = SwaSnapshotBuffer()
     samples_since_last_snapshot = 0
     # Promotion is gated on *new* positions since the last promotion.
-    positions_at_last_promote = storage.count_positions(storage.SELFPLAY_PREFIX)
+    # On a fresh trainer start we set this to 0 so that all existing
+    # self-play data counts as "new since v{current}" — otherwise a
+    # restart after the trainer has been idle (or crashed before
+    # promoting) would treat the accumulated backlog as already-promoted
+    # and wait another full cycle to promote anything.
+    positions_at_last_promote = 0
     # Gauntlet held-out batch for BN-stat update after SWA average.
     held_out_batch: torch.Tensor | None = None
 
