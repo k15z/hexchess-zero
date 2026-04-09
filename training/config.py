@@ -28,7 +28,7 @@ class _BaseConfig:
     run_id: str = field(default_factory=_default_run_id)
 
     # --- MCTS ---
-    num_simulations: int = 800
+    num_simulations: int = 200  # match play / gating sims (was 800; sequential CPU gating was ~55h for 200 games)
 
     # --- Self-play ---
     temperature_threshold: int = 60  # after this many moves, temperature drops to temperature_low
@@ -78,7 +78,7 @@ class _BaseConfig:
 
     # --- Gating (plan §4.6) ---
     gating_enabled_first_n_versions: int = 5
-    gating_games: int = 200
+    gating_games: int = 30  # early-run gate length (was 200; cut 6.7× for pipeline validation)
     gating_win_threshold: float = 0.50
     gating_max_failures: int = 3
 
