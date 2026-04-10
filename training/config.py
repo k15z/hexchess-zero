@@ -39,15 +39,20 @@ class _BaseConfig:
 
     # --- Training ---
     batch_size: int = 256
-    learning_rate: float = 1e-3  # base LR after warmup (plan §4.3)
+    # Observed: at 1e-3 the policy oscillates 3.1–3.5 across cycles without
+    # converging. Halving to 5e-4 for smoother optimization on the large
+    # (~4200-output) policy FC. KataGo's per-sample LR was 6e-5 ≈ 1.5e-2
+    # at batch 256; our 5e-4 is more conservative but safer for a model
+    # this early in training.
+    learning_rate: float = 5e-4
     momentum: float = 0.9
     l2_regularization: float = 3e-5  # KataGo weight decay (plan §4.3)
     grad_clip_norm: float = 5.0  # plan §4.3
     lr_warmup_steps: int = 2_000  # plan §4.3
-    # Start aggressive (100k) so we see v1→v2→v3 promotion cycles within
-    # hours of kickoff on compute-constrained infra. Plan §4.5 targets 500k
-    # at steady state; ratchet up once the pipeline is proven.
-    promote_every_new_positions: int = 100_000
+    # Pipeline validated through v4. Now prioritize training depth over
+    # iteration speed: 300k gives each version ~3× more self-play data
+    # and the trainer 3× more steps before the next promotion disrupts.
+    promote_every_new_positions: int = 300_000
     runtime_health_check_every_steps: int = 500
 
     # --- Replay window (sublinear KataGo formula, plan §4.1) ---
@@ -68,8 +73,12 @@ class _BaseConfig:
     # random-init v1. Ratchet back to 800 once the NN is strong enough that
     # sim depth limits performance.
     pcr_p_full: float = 0.25
-    pcr_n_full: int = 200
-    pcr_n_fast: int = 50
+    # Ratcheted back from 200: at 200 sims the search is too shallow for the
+    # NN's learned prior to compound, producing noisy policy targets (observed:
+    # policy loss stuck at 3.1–3.5 across 4 promotions). 400 is the middle
+    # ground that still lets 22 workers produce ~180 pos/min.
+    pcr_n_full: int = 400
+    pcr_n_fast: int = 100
 
     # --- Resignation (plan §1.10) ---
     resign_threshold: float = 0.05
@@ -108,7 +117,7 @@ class AsyncConfig(_BaseConfig):
 
     # --- Async-specific ---
     worker_batch_size: int = 2  # games per flush (small so bootstrap data lands quickly)
-    steps_per_cycle: int = 1000  # training steps per cycle
+    steps_per_cycle: int = 3000  # 3× more training per version (was 1000; each cycle now converges before next promotion)
     reload_interval: int = 1000  # reload buffer from disk every N steps for fresh data
     max_train_steps_per_new_data: float = 4.0  # target passes per data point (KataGo-style bucket)
     min_positions_to_start: int = 200_000  # bootstrap gate — workers can generate more after the trainer starts
