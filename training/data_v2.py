@@ -110,8 +110,8 @@ def load_imitation_npz(path: str | Path) -> V2Batch:
 
     # Uniform aux over legal moves (policy > 0 marks visited/legal moves)
     legal_mask = policy > 0.0
-    legal_counts = legal_mask.sum(axis=1, keepdims=True).clip(min=1)
-    aux_policy = (legal_mask.astype(np.float32) / legal_counts)
+    legal_counts = legal_mask.astype(np.float32).sum(axis=1, keepdims=True).clip(min=1)
+    aux_policy = (legal_mask.astype(np.float32) / legal_counts).astype(np.float32)
 
     return V2Batch(
         boards=boards,
