@@ -28,7 +28,7 @@ from torch.utils.data import DataLoader, IterableDataset
 from . import storage
 from .config import AsyncConfig
 from .logging_setup import log_event, setup_json_logging
-from .data_v2 import MIRROR_INDICES, V2Batch, load_v2_npz, mirror_batch
+from .data_v2 import MIRROR_INDICES, V2Batch, load_imitation_npz, load_v2_npz, mirror_batch
 from .export import export_to_onnx
 from .health_checks import (
     HealthCheckError,
@@ -307,11 +307,18 @@ class ReplayBufferV2(IterableDataset):
         cache_dir: Path,
         window_size: int,
         s3_prefix: str = storage.SELFPLAY_PREFIX,
+        *,
+        imitation_mix: float = 0.0,
     ):
         self.cache_dir = cache_dir
         self.window_size = window_size
         self.s3_prefix = s3_prefix
+        self.imitation_mix = imitation_mix
         self.files, self.total_positions = self._select_and_download()
+        # Also load imitation files if mixing is enabled.
+        self.imitation_files: list[Path] = []
+        if imitation_mix > 0:
+            self.imitation_files = self._download_imitation()
 
     def _select_and_download(self) -> tuple[list[Path], int]:
         selected = storage.select_recent_files(self.s3_prefix, self.window_size)
@@ -335,9 +342,26 @@ class ReplayBufferV2(IterableDataset):
                 f.unlink()
         return local_files, total
 
+    def _download_imitation(self) -> list[Path]:
+        """Download imitation files to a separate cache."""
+        imit_cache = self.cache_dir.parent / "imitation"
+        imit_cache.mkdir(parents=True, exist_ok=True)
+        selected = storage.select_recent_files(
+            storage.IMITATION_PREFIX, 500_000  # all imitation data
+        )
+        local_files: list[Path] = []
+        for entry in selected:
+            safe = entry["key"].replace("/", "_")
+            lp = imit_cache / safe
+            if not lp.exists():
+                storage.get_file(entry["key"], lp)
+            local_files.append(lp)
+        return local_files
+
     def stats(self) -> dict:
         return {"files": len(self.files), "positions": self.total_positions,
-                "window_size": self.window_size}
+                "window_size": self.window_size,
+                "imitation_files": len(self.imitation_files)}
 
     def __iter__(self):
         if not self.files:
@@ -360,11 +384,26 @@ class ReplayBufferV2(IterableDataset):
 
         shuffle_buf: list[dict] = []
         while True:
-            [chosen] = random.choices(self.files, k=1)
-            try:
-                b = load_v2_npz(chosen)
-            except (OSError, ValueError, KeyError):
-                continue
+            # Mix imitation data: with probability imitation_mix, load from
+            # imitation files instead of self-play. This anchors the policy
+            # to the minimax teacher signal during early training when
+            # self-play data is noisy.
+            use_imitation = (
+                self.imitation_files
+                and random.random() < self.imitation_mix
+            )
+            if use_imitation:
+                [chosen] = random.choices(self.imitation_files, k=1)
+                try:
+                    b = load_imitation_npz(chosen)
+                except (OSError, ValueError, KeyError):
+                    continue
+            else:
+                [chosen] = random.choices(self.files, k=1)
+                try:
+                    b = load_v2_npz(chosen)
+                except (OSError, ValueError, KeyError):
+                    continue
             # Mirror augmentation: 50% of files get horizontally mirrored
             # via the Rust mirror table. Cheap 2x effective data multiplier.
             if MIRROR_INDICES is not None and random.random() < 0.5:
@@ -733,6 +772,7 @@ def run_trainer(cfg: AsyncConfig) -> None:
             cfg.data_cache_dir / "selfplay",
             window_size=window,
             s3_prefix=storage.SELFPLAY_PREFIX,
+            imitation_mix=cfg.imitation_mix,
         )
         dl = DataLoader(
             ds, batch_size=cfg.batch_size, num_workers=0,

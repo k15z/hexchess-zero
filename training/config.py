@@ -55,6 +55,13 @@ class _BaseConfig:
     promote_every_new_positions: int = 300_000
     runtime_health_check_every_steps: int = 500
 
+    # --- Imitation mix ---
+    # Fraction of training batches sourced from minimax imitation data vs
+    # self-play. Anchors the policy to the teacher signal during early
+    # training when self-play is noisy. Observed: without this, v2 was
+    # WORSE than heuristic. 0.3 = 30% imitation, 70% self-play.
+    imitation_mix: float = 0.3
+
     # --- Replay window (sublinear KataGo formula, plan §4.1) ---
     window_c: int = 25_000
     window_alpha: float = 0.75
