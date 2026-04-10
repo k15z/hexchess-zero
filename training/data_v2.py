@@ -87,6 +87,44 @@ def _legal_mask_from_policy(policy: np.ndarray) -> np.ndarray:
     return policy > 0.0
 
 
+def load_imitation_npz(path: str | Path) -> V2Batch:
+    """Load a legacy imitation .npz (boards/policies/outcomes) as a V2Batch.
+
+    Missing fields are filled with sensible defaults:
+    - aux_policy = uniform over legal moves (no opponent data in imitation)
+    - wdl_short = wdl_terminal (terminal outcome is the best horizon-8 proxy)
+    - mlh = 0 (no game-length info in legacy format)
+
+    This lets the trainer mix imitation data into the self-play replay buffer
+    to anchor the policy to the minimax teacher signal during early training.
+    Without this, weak self-play can dilute the bootstrap and the model
+    regresses (observed: v2 was WORSE than heuristic despite v1 being strong).
+    """
+    path = Path(path)
+    data = np.load(str(path))
+
+    boards = np.asarray(data["boards"]).astype(np.float32)
+    policy = np.asarray(data["policies"]).astype(np.float32)
+    wdl = np.asarray(data["outcomes"]).astype(np.float32)
+    n = boards.shape[0]
+
+    # Uniform aux over legal moves (policy > 0 marks visited/legal moves)
+    legal_mask = policy > 0.0
+    legal_counts = legal_mask.sum(axis=1, keepdims=True).clip(min=1)
+    aux_policy = (legal_mask.astype(np.float32) / legal_counts)
+
+    return V2Batch(
+        boards=boards,
+        policy=policy,
+        aux_policy=aux_policy,
+        wdl_terminal=wdl,
+        wdl_short=wdl,  # best proxy: terminal outcome
+        mlh=np.zeros(n, dtype=np.float32),
+        legal_mask=legal_mask,
+        ply=np.zeros(n, dtype=np.int32),
+    )
+
+
 def load_v2_npz(path: str | Path) -> V2Batch:
     """Load a chunk-5 v2 .npz file and return an fp32 V2Batch.
 
