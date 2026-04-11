@@ -40,6 +40,14 @@ raw `mu` will rank high-uncertainty players (e.g. baselines that haven't played 
 above well-calibrated stronger models. When comparing strengths, prefer players
 marked `[eval]` — a `[prov]` player's μ is not yet trustworthy.
 
+**Sigma regimes at a glance** (OpenSkill starts at σ≈8.33):
+- `σ > 4`: matchmaker treats as "high uncertainty" and prioritizes placement
+  pairings (`_select_pair` in `elo_service.py`). `[prov]` in the display.
+- `2.5 < σ ≤ 4`: posterior is narrowing but μ still has meaningful error bars.
+  Still `[prov]` — don't cite the number to 2 decimals.
+- `σ ≤ 2.5`: `[eval]`. Posterior is tight; μ − 2σ is a defensible lower bound
+  and the player is safe to compare head-to-head with other evaluated players.
+
 ### 2. Model versions
 ```python
 meta = storage.get_json(storage.LATEST_META)  # {"version": N, "timestamp": "..."}

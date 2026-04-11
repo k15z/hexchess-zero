@@ -210,7 +210,6 @@ def replay_results(
 def compute_elo(
     players: list[str],
     results: list[dict],
-    anchor: str = "Minimax-2",
 ) -> dict[str, dict]:
     """Compute ratings from batch pairwise results. Returns {name: {mu, sigma}}.
 

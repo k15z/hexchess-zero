@@ -208,6 +208,11 @@
     background: rgba(234, 179, 8, 0.08);
   }
 
+  /* Dim provisional rows, but leave the CI bar cell at full opacity so
+     the already-subtle (--rating-bar-ci: opacity 0.2) bar remains legible. */
+  tr.provisional td { opacity: 0.55; }
+  tr.provisional td:last-child { opacity: 1; }
+
   td {
     padding: 4px 8px;
     font-variant-numeric: tabular-nums;
@@ -428,8 +433,11 @@ function renderRatingTable(players, ratings, playerStats) {
 
   if (!items.length) return '';
 
-  const minCr = Math.min(...items.map(i => i.mu - i.sigma));
-  const maxCr = Math.max(...items.map(i => i.mu + i.sigma));
+  // Bar is centered on the conservative rating (same value shown in the
+  // "rating" column) with ±σ as the CI half-width, so the tick always
+  // lines up with the displayed number.
+  const minCr = Math.min(...items.map(i => i.cr - i.sigma));
+  const maxCr = Math.max(...items.map(i => i.cr + i.sigma));
   const range = Math.max(maxCr - minCr, 1);
   const base = minCr - range * 0.05;
   const span = range * 1.1;
@@ -441,19 +449,20 @@ function renderRatingTable(players, ratings, playerStats) {
     const ps = playerStats[it.name];
     const avg = ps && ps.total_moves > 0 ? (ps.total_time / ps.total_moves).toFixed(2) : '\u2014';
 
-    const barLeft = Math.max(0, ((it.mu - it.sigma) - base) / span * 100);
-    const barRight = Math.min(100, ((it.mu + it.sigma) - base) / span * 100);
-    const barCenter = (it.mu - base) / span * 100;
+    const barLeft = Math.max(0, ((it.cr - it.sigma) - base) / span * 100);
+    const barRight = Math.min(100, ((it.cr + it.sigma) - base) / span * 100);
+    const barCenter = (it.cr - base) / span * 100;
 
     const isBaseline = BASELINES.has(it.name);
     const barColor = isBaseline ? 'var(--accent-dim)' : 'var(--accent)';
-    // Provisional players (wide posterior) get dimmed — mu isn't trustworthy yet.
-    const rowOpacity = it.evaluated ? '1' : '0.55';
+    // Provisional players get a "prov" class — CSS dims their text cells
+    // only (not the CI bar, which already has its own opacity).
+    const rowClass = it.evaluated ? '' : 'provisional';
     const stateBadge = it.evaluated
       ? `<span class="eval-badge eval" title="sigma \u2264 ${EVALUATED_SIGMA_THRESHOLD} — posterior tight, mu meaningful">eval</span>`
       : `<span class="eval-badge prov" title="sigma > ${EVALUATED_SIGMA_THRESHOLD} — provisional, mu not yet trustworthy">prov</span>`;
 
-    html += `<tr style="opacity:${rowOpacity}">
+    html += `<tr class="${rowClass}">
       <td class="r muted">${i + 1}</td>
       <td style="${isBaseline ? 'color:var(--text-dim)' : ''}">${it.name}</td>
       <td class="r" style="font-weight:600">${it.cr >= 0 ? '+' : ''}${it.cr.toFixed(2)}</td>

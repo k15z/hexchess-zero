@@ -207,7 +207,7 @@ def validate_strength_ordering(games_per_pair: int = 6) -> bool:
             print(f"    => {p1.name}: {a_wins}W, {p2.name}: {b_wins}W, draws: {draws}")
 
     player_names = [p.name for p in players]
-    ratings = compute_elo(player_names, results, anchor="Minimax-2")
+    ratings = compute_elo(player_names, results)
 
     print("\n  Ratings:")
     print(format_elo_table(ratings))
