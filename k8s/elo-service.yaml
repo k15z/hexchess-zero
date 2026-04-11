@@ -6,7 +6,7 @@ metadata:
 spec:
   # Each replica plays one game at a time; bump for throughput. Set
   # ELO_SLACK_LEADER=1 on at most one replica if Slack notifications are wanted.
-  replicas: 4
+  replicas: 2
   selector:
     matchLabels:
       app: hexchess-elo

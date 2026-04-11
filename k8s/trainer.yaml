@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trainer
+  namespace: hexchess
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hexchess-trainer
+  template:
+    metadata:
+      labels:
+        app: hexchess-trainer
+    spec:
+      containers:
+        - name: trainer
+          image: ghcr.io/k15z/hexchess-zero/training:latest
+          imagePullPolicy: Always
+          args: ["trainer"]
+          envFrom:
+            - secretRef:
+                name: hexchess-env
+          resources:
+            # Trainer is data-starved (training is 40x faster than self-play
+            # data production), so CPU is not the bottleneck. Observed actual
+            # usage: ~30m CPU / ~300Mi memory. 1 CPU / 1Gi gives ample headroom.
+            requests:
+              cpu: "1"
+              memory: "1Gi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"

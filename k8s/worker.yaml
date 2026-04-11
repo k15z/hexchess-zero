@@ -4,7 +4,7 @@ metadata:
   name: worker
   namespace: hexchess
 spec:
-  replicas: 2
+  replicas: 4
   selector:
     matchLabels:
       app: hexchess-worker
@@ -25,9 +25,10 @@ spec:
             # one game at a time with 500 MCTS sims/move. ~7 CPU gives
             # ~2-3s/move, keeping games under 10 min. Scale replicas based
             # on node count (2 workers per 16-core node).
+            # Memory: observed 1.7-8.2Gi actual; 10Gi gives comfortable headroom.
             requests:
               cpu: "7"
-              memory: "14Gi"
+              memory: "10Gi"
             limits:
               cpu: "7"
-              memory: "14Gi"
+              memory: "10Gi"
