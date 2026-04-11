@@ -799,7 +799,7 @@ function buildModelBehavior(data) {
   html += `<div class="kv-row"><span class="k">total steps</span><span class="v">${fmt(latest.total_steps)}</span></div>`;
   html += `<div class="kv-row"><span class="k">N_total</span><span class="v">${fmt(latest.n_total)} positions</span></div>`;
 
-  html += '<table style="margin-top:8px"><tr><th>loss</th><th class="r">current</th><th class="r">best</th><th style="width:110px;padding-left:8px">trend (${cycles.length}c)</th></tr>';
+  html += `<table style="margin-top:8px"><tr><th>loss</th><th class="r">current</th><th class="r">best</th><th style="width:110px;padding-left:8px">trend (${cycles.length}c)</th></tr>`;
   for (const {name, key, color} of lossDefs) {
     const vals = cycles.map(c => c[key]).filter(v => v != null);
     const cur = vals[vals.length - 1];

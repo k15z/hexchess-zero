@@ -708,7 +708,9 @@ def run_worker(cfg: AsyncConfig) -> None:
                 "recent_mean_root_q": round(float(np.mean(recent_game_qs)), 4),
                 "recent_mean_root_entropy": round(float(np.mean(recent_game_entropies)), 4),
                 "recent_mean_game_length": round(float(np.mean(recent_game_lengths)), 1),
-                "recent_games_window": len(recent_game_lengths),
+                # Use Q window size (full-search games only) since Q/entropy stats
+                # are only appended when mcts_qs is non-empty.
+                "recent_games_window": len(recent_game_qs),
             }
         _write_heartbeat(cfg, current_version, total_games, total_positions, search_stats)
 
