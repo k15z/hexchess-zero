@@ -572,6 +572,29 @@ impl PyGame {
         movegen::is_in_check(&self.state.board, self.state.side_to_move())
     }
 
+    /// STM-relative policy-vector index for a move, using this game's current
+    /// side-to-move. Use this instead of the top-level `move_to_index` when
+    /// building policy targets that will be paired with an STM-frame board
+    /// tensor (i.e. any target consumed by the trainer): it applies the
+    /// mirror remap when black is to move so the target lands in the same
+    /// slot the NN emits.
+    #[pyo3(signature = (from_q, from_r, to_q, to_r, promotion=None))]
+    fn policy_index(
+        &self,
+        from_q: i8,
+        from_r: i8,
+        to_q: i8,
+        to_r: i8,
+        promotion: Option<&str>,
+    ) -> PyResult<usize> {
+        let promo = parse_promotion(promotion)?;
+        let from = HexCoord::new(from_q, from_r);
+        let to = HexCoord::new(to_q, to_r);
+        let mv = EngineMove::new(from, to, None).with_promotion_opt(promo);
+        serialization::stm_policy_index(&mv, self.state.side_to_move())
+            .ok_or_else(|| PyValueError::new_err("move not in index table"))
+    }
+
     /// Deep copy of this game.
     fn clone(&self) -> Self {
         PyGame {
@@ -897,20 +920,6 @@ fn num_move_indices() -> usize {
     serialization::num_move_indices()
 }
 
-/// Return the move-index mirror lookup table as a numpy uint32 array of
-/// length `num_move_indices()`. Element `i` is the index of the move
-/// obtained by reflecting move `i` under the engine's canonical involution
-/// (central inversion of the hex grid). Intended for data-augmentation in
-/// the training loader.
-#[pyfunction]
-fn mirror_indices_array(py: Python<'_>) -> Bound<'_, numpy::PyArray1<u32>> {
-    let v: Vec<u32> = serialization::mirror_indices()
-        .iter()
-        .map(|&i| i as u32)
-        .collect();
-    numpy::PyArray1::from_vec(py, v)
-}
-
 // ---------------------------------------------------------------------------
 // Minimax search
 // ---------------------------------------------------------------------------
@@ -1031,7 +1040,6 @@ fn hexchess(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(move_to_index, m)?)?;
     m.add_function(wrap_pyfunction!(index_to_move, m)?)?;
     m.add_function(wrap_pyfunction!(num_move_indices, m)?)?;
-    m.add_function(wrap_pyfunction!(mirror_indices_array, m)?)?;
     m.add_function(wrap_pyfunction!(minimax_search, m)?)?;
     m.add_function(wrap_pyfunction!(minimax_search_all, m)?)?;
     m.add_function(wrap_pyfunction!(minimax_search_with_policy, m)?)?;

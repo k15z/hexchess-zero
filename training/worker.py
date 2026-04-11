@@ -412,7 +412,9 @@ def _play_one_game_pcr(
 
             # Opponent-reply visit distribution from the MCTS tree. Falls
             # back to uniform-over-legal if the best child is unexpanded
-            # (e.g. terminal position or very small search).
+            # (e.g. terminal position or very small search). Indexed in the
+            # game's current STM frame via `game.policy_index` to match the
+            # NN's output frame (see engine::serialization::encode_board).
             aux_opp_raw = search.aux_opponent_policy()
             if aux_opp_raw is not None:
                 aux_opp = np.asarray(aux_opp_raw, dtype=np.float32)
@@ -421,7 +423,7 @@ def _play_one_game_pcr(
                 if legal_count > 0:
                     inv = 1.0 / legal_count
                     for mv in legal:
-                        idx = hexchess.move_to_index(
+                        idx = game.policy_index(
                             mv.from_q, mv.from_r, mv.to_q, mv.to_r, mv.promotion
                         )
                         aux_opp[idx] = inv

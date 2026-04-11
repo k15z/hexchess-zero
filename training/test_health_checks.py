@@ -76,13 +76,38 @@ def test_move_encoding_round_trip_passes():
 
 
 # ---------------------------------------------------------------------------
-# 2. Mirror table (deferred)
+# 2. Mirror table — STM-frame policy indexing consistency
 # ---------------------------------------------------------------------------
 
 
-def test_mirror_table_raises_not_implemented():
-    with pytest.raises(NotImplementedError):
-        check_mirror_table()
+def test_mirror_table_passes_on_live_moves():
+    # White-to-move identity + black-to-move mirror remap must both hold.
+    r = check_mirror_table()
+    assert r.passed, r.message
+
+
+def test_mirror_table_black_to_move_actually_remaps():
+    # Sanity: when the encoder is STM-framed, at least some moves from a
+    # black-to-move position must have game.policy_index != move_to_index.
+    # (If someone silently reverts the encoder to absolute frame, this
+    # catches it.)
+    import hexchess
+
+    game = hexchess.Game()
+    game.apply(game.legal_moves()[0])
+    assert game.side_to_move() == "black"
+    any_remap = False
+    for mv in game.legal_moves():
+        absolute = hexchess.move_to_index(
+            mv.from_q, mv.from_r, mv.to_q, mv.to_r, mv.promotion
+        )
+        stm = game.policy_index(
+            mv.from_q, mv.from_r, mv.to_q, mv.to_r, mv.promotion
+        )
+        if absolute != stm:
+            any_remap = True
+            break
+    assert any_remap, "black-to-move policy_index is always identity — STM frame inactive"
 
 
 # ---------------------------------------------------------------------------

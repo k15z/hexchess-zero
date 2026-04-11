@@ -37,13 +37,19 @@ def _softmax_probs(move_scores, temperature: float) -> np.ndarray:
     return exp_scores / exp_scores.sum()
 
 
-def _scores_to_policy(move_scores, temperature: float) -> np.ndarray:
-    """Convert minimax move scores to a softmax policy vector."""
+def _scores_to_policy(game, move_scores, temperature: float) -> np.ndarray:
+    """Convert minimax move scores to an STM-frame softmax policy vector.
+
+    Uses `game.policy_index` so the index frame matches the board tensor
+    produced by `hexchess.encode_board(game)` — both are STM-relative
+    (piece planes mirrored + color-swapped when black is to move). See
+    engine::serialization::encode_board for the frame convention.
+    """
     probs = _softmax_probs(move_scores, temperature)
     policy = np.zeros(NUM_MOVES, dtype=np.float32)
     for entry, p in zip(move_scores, probs):
         mv = entry.move
-        idx = hexchess.move_to_index(mv.from_q, mv.from_r, mv.to_q, mv.to_r, mv.promotion)
+        idx = game.policy_index(mv.from_q, mv.from_r, mv.to_q, mv.to_r, mv.promotion)
         policy[idx] = p
     return policy
 
@@ -119,7 +125,7 @@ def play_imitation_game(cfg: AsyncConfig, log_interval: int = 50) -> list[dict]:
         result = hexchess.minimax_search_with_policy(game, cfg.imitation_depth)
 
         board_tensor = np.array(hexchess.encode_board(game), dtype=np.float32)
-        policy = _scores_to_policy(result.moves, cfg.imitation_temperature)
+        policy = _scores_to_policy(game, result.moves, cfg.imitation_temperature)
         best_score = result.best_score
         side = game.side_to_move()
 
