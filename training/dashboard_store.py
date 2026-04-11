@@ -78,7 +78,11 @@ class DashboardStore:
     # ---------------------------------------------------------------- lifecycle
 
     def start(self) -> None:
-        self.refresh_once()
+        try:
+            self.refresh_once()
+        except Exception as e:  # noqa: BLE001 — allow boot during transient S3 outages
+            with self._lock:
+                self._last_error = f"{type(e).__name__}: {e}"
         if self._thread is None:
             self._thread = threading.Thread(
                 target=self._loop, name="dashboard-store", daemon=True
