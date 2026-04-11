@@ -43,7 +43,7 @@ include = ["training*"]
 # so we ship a hand-written stub at bindings/python/hexchess.pyi and point
 # ty at it via extra-paths below.
 [tool.ty.environment]
-python = ".venv"
+# Defaults to `.venv` — only set `python` if you need a non-default location.
 extra-paths = ["bindings/python"]
 
 [tool.ty.src]
