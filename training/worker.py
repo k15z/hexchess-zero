@@ -537,13 +537,17 @@ def _read_model_version(cfg: AsyncConfig) -> tuple[int, str | None]:
 
 
 def _write_heartbeat(cfg: AsyncConfig, version: int, total_games: int,
-                     total_positions: int) -> None:
-    storage.put_json(f"{storage.HEARTBEATS_PREFIX}{_worker_name()}.json", {
+                     total_positions: int,
+                     search_stats: dict | None = None) -> None:
+    d: dict = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "model_version": version,
         "total_games": total_games,
         "total_positions": total_positions,
-    })
+    }
+    if search_stats:
+        d.update(search_stats)
+    storage.put_json(f"{storage.HEARTBEATS_PREFIX}{_worker_name()}.json", d)
 
 
 # ---------------------------------------------------------------------------
@@ -638,6 +642,11 @@ def run_worker(cfg: AsyncConfig) -> None:
     total_positions = 0
     # Game-id generator: (unix-seconds << 16) | game-index, unique per worker.
     game_id_base = int(time.time()) << 20
+    # Rolling window for search stats (plan §7.6 page 4).
+    _SEARCH_STAT_WINDOW = 100
+    recent_game_qs: list[float] = []
+    recent_game_entropies: list[float] = []
+    recent_game_lengths: list[int] = []
 
     while True:
         game_t0 = time.time()
@@ -682,7 +691,26 @@ def run_worker(cfg: AsyncConfig) -> None:
             len(record.positions), record.num_total_positions,
             elapsed, current_version, key,
         )
-        _write_heartbeat(cfg, current_version, total_games, total_positions)
+
+        # Update rolling search stats for heartbeat (plan §7.6 page 4).
+        if mcts_qs:
+            recent_game_qs.append(float(np.mean(mcts_qs)))
+            recent_game_entropies.append(float(np.mean(mcts_entropies)))
+        recent_game_lengths.append(record.game_len_plies)
+        if len(recent_game_qs) > _SEARCH_STAT_WINDOW:
+            recent_game_qs = recent_game_qs[-_SEARCH_STAT_WINDOW:]
+            recent_game_entropies = recent_game_entropies[-_SEARCH_STAT_WINDOW:]
+        if len(recent_game_lengths) > _SEARCH_STAT_WINDOW:
+            recent_game_lengths = recent_game_lengths[-_SEARCH_STAT_WINDOW:]
+        search_stats: dict | None = None
+        if recent_game_qs:
+            search_stats = {
+                "recent_mean_root_q": round(float(np.mean(recent_game_qs)), 4),
+                "recent_mean_root_entropy": round(float(np.mean(recent_game_entropies)), 4),
+                "recent_mean_game_length": round(float(np.mean(recent_game_lengths)), 1),
+                "recent_games_window": len(recent_game_lengths),
+            }
+        _write_heartbeat(cfg, current_version, total_games, total_positions, search_stats)
 
         # Per-game model refresh (plan §5.2).
         new_version, new_model_path = _read_model_version(cfg)

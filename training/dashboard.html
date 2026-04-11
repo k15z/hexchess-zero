@@ -649,14 +649,21 @@ function buildRetired(data) {
   return panelHtml('retired', 'Retired', `${retired.length}`, body, false);
 }
 
-// --- Plan §7.6 pages 1-4 ---
-// Pages 1 and 2 are wired against the metrics already in /api/status.
-// Pages 3 and 4 still need new metric pipelines (loss snapshots in S3 for
-// page 3, TT-hit-rate in worker heartbeats for page 4) and stay as TODO
-// placeholders that list what they're waiting on.
-// TODO(plan §7.6 page 5 — benchmark suite stability heatmap)
-// TODO(plan §7.6 page 6 — diff viewer)
-// TODO(plan §7.6 page 7 — replay buffer audit browser)
+// --- Plan §7.6 pages 1-7 ---
+
+function _sparkline(values, width, height, color) {
+  const finite = values.filter(v => isFinite(v));
+  if (finite.length < 2) return '<span class="muted">\u2014</span>';
+  const min = Math.min(...finite);
+  const max = Math.max(...finite);
+  const range = max - min || 1;
+  const pts = finite.map((v, i) => {
+    const x = (i / (finite.length - 1)) * width;
+    const y = height - 2 - ((v - min) / range) * (height - 4);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="display:block;overflow:visible"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
+}
 
 function _stackedBar(parts, total) {
   // parts: [{label, value, color}]; total: denominator for widths.
@@ -765,27 +772,251 @@ function buildDataPage(data) {
 }
 
 function buildModelBehavior(data) {
-  const body = `
-    <div class="empty">awaiting trainer metric snapshots</div>
-    <ul style="margin:8px 0 0 18px;font-size:12px;opacity:0.7">
-      <li>WDL calibration plot — needs trainer to publish step metrics to S3</li>
-      <li>Policy entropy histogram — needs trainer to publish step metrics to S3</li>
-      <li>NN argmax vs MCTS argmax agreement — needs trainer instrumentation</li>
-      <li>KL(old → new) per promotion — needs to compare consecutive ONNX exports</li>
-    </ul>`;
-  return panelHtml('model-behavior', 'Page 3 — Model Behavior', 'TODO', body, false);
+  const tm = data.trainer_metrics || {};
+  const cycles = (tm.cycles || []).slice(-100);
+
+  if (!cycles.length) {
+    return panelHtml('model-behavior', 'Page 3 — Model Behavior', 'waiting', `
+      <div class="empty">awaiting first training cycle</div>
+      <ul style="margin:8px 0 0 18px;font-size:12px;opacity:0.5">
+        <li>WDL calibration — not yet instrumented (needs per-step value predictions logged)</li>
+        <li>NN argmax vs MCTS argmax agreement — needs trainer instrumentation</li>
+        <li>KL(old \u2192 new) per promotion — needs consecutive ONNX comparison</li>
+      </ul>`, false);
+  }
+
+  const latest = cycles[cycles.length - 1];
+  const lossDefs = [
+    {name: 'policy', key: 'loss_policy', color: '#3aa'},
+    {name: 'value',  key: 'loss_value',  color: '#5b6'},
+    {name: 'mlh',    key: 'loss_mlh',    color: '#cc6'},
+    {name: 'stv',    key: 'loss_stv',    color: '#c84'},
+    {name: 'aux',    key: 'loss_aux',    color: '#849'},
+  ];
+
+  let html = '';
+  html += `<div class="kv-row"><span class="k">latest cycle</span><span class="v">${latest.cycle} &middot; v${latest.version} &middot; ${latest.steps} steps</span></div>`;
+  html += `<div class="kv-row"><span class="k">total steps</span><span class="v">${fmt(latest.total_steps)}</span></div>`;
+  html += `<div class="kv-row"><span class="k">N_total</span><span class="v">${fmt(latest.n_total)} positions</span></div>`;
+
+  html += '<table style="margin-top:8px"><tr><th>loss</th><th class="r">current</th><th class="r">best</th><th style="width:110px;padding-left:8px">trend (${cycles.length}c)</th></tr>';
+  for (const {name, key, color} of lossDefs) {
+    const vals = cycles.map(c => c[key]).filter(v => v != null);
+    const cur = vals[vals.length - 1];
+    const best = Math.min(...vals);
+    html += `<tr>
+      <td>${name}</td>
+      <td class="r">${cur != null ? cur.toFixed(5) : '\u2014'}</td>
+      <td class="r muted">${best != null ? best.toFixed(5) : '\u2014'}</td>
+      <td style="padding-left:8px">${_sparkline(vals, 100, 22, color)}</td>
+    </tr>`;
+  }
+  html += '</table>';
+
+  html += `<ul style="margin:10px 0 0 18px;font-size:11px;opacity:0.45">
+    <li>WDL calibration — not yet instrumented</li>
+    <li>NN argmax vs MCTS argmax agreement — not yet instrumented</li>
+    <li>KL(old \u2192 new) per promotion — not yet instrumented</li>
+  </ul>`;
+
+  return panelHtml('model-behavior', 'Page 3 — Model Behavior', `cycle ${latest.cycle}`, html, false);
 }
 
 function buildSearch(data) {
-  const body = `
-    <div class="empty">awaiting worker heartbeat extension</div>
-    <ul style="margin:8px 0 0 18px;font-size:12px;opacity:0.7">
-      <li>TT hit rate per worker — needs worker to add tt_stats to heartbeat</li>
-      <li>Mean root visits / PV length — needs game-level metric in meta sidecar</li>
-      <li>LCB vs argmax-visit divergence — needs eval-game accounting</li>
-      <li>Resign false-positive rate — needs the 10%-skip games to write outcome</li>
-    </ul>`;
-  return panelHtml('search', 'Page 4 — Search', 'TODO', body, false);
+  const workers = Object.entries(data.workers || {});
+  const withStats = workers.filter(([, w]) => w.recent_mean_root_q != null);
+
+  let html = '';
+  if (withStats.length) {
+    html += '<table><tr><th>worker</th><th class="r">mean Q</th><th class="r">mean H</th><th class="r">game len</th><th class="r">window</th></tr>';
+    for (const [name, w] of withStats) {
+      html += `<tr>
+        <td>${name}</td>
+        <td class="r">${w.recent_mean_root_q.toFixed(4)}</td>
+        <td class="r">${w.recent_mean_root_entropy.toFixed(4)}</td>
+        <td class="r">${w.recent_mean_game_length.toFixed(0)}</td>
+        <td class="r muted">${w.recent_games_window}</td>
+      </tr>`;
+    }
+    html += '</table>';
+  } else if (workers.length) {
+    html += '<div class="empty">workers present but no games played yet</div>';
+  } else {
+    html += '<div class="empty">awaiting worker heartbeats</div>';
+  }
+
+  html += `<ul style="margin:8px 0 0 18px;font-size:11px;opacity:0.4">
+    <li>TT hit rate — needs Rust MCTS to expose tt_stats (not yet instrumented)</li>
+    <li>LCB vs argmax-visit divergence — needs eval-game accounting</li>
+    <li>Resign false-positive rate — needs 10%-skip games to write outcome</li>
+  </ul>`;
+
+  const badge = withStats.length ? `${withStats.length} worker${withStats.length > 1 ? 's' : ''}` : 'waiting';
+  return panelHtml('search', 'Page 4 — Search', badge, html, false);
+}
+
+function buildBenchmarks(data) {
+  const bvs = (data.benchmark_versions || []).slice().sort((a, b) => a.version - b.version);
+  const br = data.benchmark_results || {};
+
+  if (!bvs.length) {
+    return panelHtml('benchmarks', 'Page 5 — Benchmarks', 'waiting', `
+      <div class="empty">awaiting first benchmark run</div>
+      <div style="font-size:11px;opacity:0.6;margin-top:6px">
+        Run after each promotion: <code>uv run python -m training.benchmark_runner</code>
+      </div>`, false);
+  }
+
+  // Collect all position IDs (in order of first appearance).
+  const posOrder = [];
+  const posMeta = {};
+  for (const vs of bvs) {
+    const vk = vs.name.replace('.json', '');
+    for (const r of ((br[vk] || {}).results || [])) {
+      if (!posMeta[r.id]) {
+        posMeta[r.id] = {category: r.category};
+        posOrder.push(r.id);
+      }
+    }
+  }
+
+  if (!posOrder.length) {
+    return panelHtml('benchmarks', 'Page 5 — Benchmarks', `${bvs.length}v`, '<div class="empty">no position results found</div>', false);
+  }
+
+  // Build lookup: versionKey -> posId -> result
+  const lkp = {};
+  for (const vs of bvs) {
+    const vk = vs.name.replace('.json', '');
+    lkp[vk] = {};
+    for (const r of ((br[vk] || {}).results || [])) lkp[vk][r.id] = r;
+  }
+
+  let html = '<div style="overflow-x:auto"><table class="h2h-table" style="font-size:10px">';
+  html += '<tr><th style="text-align:left;min-width:90px">position</th><th>cat</th>';
+  for (const vs of bvs) html += `<th>${vs.name.replace('.json', '')}</th>`;
+  html += '</tr>';
+
+  for (const posId of posOrder) {
+    const meta = posMeta[posId];
+    html += `<tr><td style="font-size:10px;max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${posId}">${posId}</td><td class="muted">${meta.category.slice(0, 4)}</td>`;
+    const firstResult = bvs.map(vs => lkp[vs.name.replace('.json', '')][posId]).find(r => r);
+    const refMove = firstResult ? firstResult.best_move : null;
+    for (const vs of bvs) {
+      const r = lkp[vs.name.replace('.json', '')][posId];
+      if (!r) { html += '<td class="muted" style="opacity:0.3">\u2014</td>'; continue; }
+      const t = Math.max(0, Math.min(1, (r.value + 1) / 2));
+      const bg = `rgba(${Math.round(160 * (1 - t))},${Math.round(160 * t)},30,0.45)`;
+      const flag = r.best_move !== refMove ? '\u26a1' : '';
+      html += `<td style="background:${bg};font-size:9px;white-space:nowrap" title="${r.best_move} (val=${r.value.toFixed(3)})">${r.best_move}${flag}</td>`;
+    }
+    html += '</tr>';
+  }
+  html += '</table></div>';
+
+  return panelHtml('benchmarks', 'Page 5 — Benchmarks', `${bvs.length}v \u00d7 ${posOrder.length}pos`, html, false);
+}
+
+function buildDiffViewer(data) {
+  const bvs = (data.benchmark_versions || []).slice().sort((a, b) => a.version - b.version);
+  const br = data.benchmark_results || {};
+
+  if (bvs.length < 2) {
+    return panelHtml('diff-viewer', 'Page 6 — Diff Viewer', 'waiting', '<div class="empty">awaiting \u22652 benchmark runs</div>', false);
+  }
+
+  const prev = bvs[bvs.length - 2];
+  const curr = bvs[bvs.length - 1];
+  const pk = prev.name.replace('.json', '');
+  const ck = curr.name.replace('.json', '');
+  const prevRes = (br[pk] || {}).results || [];
+  const currRes = (br[ck] || {}).results || [];
+
+  if (!prevRes.length || !currRes.length) {
+    return panelHtml('diff-viewer', 'Page 6 — Diff Viewer', `${pk} \u2192 ${ck}`, '<div class="empty">results not yet loaded</div>', false);
+  }
+
+  const pm = Object.fromEntries(prevRes.map(r => [r.id, r]));
+  const cm = Object.fromEntries(currRes.map(r => [r.id, r]));
+
+  const diffs = [];
+  for (const id of [...new Set([...Object.keys(pm), ...Object.keys(cm)])]) {
+    const p = pm[id]; const c = cm[id];
+    if (!p || !c) continue;
+    const moveChanged = p.best_move !== c.best_move;
+    const dv = c.value - p.value;
+    if (moveChanged || Math.abs(dv) > 0.05) diffs.push({id, p, c, moveChanged, dv});
+  }
+
+  let html = `<div class="kv-row" style="margin-bottom:8px"><span class="k">comparing</span><span class="v">${pk} \u2192 ${ck}</span></div>`;
+
+  if (!diffs.length) {
+    html += '<div style="color:var(--green);font-size:12px">\u2714 no changes \u2014 all positions stable</div>';
+  } else {
+    html += `<div style="margin-bottom:6px;font-size:11px;opacity:0.7">${diffs.length} position${diffs.length !== 1 ? 's' : ''} changed</div>`;
+    html += '<table><tr><th>position</th><th>cat</th><th>prev move</th><th>curr move</th><th class="r">\u0394value</th></tr>';
+    for (const {id, p, c, moveChanged, dv} of diffs) {
+      const dc = dv > 0.01 ? 'var(--green)' : dv < -0.01 ? 'var(--red)' : 'var(--text-dim)';
+      html += `<tr>
+        <td style="font-size:10px;max-width:80px;overflow:hidden;text-overflow:ellipsis" title="${id}">${id}</td>
+        <td class="muted">${p.category.slice(0, 4)}</td>
+        <td style="${moveChanged ? 'color:var(--amber)' : ''}">${p.best_move}</td>
+        <td style="${moveChanged ? 'color:var(--green);font-weight:600' : ''}">${c.best_move}</td>
+        <td class="r" style="color:${dc}">${dv > 0 ? '+' : ''}${dv.toFixed(3)}</td>
+      </tr>`;
+    }
+    html += '</table>';
+  }
+
+  return panelHtml('diff-viewer', 'Page 6 — Diff Viewer', `${pk} \u2192 ${ck}`, html, false);
+}
+
+function buildReplayAudit(data) {
+  const sp = (data.data && data.data.selfplay) || {};
+  const byVer = sp.by_version || {};
+  const entries = Object.entries(byVer).sort((a, b) => {
+    const an = parseInt(a[0].replace(/[^0-9]/g, ''), 10) || 0;
+    const bn = parseInt(b[0].replace(/[^0-9]/g, ''), 10) || 0;
+    return an - bn;
+  });
+
+  if (!entries.length) {
+    return panelHtml('replay-audit', 'Page 7 — Replay Audit', 'waiting', '<div class="empty">awaiting self-play data</div>', false);
+  }
+
+  // Replicate client-side window formula from buildDataPage.
+  const C = 25000, A = 0.75, B = 0.4;
+  function windowSize(n) {
+    if (n <= 0) return 0;
+    if (n <= C) return n;
+    const t = Math.pow(n / C, A);
+    return Math.round(C * (1 + B * (t - 1) / A));
+  }
+
+  const nTotal = sp.total_positions || 0;
+  const window = windowSize(nTotal);
+
+  let html = '';
+  html += `<div class="kv-row"><span class="k">N_total</span><span class="v">${fmt(nTotal)} positions</span></div>`;
+  html += `<div class="kv-row" style="margin-bottom:8px"><span class="k">window</span><span class="v">${fmt(window)} (${nTotal > 0 ? (100 * window / nTotal).toFixed(1) : 0}% of N_total)</span></div>`;
+
+  const maxPos = entries.reduce((m, [, v]) => Math.max(m, v.positions || 0), 0);
+  html += '<table><tr><th>version</th><th class="r">files</th><th class="r">positions</th><th class="r">% of total</th><th style="min-width:80px"></th></tr>';
+  for (const [ver, info] of entries) {
+    const pos = info.positions || 0;
+    const pct = nTotal > 0 ? (100 * pos / nTotal) : 0;
+    const bw = maxPos > 0 ? (100 * pos / maxPos).toFixed(1) : 0;
+    html += `<tr>
+      <td style="font-weight:500">${ver}</td>
+      <td class="r muted">${fmt(info.count)}</td>
+      <td class="r">${fmt(pos)}</td>
+      <td class="r muted">${pct.toFixed(1)}%</td>
+      <td><div style="height:8px;background:var(--bg-deep);border-radius:2px;overflow:hidden"><div style="width:${bw}%;height:100%;background:#3aa;border-radius:2px"></div></div></td>
+    </tr>`;
+  }
+  html += '</table>';
+
+  return panelHtml('replay-audit', 'Page 7 — Replay Audit', `${entries.length}v`, html, false);
 }
 
 function render(data) {
@@ -805,6 +1036,9 @@ function render(data) {
     buildDataPage(data),
     buildModelBehavior(data),
     buildSearch(data),
+    buildBenchmarks(data),
+    buildDiffViewer(data),
+    buildReplayAudit(data),
     buildH2H(data),
     retiredHtml,
     `<div class="two-col">

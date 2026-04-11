@@ -56,8 +56,10 @@ class DashboardStore:
 
         self._etag_meta: str | None = None
         self._etag_elo: str | None = None
+        self._etag_trainer: str | None = None
         self._model: dict = {"version": 0, "promoted_at": None}
         self._elo: dict = {}
+        self._trainer_metrics: dict = {}
 
         self._sp_files: dict[str, tuple[int, str]] = {}
         self._im_files: dict[str, tuple[int, str]] = {}
@@ -68,6 +70,10 @@ class DashboardStore:
 
         # name -> {"lm": iso, "data": {...}}
         self._heartbeats: dict[str, dict] = {}
+
+        # benchmark: version_str -> result dict (immutable, permanent cache)
+        self._benchmark_results: dict[str, dict] = {}
+        self._benchmark_versions: list[dict] = []
 
         self._snapshots: list[dict] = []
 
@@ -113,11 +119,18 @@ class DashboardStore:
         self._elo = self._sync_etagged_json(
             storage.ELO_STATE, "_etag_elo", lambda d: d, fallback=self._elo
         )
+        self._trainer_metrics = self._sync_etagged_json(
+            storage.TRAINER_METRICS,
+            "_etag_trainer",
+            lambda d: d,
+            fallback=self._trainer_metrics,
+        )
         self._sync_games()
         self._sync_data(storage.SELFPLAY_PREFIX, self._sp_files, "_sp_agg")
         self._sync_data(storage.IMITATION_PREFIX, self._im_files, "_im_agg")
         self._sync_heartbeats()
         self._sync_snapshots()
+        self._sync_benchmarks()
 
         with self._lock:
             self._last_sync = datetime.now(timezone.utc).isoformat()
@@ -237,6 +250,40 @@ class DashboardStore:
         with self._lock:
             self._snapshots = snaps
 
+    def _sync_benchmarks(self) -> None:
+        # LIST available result versions; benchmark files are immutable so we
+        # never re-fetch a version we've already downloaded.
+        _MAX_VERSIONS = 10
+        keys = self._s.ls(storage.BENCHMARK_RESULTS_PREFIX)
+        available = []
+        for k in keys:
+            name = k.rsplit("/", 1)[-1]
+            if name.startswith("v") and name.endswith(".json"):
+                try:
+                    ver = int(name[1:-5])
+                    available.append({"key": k, "name": name, "version": ver})
+                except ValueError:
+                    continue
+        available.sort(key=lambda x: x["version"])
+        to_use = available[-_MAX_VERSIONS:]
+
+        new_results: dict[str, dict] = {}
+        for entry in to_use:
+            ver_str = entry["name"][:-5]  # "v42"
+            if ver_str in self._benchmark_results:
+                new_results[ver_str] = self._benchmark_results[ver_str]
+                continue
+            try:
+                new_results[ver_str] = self._s.get_json(entry["key"])
+            except KeyError:
+                continue
+
+        with self._lock:
+            self._benchmark_versions = [
+                {"name": e["name"], "version": e["version"]} for e in to_use
+            ]
+            self._benchmark_results = new_results
+
     # -------------------------------------------------------------- read-side
 
     def snapshot(self) -> dict:
@@ -261,6 +308,11 @@ class DashboardStore:
                     "selfplay": dict(self._sp_agg),
                     "imitation": im_agg,
                     "models": list(self._snapshots),
+                },
+                "trainer_metrics": dict(self._trainer_metrics),
+                "benchmark_versions": list(self._benchmark_versions),
+                "benchmark_results": {
+                    v: dict(r) for v, r in self._benchmark_results.items()
                 },
                 "timestamp": self._last_sync
                 or datetime.now(timezone.utc).isoformat(),
