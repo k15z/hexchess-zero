@@ -417,7 +417,9 @@ pub struct SearchResult {
     pub policy: Vec<f32>,
     /// Value estimate of the root position.
     pub value: f32,
-    /// Total nodes in the search tree.
+    /// Visit count at the root node (= number of simulations whose
+    /// backups reached the root). For a search with no early-terminal
+    /// hits, this equals the requested simulation count.
     pub nodes_searched: u32,
 }
 
@@ -1118,7 +1120,9 @@ impl MctsSearch {
             best_move,
             policy,
             value,
-            nodes_searched: self.nodes.len() as u32,
+            // Root visit count, not arena size: this is what the Python
+            // consumer records as `root_n` on each training sample.
+            nodes_searched: self.nodes[0].visit_count,
         }
     }
 
@@ -1382,7 +1386,9 @@ pub struct PcrOutcome {
     pub best_move: Move,
     /// Root value estimate from the search.
     pub value: f32,
-    /// Total arena nodes at the end of the search.
+    /// Root visit count after the search (= simulations whose backups
+    /// reached the root). Equals the requested sim count absent early
+    /// terminal hits. This is what the trainer stores as `root_n`.
     pub nodes_searched: u32,
     /// True iff this call ran a full (high-sim, noisy) search; only full
     /// searches should be recorded as training positions.

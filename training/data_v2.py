@@ -68,16 +68,20 @@ class V2Batch:
 def _decode_boards(boards_int8: np.ndarray) -> np.ndarray:
     """Cast int8 board tensor back to float32.
 
-    The worker stored ``rint(float_board).astype(int8)``. The 12 piece
-    planes and the binary meta planes (side-to-move, en-passant, in-check,
-    last-move-from/to, repetition, validity) round-trip exactly since
-    every value is in {0, 1, 2}.
+    The worker stored ``rint(float_board).astype(int8)``. Exactly
+    round-tripped: the 12 piece planes, all {0,1} indicator planes
+    (side-to-move, en-passant, in-check, last-move-from/to, validity),
+    and the {0,1,2}-valued repetition plane.
 
-    Four meta planes (fullmove/100, halfmove/100, repetition, halfmove/50)
-    were in the fractional range [0, ~2] and were lossily rounded to
-    integers. We accept that loss here — see the worker module docstring
-    for the rationale. No explicit rescale is applied (the float values
-    post-round-trip are the integer-rounded versions).
+    Lossy: the three normalized scalar planes. ch 14
+    (halfmove_clock/100) and ch 21 (halfmove_clock/50, clamped) are
+    both capped at [0, 1] by the 50-move rule and are binarized by
+    ``rint``. ch 13 (fullmove/100) is not clamped, so it survives as
+    small non-negative integers (0 for moves <50, 1 for ~50-150, ...)
+    — coarse but not collapsed. No rescale is applied on load; we feed
+    the int8-rounded values straight to the net. See
+    ``training/worker.py`` module docstring for the path forward if
+    these signals turn out to matter.
     """
     return boards_int8.astype(np.float32)
 

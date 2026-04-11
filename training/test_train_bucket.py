@@ -66,6 +66,23 @@ def test_budget_goes_negative():
     assert not bucket.has_budget()
 
 
+def test_has_budget_requires_full_batch():
+    """A partial batch's worth of tokens is not enough budget.
+
+    Regression for a subtle off-by-one: `has_budget` used to return True
+    for any positive token count, so a step with < batch_size tokens
+    would fire and drive `_tokens` negative. Now the bucket must hold at
+    least one full batch to claim budget.
+    """
+    bucket = TrainBucket(target_passes=1.0, batch_size=10)
+    bucket.update(9)  # seed: 9 (one short of a batch)
+    assert bucket.tokens == 9.0
+    assert not bucket.has_budget()
+    bucket.update(10)  # +1 new position -> tokens = 10
+    assert bucket.tokens == 10.0
+    assert bucket.has_budget()
+
+
 def test_refill_after_exhaustion():
     """New data refills an exhausted bucket."""
     bucket = TrainBucket(target_passes=2.0, batch_size=10)

@@ -186,7 +186,10 @@ class TrainBucket:
         return self._tokens
 
     def has_budget(self) -> bool:
-        return self._tokens > 0
+        # Must have enough tokens to cover a full batch; otherwise
+        # `consume()` drives `_tokens` negative on a step we should have
+        # waited out.
+        return self._tokens >= self.batch_size
 
 
 # ---------------------------------------------------------------------------
