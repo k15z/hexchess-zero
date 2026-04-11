@@ -68,6 +68,8 @@ class PlayerCache:
         self.max_size = max(max_size, 4)
         self._cache: OrderedDict[str, Player] = OrderedDict()
         self._baselines: dict[str, Player] = {}
+        self._hits = 0
+        self._misses = 0
 
     def _init_baselines(self) -> None:
         if self._baselines:
@@ -80,8 +82,10 @@ class PlayerCache:
         self._init_baselines()
 
         if name in self._cache:
+            self._hits += 1
             self._cache.move_to_end(name)
             return self._cache[name]
+        self._misses += 1
 
         if name in self._baselines:
             player = self._baselines[name]
@@ -108,6 +112,17 @@ class PlayerCache:
 
         self._cache[name] = player
         return player
+
+    def stats(self) -> dict[str, float]:
+        total = self._hits + self._misses
+        hit_rate = (self._hits / total) if total else 0.0
+        return {
+            "size": float(len(self._cache)),
+            "max_size": float(self.max_size),
+            "hits": float(self._hits),
+            "misses": float(self._misses),
+            "hit_rate": hit_rate,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -557,6 +572,11 @@ def run_elo_service(
                 "Ratings (game {}):\n{}",
                 state["total_games"],
                 format_elo_table(state["ratings"]),
+            )
+            cs = players_cache.stats()
+            logger.info(
+                "Player cache: size={:.0f}/{:.0f} hit_rate={:.1%} hits={:.0f} misses={:.0f}",
+                cs["size"], cs["max_size"], cs["hit_rate"], cs["hits"], cs["misses"],
             )
 
         # Periodically write the derived projection for the dashboard/metrics.
