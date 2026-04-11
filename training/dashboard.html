@@ -683,7 +683,9 @@ function buildRunHealth(data) {
   let w = 0, l = 0, d = 0;
   let lengths = [];
   for (const g of games) {
-    const winner = g.winner || g.result;
+    // Elo-game records now store "outcome" ("white" | "black" | "draw").
+    // Keep old-field fallbacks for historic records.
+    const winner = g.outcome || g.winner || g.result;
     if (winner === 'draw' || winner === 'd') d++;
     else if (winner === 'white' || winner === 'w') w++;
     else if (winner === 'black' || winner === 'b') l++;
