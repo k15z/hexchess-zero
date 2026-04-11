@@ -552,9 +552,6 @@ def _write_heartbeat(cfg: AsyncConfig, version: int, total_games: int,
 
 def run_worker(cfg: AsyncConfig) -> None:
     """Run the continuous self-play worker loop (v2 schema)."""
-    if hexchess is None:
-        raise ImportError("hexchess bindings not available")
-
     cfg.validate()
     setup_json_logging("worker", run_id=cfg.run_id)
     log_event("worker.start", run_id=cfg.run_id)

@@ -91,8 +91,6 @@ def replay(
     without requiring the native binding.
     """
     if search_factory is None:
-        if hexchess is None:
-            raise ImportError("hexchess bindings not available")
         # Replay verifies worker self-play determinism, so it must use the
         # same training-mode SearchConfig and Dirichlet settings as the worker
         # — NOT eval_mode. New traces record the noise parameters explicitly;
@@ -105,8 +103,6 @@ def replay(
             dirichlet_alpha=dirichlet_alpha,
         )
     if game_factory is None:
-        if hexchess is None:
-            raise ImportError("hexchess bindings not available")
         game_factory = lambda: hexchess.Game()  # noqa: E731
 
     search = search_factory()
