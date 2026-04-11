@@ -25,7 +25,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Callable
 
-GATE_STATE_KEY = "state/gate.json"
+from . import storage
 
 # Number of initial promotions to gate before switching to continuous mode.
 GATE_PROMOTION_HORIZON = 5
@@ -123,13 +123,11 @@ def decide_promotion(
 
 def load_gate_state() -> GateState:
     """Load ``state/gate.json`` from S3, or return defaults on miss."""
-    from . import storage
     try:
-        return GateState.from_dict(storage.get_json(GATE_STATE_KEY))
+        return GateState.from_dict(storage.get_json(storage.GATE_STATE))
     except KeyError:
         return GateState()
 
 
 def save_gate_state(state: GateState) -> None:
-    from . import storage
-    storage.put_json(GATE_STATE_KEY, state.to_dict())
+    storage.put_json(storage.GATE_STATE, state.to_dict())
