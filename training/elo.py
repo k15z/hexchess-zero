@@ -6,11 +6,9 @@ import time
 from typing import Protocol
 
 from openskill.models import PlackettLuce
+from .hexchess_binding import load_hexchess
 
-try:
-    import hexchess
-except ImportError:
-    hexchess = None
+hexchess = load_hexchess(required=False)
 
 
 # ---------------------------------------------------------------------------

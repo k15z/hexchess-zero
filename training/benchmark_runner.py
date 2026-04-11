@@ -18,11 +18,9 @@ from pathlib import Path
 
 from . import storage
 from .config import AsyncConfig
+from .hexchess_binding import load_hexchess
 
-try:
-    import hexchess  # type: ignore
-except ImportError:  # pragma: no cover
-    hexchess = None  # type: ignore
+hexchess = load_hexchess(required=False)  # type: ignore[assignment]
 
 
 def _project_root() -> Path:

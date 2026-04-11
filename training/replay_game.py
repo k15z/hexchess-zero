@@ -27,11 +27,9 @@ from pathlib import Path
 
 from . import storage
 from .config import AsyncConfig
+from .hexchess_binding import load_hexchess
 
-try:
-    import hexchess  # type: ignore
-except ImportError:  # pragma: no cover - binding optional during tests
-    hexchess = None  # type: ignore
+hexchess = load_hexchess(required=False)  # type: ignore[assignment]
 
 
 def find_trace_key(game_id: int) -> str:
