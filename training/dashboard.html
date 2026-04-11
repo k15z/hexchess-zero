@@ -867,11 +867,13 @@ function buildBenchmarks(data) {
       </div>`, false);
   }
 
+  // Precompute version keys once to avoid repeated string operations in loops.
+  const vkeys = bvs.map(vs => vs.name.slice(0, -5));
+
   // Collect all position IDs (in order of first appearance).
   const posOrder = [];
   const posMeta = {};
-  for (const vs of bvs) {
-    const vk = vs.name.replace('.json', '');
+  for (const vk of vkeys) {
     for (const r of ((br[vk] || {}).results || [])) {
       if (!posMeta[r.id]) {
         posMeta[r.id] = {category: r.category};
@@ -886,24 +888,22 @@ function buildBenchmarks(data) {
 
   // Build lookup: versionKey -> posId -> result
   const lkp = {};
-  for (const vs of bvs) {
-    const vk = vs.name.replace('.json', '');
+  for (const vk of vkeys) {
     lkp[vk] = {};
     for (const r of ((br[vk] || {}).results || [])) lkp[vk][r.id] = r;
   }
 
   let html = '<div style="overflow-x:auto"><table class="h2h-table" style="font-size:10px">';
   html += '<tr><th style="text-align:left;min-width:90px">position</th><th>cat</th>';
-  for (const vs of bvs) html += `<th>${vs.name.replace('.json', '')}</th>`;
+  for (const vk of vkeys) html += `<th>${vk}</th>`;
   html += '</tr>';
 
   for (const posId of posOrder) {
     const meta = posMeta[posId];
     html += `<tr><td style="font-size:10px;max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${posId}">${posId}</td><td class="muted">${meta.category.slice(0, 4)}</td>`;
-    const firstResult = bvs.map(vs => lkp[vs.name.replace('.json', '')][posId]).find(r => r);
-    const refMove = firstResult ? firstResult.best_move : null;
-    for (const vs of bvs) {
-      const r = lkp[vs.name.replace('.json', '')][posId];
+    const refMove = vkeys.map(vk => lkp[vk][posId]).find(r => r)?.best_move ?? null;
+    for (const vk of vkeys) {
+      const r = lkp[vk][posId];
       if (!r) { html += '<td class="muted" style="opacity:0.3">\u2014</td>'; continue; }
       const t = Math.max(0, Math.min(1, (r.value + 1) / 2));
       const bg = `rgba(${Math.round(160 * (1 - t))},${Math.round(160 * t)},30,0.45)`;

@@ -704,7 +704,13 @@ def _publish_trainer_metrics(
     avg_stv: float,
     avg_aux: float,
 ) -> None:
-    """Append a cycle summary to ``state/trainer_metrics.json`` (rolling 200)."""
+    """Append a cycle summary to ``state/trainer_metrics.json`` (rolling 200).
+
+    This is a read-modify-write operation. It is safe because only one trainer
+    runs at a time — concurrent writes are not possible in normal operation.
+    A crash between GET and PUT silently drops the in-flight cycle from the
+    history, which is acceptable (the loss value is recoverable from logs).
+    """
     try:
         existing = storage.get_json(storage.TRAINER_METRICS)
         history: list[dict] = existing.get("cycles", [])

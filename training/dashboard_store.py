@@ -32,6 +32,7 @@ from typing import Any, Callable
 from . import storage
 
 _GAMES_TAIL = 50
+_BENCHMARK_MAX_VERSIONS = 10
 
 # Heartbeat keys older than this are deleted from S3 by the dashboard sync.
 # Workers refresh their heartbeat at startup and after every batch, so any key
@@ -253,7 +254,6 @@ class DashboardStore:
     def _sync_benchmarks(self) -> None:
         # LIST available result versions; benchmark files are immutable so we
         # never re-fetch a version we've already downloaded.
-        _MAX_VERSIONS = 10
         keys = self._s.ls(storage.BENCHMARK_RESULTS_PREFIX)
         available = []
         for k in keys:
@@ -265,7 +265,7 @@ class DashboardStore:
                 except ValueError:
                     continue
         available.sort(key=lambda x: x["version"])
-        to_use = available[-_MAX_VERSIONS:]
+        to_use = available[-_BENCHMARK_MAX_VERSIONS:]
 
         new_results: dict[str, dict] = {}
         for entry in to_use:
@@ -311,6 +311,8 @@ class DashboardStore:
                 },
                 "trainer_metrics": dict(self._trainer_metrics),
                 "benchmark_versions": list(self._benchmark_versions),
+                # Shallow copy is safe: benchmark result dicts are never
+                # mutated after being written to _benchmark_results.
                 "benchmark_results": {
                     v: dict(r) for v, r in self._benchmark_results.items()
                 },
