@@ -96,6 +96,8 @@ class GameRecord:
     resigned_skipped: bool
     opening_hash: str
     rng_seed: int
+    dirichlet_epsilon: float
+    dirichlet_alpha: float
     worker: str
     git_sha: str
     num_total_positions: int     # full + fast combined
@@ -316,6 +318,8 @@ def write_samples_to_npz(
         "openings_hash": record.opening_hash,
         "git_sha": record.git_sha,
         "rng_seed": int(record.rng_seed),
+        "dirichlet_epsilon": float(record.dirichlet_epsilon),
+        "dirichlet_alpha": float(record.dirichlet_alpha),
     }
     meta_path = npz_path.with_suffix(".meta.json")
     meta_path.write_text(json.dumps(meta, indent=2))
@@ -345,6 +349,8 @@ def write_trace_json(path: str | Path, record: GameRecord) -> None:
         "result": record.result,
         "termination": record.termination,
         "rng_seed": int(record.rng_seed),
+        "dirichlet_epsilon": float(record.dirichlet_epsilon),
+        "dirichlet_alpha": float(record.dirichlet_alpha),
         "entries": entries,
     }, indent=2))
 
@@ -459,6 +465,8 @@ def _play_one_game_pcr(
         resigned_skipped=resigned_skipped,
         opening_hash=compute_opening_hash(opening_moves),
         rng_seed=seed,
+        dirichlet_epsilon=cfg.dirichlet_epsilon,
+        dirichlet_alpha=cfg.dirichlet_alpha,
         worker=_worker_name(),
         git_sha=_git_sha(),
         num_total_positions=total_ply,
