@@ -9,7 +9,7 @@ use hexchess_engine::eval::EvalWeights;
 use hexchess_engine::game::GameState;
 use hexchess_engine::inference::OnnxEvaluator;
 use hexchess_engine::mcts::{
-    DirichletConfig, Evaluator, HeuristicEvaluator, MctsSearch as EngineSearch,
+    DirichletConfig, Evaluator, HeuristicEvaluator, MctsSearch as EngineSearch, SearchConfig,
     WeightedHeuristicEvaluator,
 };
 use hexchess_engine::minimax;
@@ -621,18 +621,31 @@ impl PyMctsSearch {
     /// If `model_path` is provided, loads the ONNX neural network once.
     /// Otherwise uses a heuristic evaluator (uniform policy, material value).
     ///
+    /// `eval_mode=True` swaps the underlying `SearchConfig` to
+    /// `SearchConfig::eval()` (no forced playouts, LCB move selection,
+    /// greedy temperature, no Dirichlet, no policy-target pruning, resign
+    /// disabled). Use this for Elo, gauntlet, benchmark, and replay paths.
+    /// The default (`eval_mode=False`) keeps the historical Python
+    /// training-mode `c_puct=1.5` override used by self-play workers.
+    ///
+    /// If `c_puct` is omitted, training mode preserves that historical
+    /// `1.5` override, while eval mode keeps the engine's `SearchConfig::eval()`
+    /// default (`2.5`).
+    ///
     /// `dirichlet_epsilon` / `dirichlet_alpha` enable root-move Dirichlet
-    /// noise; set `dirichlet_epsilon=0` (the default) to disable.
+    /// noise on top of whichever config was selected; set
+    /// `dirichlet_epsilon=0` (the default) to use the config's built-in
+    /// value (training: 0.25 epsilon / 0.25 alpha; eval: none).
     #[new]
     #[pyo3(signature = (
-        simulations=800, c_puct=1.5, model_path=None, batch_size=32,
+        simulations=800, c_puct=None, model_path=None, batch_size=32,
         tt_capacity=500_000, intra_threads=0, use_weighted_eval=false,
-        dirichlet_epsilon=0.0, dirichlet_alpha=0.3
+        dirichlet_epsilon=0.0, dirichlet_alpha=0.3, eval_mode=false
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         simulations: u32,
-        c_puct: f32,
+        c_puct: Option<f32>,
         model_path: Option<String>,
         batch_size: usize,
         tt_capacity: usize,
@@ -640,6 +653,7 @@ impl PyMctsSearch {
         use_weighted_eval: bool,
         dirichlet_epsilon: f32,
         dirichlet_alpha: f64,
+        eval_mode: bool,
     ) -> PyResult<Self> {
         let evaluator: Box<dyn Evaluator> = match model_path {
             Some(path) => {
@@ -658,7 +672,15 @@ impl PyMctsSearch {
             }
         };
         let mut search = EngineSearch::new(evaluator);
-        search.set_c_puct(c_puct);
+        if eval_mode {
+            search.set_config(SearchConfig::eval());
+        }
+        if let Some(c_puct) = c_puct {
+            search.set_c_puct(c_puct);
+        } else if !eval_mode {
+            // Preserve the historical Python binding default for self-play.
+            search.set_c_puct(1.5);
+        }
         search.set_batch_size(batch_size);
         search.set_tt_capacity(tt_capacity);
         if dirichlet_epsilon > 0.0 {
@@ -758,6 +780,34 @@ impl PyMctsSearch {
             clears: s.clears,
             current_size: s.current_size,
         }
+    }
+
+    /// Snapshot of the key `SearchConfig` fields as a dict. Intended for
+    /// tests that need to assert eval vs training mode; not a stable API.
+    fn config_summary<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+        let cfg = self.search.config();
+        let dict = pyo3::types::PyDict::new(py);
+        dict.set_item("c_puct", cfg.c_puct)?;
+        dict.set_item("c_puct_root", cfg.c_puct_root)?;
+        dict.set_item("fpu_reduction", cfg.fpu_reduction)?;
+        dict.set_item("batch_size", cfg.batch_size)?;
+        dict.set_item("tt_capacity", cfg.tt_capacity)?;
+        dict.set_item("forced_playout_k", cfg.forced_playout_k)?;
+        dict.set_item("policy_target_pruning", cfg.policy_target_pruning)?;
+        dict.set_item("use_lcb", cfg.use_lcb)?;
+        dict.set_item("resign_enabled", cfg.resign.enabled)?;
+        match &cfg.dirichlet {
+            Some(d) => {
+                let dnode = pyo3::types::PyDict::new(py);
+                dnode.set_item("epsilon", d.epsilon)?;
+                dnode.set_item("alpha", d.alpha)?;
+                dict.set_item("dirichlet", dnode)?;
+            }
+            None => {
+                dict.set_item("dirichlet", py.None())?;
+            }
+        }
+        Ok(dict)
     }
 }
 

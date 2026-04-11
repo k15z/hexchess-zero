@@ -81,8 +81,7 @@ def run_position(position: dict, model_path: str, simulations: int = 800) -> dic
     search = hexchess.MctsSearch(
         simulations=simulations,
         model_path=model_path,
-        dirichlet_epsilon=0.0,  # eval mode
-        dirichlet_alpha=0.3,
+        eval_mode=True,
     )
     outcome = search.run_pcr(game, 0)
     best = outcome["best_move"]
