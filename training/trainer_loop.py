@@ -630,17 +630,17 @@ def _default_gauntlet(candidate_onnx: Path, current_onnx: Path,
     for i in range(n_games):
         if i % 2 == 0:
             result = play_game(cand, cur)
-            winner = result.get("winner")
-            if winner == "white":
+            outcome = result.get("outcome")
+            if outcome == "white":
                 wins += 1.0
-            elif winner is None or winner == "draw":
+            elif outcome == "draw":
                 wins += 0.5
         else:
             result = play_game(cur, cand)
-            winner = result.get("winner")
-            if winner == "black":
+            outcome = result.get("outcome")
+            if outcome == "black":
                 wins += 1.0
-            elif winner is None or winner == "draw":
+            elif outcome == "draw":
                 wins += 0.5
     return wins / n_games
 

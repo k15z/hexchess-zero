@@ -1,5 +1,7 @@
 """Tests for the promotion-gating state machine."""
 
+from pathlib import Path
+
 from training.gating import (
     GATE_ESCAPE_FAILURES,
     GATE_PROMOTION_HORIZON,
@@ -98,3 +100,75 @@ def test_gate_state_roundtrip():
     )
     d = s.to_dict()
     assert GateState.from_dict(d) == s
+
+
+# ---------------------------------------------------------------------------
+# _default_gauntlet — regression tests for the elo.play_game adapter.
+#
+# play_game returns {"outcome": "white" | "black" | "draw", ...}. A prior bug
+# read result["winner"], so every game scored as a draw (0.5) regardless of
+# the actual outcome. These tests pin the field name so the regression cannot
+# recur silently.
+# ---------------------------------------------------------------------------
+
+
+class _StubPlayer:
+    def __init__(self, name: str, **_kwargs):
+        self.name = name
+
+
+def _install_gauntlet_stubs(monkeypatch, outcomes):
+    """Patch training.elo so _default_gauntlet runs without the hexchess binding.
+
+    ``outcomes`` is a list of "white" | "black" | "draw" returned in order,
+    one per play_game call.
+    """
+    import training.elo as elo_mod
+
+    calls = {"games": 0}
+
+    def fake_play_game(_white, _black, **_kw):
+        i = calls["games"]
+        calls["games"] += 1
+        return {"outcome": outcomes[i], "moves": 0}
+
+    monkeypatch.setattr(elo_mod, "MctsPlayer", _StubPlayer)
+    monkeypatch.setattr(elo_mod, "play_game", fake_play_game)
+    return calls
+
+
+def _run_gauntlet(n_games: int) -> float:
+    from training.trainer_loop import _default_gauntlet
+
+    return _default_gauntlet(
+        Path("cand.onnx"), Path("cur.onnx"),
+        simulations=1, n_games=n_games,
+    )
+
+
+def test_default_gauntlet_candidate_sweep(monkeypatch):
+    # 4 games, candidate plays white on even indices, black on odd.
+    # Outcomes: W (cand wins), B (cand wins), W (cand wins), B (cand wins).
+    _install_gauntlet_stubs(monkeypatch, ["white", "black", "white", "black"])
+    assert _run_gauntlet(4) == 1.0
+
+
+def test_default_gauntlet_current_sweep(monkeypatch):
+    # Current wins every game regardless of color assignment.
+    _install_gauntlet_stubs(monkeypatch, ["black", "white", "black", "white"])
+    assert _run_gauntlet(4) == 0.0
+
+
+def test_default_gauntlet_all_draws(monkeypatch):
+    _install_gauntlet_stubs(monkeypatch, ["draw"] * 4)
+    assert _run_gauntlet(4) == 0.5
+
+
+def test_default_gauntlet_mixed(monkeypatch):
+    # Game 0 (cand=white): white -> cand wins (1.0)
+    # Game 1 (cand=black): white -> cand loses (0.0)
+    # Game 2 (cand=white): draw -> 0.5
+    # Game 3 (cand=black): black -> cand wins (1.0)
+    # Total: 2.5 / 4 = 0.625
+    _install_gauntlet_stubs(monkeypatch, ["white", "white", "draw", "black"])
+    assert _run_gauntlet(4) == 0.625
