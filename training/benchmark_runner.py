@@ -16,13 +16,10 @@ import json
 import math
 from pathlib import Path
 
+import hexchess
+
 from . import storage
 from .config import AsyncConfig
-
-try:
-    import hexchess  # type: ignore
-except ImportError:  # pragma: no cover
-    hexchess = None  # type: ignore
 
 
 def _project_root() -> Path:
@@ -73,8 +70,6 @@ def _apply_moves(game, moves: list[str]) -> None:
 
 def run_position(position: dict, model_path: str, simulations: int = 800) -> dict:
     """Run MCTS on one position and return a result dict."""
-    if hexchess is None:
-        raise ImportError("hexchess bindings not available")
     game = hexchess.Game()
     _apply_moves(game, position.get("moves", []))
 

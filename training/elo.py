@@ -5,12 +5,8 @@ from __future__ import annotations
 import time
 from typing import Protocol
 
+import hexchess
 from openskill.models import PlackettLuce
-
-try:
-    import hexchess
-except ImportError:
-    hexchess = None
 
 
 # ---------------------------------------------------------------------------

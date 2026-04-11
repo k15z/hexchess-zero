@@ -1,12 +1,8 @@
 """Mirror-augmentation tests for the v2 data loader."""
 
 import numpy as np
-import pytest
 
 from training.data_v2 import MIRROR_INDICES, V2Batch, mirror_batch
-
-if MIRROR_INDICES is None:
-    pytest.skip("hexchess binding not built with mirror_indices_array", allow_module_level=True)
 
 NUM_MOVES = MIRROR_INDICES.shape[0]
 

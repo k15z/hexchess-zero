@@ -112,7 +112,10 @@ def verify_onnx(onnx_path: Path) -> None:
         cfg = _BaseConfig()
         dummy = np.random.randn(1, cfg.board_channels, cfg.board_height, cfg.board_width).astype(np.float32)
         outputs = session.run(None, {"board": dummy})
+        # ORT `run` returns `list[Union[ndarray, SparseTensor, list, dict]]` in the
+        # stub, but our ONNX graph has two dense ndarray outputs. Narrow for ty.
         policy, value = outputs
+        assert isinstance(policy, np.ndarray) and isinstance(value, np.ndarray)
         print(f"  Inference test: policy shape={policy.shape}, WDL shape={value.shape}")
         print(f"  WDL logits: {value[0]}")
     except ImportError:

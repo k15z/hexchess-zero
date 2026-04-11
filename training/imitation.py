@@ -13,17 +13,13 @@ from __future__ import annotations
 
 import time
 
+import hexchess
 import numpy as np
 from loguru import logger
 
-try:
-    import hexchess
-except ImportError:
-    hexchess = None  # type: ignore[assignment]
-
 from .config import AsyncConfig
 
-NUM_MOVES = hexchess.num_move_indices() if hexchess is not None else 0
+NUM_MOVES = hexchess.num_move_indices()
 WDL_SCALE = 400.0
 
 

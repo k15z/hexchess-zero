@@ -24,17 +24,12 @@ import random
 from dataclasses import dataclass, field
 from typing import Any
 
+import hexchess
 import torch
 import torch.nn.functional as F
 
 from .losses import LossBreakdown, assert_healthy_initial_losses
 from .model import NUM_MOVE_INDICES, HexChessNet
-
-try:
-    import hexchess  # Rust bindings.
-    _HAS_HEXCHESS = True
-except ImportError:  # pragma: no cover — bindings are a build-time requirement.
-    _HAS_HEXCHESS = False
 
 
 # ---------------------------------------------------------------------------
@@ -83,10 +78,6 @@ class HealthCheckError(AssertionError):
 def check_move_encoding_round_trip(num_samples: int = 1000,
                                    seed: int = 0) -> HealthCheckResult:
     """Invariant 1: ``index_to_move(move_to_index(m)) == m`` for 1000 moves."""
-    if not _HAS_HEXCHESS:
-        return HealthCheckResult(
-            "move_encoding_round_trip", False, "hexchess binding not available"
-        )
     rng = random.Random(seed)
     checked = 0
     game = hexchess.Game()
@@ -322,11 +313,6 @@ def check_repetition_detection() -> HealthCheckResult:
     clock, insufficient material), this check returns a skipped-pass with a
     note — a full explicit repetition test is tracked as a TODO.
     """
-    if not _HAS_HEXCHESS:
-        return HealthCheckResult(
-            "repetition_detection", False, "hexchess binding not available"
-        )
-
     game = hexchess.Game()
 
     def _find_cycle_move(g: Any) -> Any | None:

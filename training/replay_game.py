@@ -25,13 +25,10 @@ import json
 import sys
 from pathlib import Path
 
+import hexchess
+
 from . import storage
 from .config import AsyncConfig
-
-try:
-    import hexchess  # type: ignore
-except ImportError:  # pragma: no cover - binding optional during tests
-    hexchess = None  # type: ignore
 
 
 def find_trace_key(game_id: int) -> str:

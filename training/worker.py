@@ -46,6 +46,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import hexchess
 import numpy as np
 from loguru import logger
 
@@ -53,11 +54,6 @@ from . import storage
 from .config import AsyncConfig
 from .imitation import play_imitation_game
 from .logging_setup import log_event, setup_json_logging
-
-try:
-    import hexchess
-except ImportError:
-    hexchess = None
 
 
 # ---------------------------------------------------------------------------

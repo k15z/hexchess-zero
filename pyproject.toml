@@ -36,3 +36,36 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["training*"]
+
+# --- ty (type checker) ---
+# Run via `uvx ty check training/` — also wired into `make lint`.
+# The hexchess native module is a PyO3 abi3 wheel with no bundled type info,
+# so we ship a hand-written stub at bindings/python/hexchess.pyi and point
+# ty at it via extra-paths below.
+[tool.ty.environment]
+python = ".venv"
+extra-paths = ["bindings/python"]
+
+[tool.ty.src]
+# Only check the training/ package for now; the stub lives outside this set.
+include = ["training"]
+# `training/experiments/` is throwaway research code.
+# Tests heavily monkey-patch and index into `Optional[Tensor]` state-dicts in ways
+# ty cannot narrow — exclude for now; follow-up can opt them in after adding asserts.
+exclude = [
+    "training/experiments",
+    "training/test_*.py",
+]
+
+[tool.ty.rules]
+# Third-party libs (torch, loguru, boto3, openskill, onnx) lack complete stubs,
+# so these rules produce a lot of noise without catching real bugs. Downgrade
+# to warn or off and let us enable selectively as stubs improve.
+unresolved-attribute = "warn"
+invalid-argument-type = "warn"
+possibly-missing-attribute = "warn"
+# torch's .pyi uses `Tensor | None` for parameter.data and SparseTensor-inclusive
+# union return types that confuse narrowing — the runtime values are always
+# concrete Tensors in our code paths. Demoted to warn so real bugs still surface.
+call-non-callable = "warn"
+unsupported-operator = "warn"

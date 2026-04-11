@@ -11,19 +11,14 @@ convolutions via a pooled bias vector.
 
 from __future__ import annotations
 
+import hexchess
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from .config import _BaseConfig
 
-try:
-    import hexchess
-
-    NUM_MOVE_INDICES = hexchess.num_move_indices()
-except ImportError:
-    # Fallback when hexchess bindings are not installed yet.
-    NUM_MOVE_INDICES = 4206
+NUM_MOVE_INDICES = hexchess.num_move_indices()
 
 
 # ---------------------------------------------------------------------------
