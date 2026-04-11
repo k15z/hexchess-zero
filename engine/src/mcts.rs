@@ -1293,21 +1293,37 @@ impl MctsSearch {
     }
 
     /// Build an auxiliary policy target representing the visit distribution
-    /// over the opponent's reply (the grandchildren of the root, from the
-    /// root's most-visited child). Returns `None` if the root has no
-    /// children, or the most-visited child is unexpanded / has no visits.
+    /// over the opponent's reply (the grandchildren of the root, under the
+    /// child `extract_result`'s greedy branch would play). Uses LCB selection
+    /// when `config.use_lcb` is set to stay consistent with the played move
+    /// in eval mode, otherwise falls back to visit-max. Returns `None` if
+    /// the root has no children, or the selected child is unexpanded / has
+    /// no visits.
     pub fn aux_opponent_policy(&self) -> Option<Vec<f32>> {
         if self.nodes.is_empty() {
             return None;
         }
-        let root = &self.nodes[0];
-        if root.children.is_empty() {
+        if self.nodes[0].children.is_empty() {
             return None;
         }
-        let best_child_idx = *root
-            .children
-            .iter()
-            .max_by_key(|&&i| self.nodes[i].visit_count)?;
+        // Mirror extract_result's greedy-branch selection rule so that the
+        // exposed opponent-reply distribution is for the child that actually
+        // gets played. Temperature-sampled play has no single "played child"
+        // to point at, so we fall back to visit-max as a best approximation
+        // (training self-play never reads this under eval config anyway).
+        let root_children = self.nodes[0].children.clone();
+        let best_child_idx = if self.config.use_lcb {
+            self.lcb_best_child_idx(&root_children).or_else(|| {
+                root_children
+                    .iter()
+                    .max_by_key(|&&i| self.nodes[i].visit_count)
+                    .copied()
+            })?
+        } else {
+            *root_children
+                .iter()
+                .max_by_key(|&&i| self.nodes[i].visit_count)?
+        };
         let best_child = &self.nodes[best_child_idx];
         if !best_child.is_expanded || best_child.visit_count == 0 {
             return None;
@@ -2424,6 +2440,127 @@ mod tests {
         let aux = s.aux_opponent_policy().expect("should have aux");
         let sum: f32 = aux.iter().sum();
         assert!((sum - 1.0).abs() < 1e-4, "aux sum = {sum}");
+    }
+
+    /// Invariant: under eval mode, `aux_opponent_policy` must describe the
+    /// opponent replies under the child that `extract_result` actually plays
+    /// — not the visit-max child, which can differ under LCB. Regression
+    /// guard for the divergence Codex flagged on PR #106.
+    #[test]
+    fn aux_opponent_policy_matches_lcb_played_child_in_eval_mode() {
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        search.set_config(SearchConfig::eval());
+
+        let state = GameState::new();
+        let legal = state.legal_moves();
+        assert!(legal.len() >= 2);
+
+        // Root with two children. c_a: more visits but high variance.
+        // c_b: fewer visits but tight variance. Visit-max → c_a, LCB → c_b.
+        let mut root = MctsNode::new(None, None, 1.0);
+        root.is_expanded = true;
+        search.nodes.push(root);
+
+        let mut c_a = MctsNode::new(Some(legal[0]), Some(0), 0.5);
+        c_a.visit_count = 200;
+        c_a.value_sum = -100.0;
+        c_a.m2 = 50.0;
+        c_a.is_expanded = true;
+        search.nodes.push(c_a);
+        search.nodes[0].children.push(1);
+
+        let mut c_b = MctsNode::new(Some(legal[1]), Some(1), 0.5);
+        c_b.visit_count = 100;
+        c_b.value_sum = -48.0;
+        c_b.m2 = 0.5;
+        c_b.is_expanded = true;
+        search.nodes.push(c_b);
+        search.nodes[0].children.push(2);
+
+        // Give c_a and c_b disjoint sets of grandchildren so the aux
+        // distribution uniquely identifies which child was selected.
+        // action_index 10 lives under c_a; action_index 20 lives under c_b.
+        let mut gc_a = MctsNode::new(Some(legal[0]), Some(10), 1.0);
+        gc_a.visit_count = 50;
+        search.nodes.push(gc_a);
+        search.nodes[1].children.push(3);
+
+        let mut gc_b = MctsNode::new(Some(legal[1]), Some(20), 1.0);
+        gc_b.visit_count = 50;
+        search.nodes.push(gc_b);
+        search.nodes[2].children.push(4);
+
+        // extract_result should pick c_b (LCB winner).
+        let result = search.extract_result(&state, 0.0);
+        assert_eq!(result.best_move.from, legal[1].from);
+        assert_eq!(result.best_move.to, legal[1].to);
+
+        // aux_opponent_policy must expose grandchildren of c_b, so mass
+        // belongs on index 20, not 10.
+        let aux = search
+            .aux_opponent_policy()
+            .expect("aux should be available");
+        assert_eq!(
+            aux[10], 0.0,
+            "aux should NOT describe visit-max (c_a) grandchildren"
+        );
+        assert!(
+            aux[20] > 0.0,
+            "aux should describe LCB-selected (c_b) grandchildren"
+        );
+    }
+
+    /// Training mode keeps `aux_opponent_policy` on visit-max — confirms the
+    /// fix doesn't accidentally change the self-play auxiliary-head target.
+    #[test]
+    fn aux_opponent_policy_uses_visit_max_when_lcb_disabled() {
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        assert!(!search.config().use_lcb);
+
+        let state = GameState::new();
+        let legal = state.legal_moves();
+        assert!(legal.len() >= 2);
+
+        let mut root = MctsNode::new(None, None, 1.0);
+        root.is_expanded = true;
+        search.nodes.push(root);
+
+        let mut c_a = MctsNode::new(Some(legal[0]), Some(0), 0.5);
+        c_a.visit_count = 200;
+        c_a.value_sum = -100.0;
+        c_a.m2 = 50.0;
+        c_a.is_expanded = true;
+        search.nodes.push(c_a);
+        search.nodes[0].children.push(1);
+
+        let mut c_b = MctsNode::new(Some(legal[1]), Some(1), 0.5);
+        c_b.visit_count = 100;
+        c_b.value_sum = -48.0;
+        c_b.m2 = 0.5;
+        c_b.is_expanded = true;
+        search.nodes.push(c_b);
+        search.nodes[0].children.push(2);
+
+        let mut gc_a = MctsNode::new(Some(legal[0]), Some(10), 1.0);
+        gc_a.visit_count = 50;
+        search.nodes.push(gc_a);
+        search.nodes[1].children.push(3);
+
+        let mut gc_b = MctsNode::new(Some(legal[1]), Some(20), 1.0);
+        gc_b.visit_count = 50;
+        search.nodes.push(gc_b);
+        search.nodes[2].children.push(4);
+
+        // Training mode: visit-max → c_a, and aux tracks c_a's grandchildren.
+        let _ = search.extract_result(&state, 0.0);
+        let aux = search
+            .aux_opponent_policy()
+            .expect("aux should be available");
+        assert!(
+            aux[10] > 0.0,
+            "training mode should expose visit-max (c_a) grandchildren"
+        );
+        assert_eq!(aux[20], 0.0, "c_b grandchildren must not appear");
     }
 
     #[test]
