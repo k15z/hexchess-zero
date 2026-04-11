@@ -69,6 +69,7 @@ class MctsPlayer:
         self.search = hexchess.MctsSearch(
             simulations=simulations,
             model_path=model_path,
+            eval_mode=True,
         )
 
     def pick_move(self, game):

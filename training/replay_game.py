@@ -72,6 +72,14 @@ def _format_top10(entries: list[tuple[str, float]]) -> str:
     return "\n".join(lines) or "  (empty)"
 
 
+def _trace_dirichlet_config(trace: dict) -> tuple[float, float]:
+    """Return the Dirichlet settings used for the recorded self-play game."""
+    cfg = AsyncConfig()
+    epsilon = float(trace.get("dirichlet_epsilon", cfg.dirichlet_epsilon))
+    alpha = float(trace.get("dirichlet_alpha", cfg.dirichlet_alpha))
+    return epsilon, alpha
+
+
 def replay(
     trace: dict,
     *,
@@ -87,9 +95,16 @@ def replay(
     if search_factory is None:
         if hexchess is None:
             raise ImportError("hexchess bindings not available")
+        # Replay verifies worker self-play determinism, so it must use the
+        # same training-mode SearchConfig and Dirichlet settings as the worker
+        # — NOT eval_mode. New traces record the noise parameters explicitly;
+        # older traces fall back to the current AsyncConfig defaults.
+        dirichlet_epsilon, dirichlet_alpha = _trace_dirichlet_config(trace)
         search_factory = lambda: hexchess.MctsSearch(  # noqa: E731
-            simulations=800, model_path=str(model_path),
-            dirichlet_epsilon=0.0, dirichlet_alpha=0.3,
+            simulations=800,
+            model_path=str(model_path),
+            dirichlet_epsilon=dirichlet_epsilon,
+            dirichlet_alpha=dirichlet_alpha,
         )
     if game_factory is None:
         if hexchess is None:

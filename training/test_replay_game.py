@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+from training.config import AsyncConfig
 from training import replay_game
 
 
@@ -62,3 +65,78 @@ def test_replay_completes_on_matching_trace():
         game_factory=lambda: _FakeGame(num_plies=3),
     )
     assert verified == 3
+
+
+def test_replay_default_search_factory_uses_trace_dirichlet(monkeypatch):
+    moves = ["f1-f2"]
+    created = []
+
+    class _CtorSearch(_FakeSearch):
+        def __init__(self, **kwargs):
+            created.append(kwargs)
+            super().__init__(moves)
+
+    monkeypatch.setattr(
+        replay_game,
+        "hexchess",
+        SimpleNamespace(
+            MctsSearch=_CtorSearch,
+            Game=lambda: _FakeGame(num_plies=1),
+        ),
+    )
+
+    trace = {
+        "game_id": 42,
+        "model_version": 1,
+        "rng_seed": 12345,
+        "dirichlet_epsilon": 0.2,
+        "dirichlet_alpha": 0.4,
+        "entries": [{"ply": 0, "selected_move": moves[0]}],
+    }
+
+    verified = replay_game.replay(trace, model_path="/tmp/model.onnx")
+
+    assert verified == 1
+    assert created == [{
+        "simulations": 800,
+        "model_path": "/tmp/model.onnx",
+        "dirichlet_epsilon": 0.2,
+        "dirichlet_alpha": 0.4,
+    }]
+
+
+def test_replay_default_search_factory_falls_back_to_async_config(monkeypatch):
+    moves = ["f1-f2"]
+    created = []
+
+    class _CtorSearch(_FakeSearch):
+        def __init__(self, **kwargs):
+            created.append(kwargs)
+            super().__init__(moves)
+
+    monkeypatch.setattr(
+        replay_game,
+        "hexchess",
+        SimpleNamespace(
+            MctsSearch=_CtorSearch,
+            Game=lambda: _FakeGame(num_plies=1),
+        ),
+    )
+
+    trace = {
+        "game_id": 42,
+        "model_version": 1,
+        "rng_seed": 12345,
+        "entries": [{"ply": 0, "selected_move": moves[0]}],
+    }
+
+    verified = replay_game.replay(trace, model_path="/tmp/model.onnx")
+    cfg = AsyncConfig()
+
+    assert verified == 1
+    assert created == [{
+        "simulations": 800,
+        "model_path": "/tmp/model.onnx",
+        "dirichlet_epsilon": cfg.dirichlet_epsilon,
+        "dirichlet_alpha": cfg.dirichlet_alpha,
+    }]
