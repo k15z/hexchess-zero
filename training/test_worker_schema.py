@@ -228,7 +228,7 @@ def test_legal_mask_from_moves_is_stm_framed_white() -> None:
     indices as a hypothetical absolute-frame mask. Catches a regression
     to the previous absolute-frame implementation in the trivial case.
     """
-    import hexchess
+    hexchess = pytest.importorskip("hexchess")
 
     game = hexchess.Game()
     assert game.side_to_move() == "white"
@@ -255,7 +255,7 @@ def _black_to_move_asymmetric_position():
     engine move-ordering changes — it doesn't rely on ``legal_moves()[0]``
     landing on any particular move.
     """
-    import hexchess
+    hexchess = pytest.importorskip("hexchess")
 
     game = hexchess.Game()
     board = {(p.q, p.r): p for p in game.board_state()}
@@ -283,7 +283,7 @@ def test_legal_mask_from_moves_is_stm_framed_black() -> None:
     would put the mask at DIFFERENT indices than the policy target
     (built via ``search.run_pcr``'s STM-framed visit distribution).
     """
-    import hexchess
+    hexchess = pytest.importorskip("hexchess")
 
     game = _black_to_move_asymmetric_position()
     legal = game.legal_moves()
