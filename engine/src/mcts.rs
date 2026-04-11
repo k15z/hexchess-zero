@@ -1065,10 +1065,21 @@ impl MctsSearch {
         }
 
         let best_child_idx = if temperature < 1e-4 {
-            *root_children
-                .iter()
-                .max_by_key(|&&i| self.nodes[i].visit_count)
-                .expect("root must have children")
+            // Greedy: prefer LCB when enabled (eval mode). Falls back to
+            // visit-max if no child has any visits yet.
+            if self.config.use_lcb {
+                self.lcb_best_child_idx(&root_children).unwrap_or_else(|| {
+                    *root_children
+                        .iter()
+                        .max_by_key(|&&i| self.nodes[i].visit_count)
+                        .expect("root must have children")
+                })
+            } else {
+                *root_children
+                    .iter()
+                    .max_by_key(|&&i| self.nodes[i].visit_count)
+                    .expect("root must have children")
+            }
         } else {
             self.select_by_temperature(&root_children, temperature)
         };
@@ -1322,35 +1333,48 @@ impl MctsSearch {
         Some(out)
     }
 
+    /// LCB score for a root child at arena index `ci`, from the *parent's*
+    /// perspective: `-Q(child) − 1.96·sqrt(Var(child)/N(child))`. Children
+    /// with fewer than 2 visits use raw Q (no variance term). Returns `None`
+    /// for unvisited children.
+    fn lcb_score(&self, ci: usize) -> Option<f64> {
+        let c = &self.nodes[ci];
+        if c.visit_count == 0 {
+            return None;
+        }
+        let q = -c.q_value();
+        if c.visit_count < 2 {
+            return Some(q);
+        }
+        let var = c.variance().max(0.0);
+        Some(q - LCB_Z_95 * (var / c.visit_count as f64).sqrt())
+    }
+
+    /// Pick the root-child arena index with the highest LCB score. Returns
+    /// `None` if no child has any visits yet.
+    fn lcb_best_child_idx(&self, root_children: &[usize]) -> Option<usize> {
+        let mut best: Option<(usize, f64)> = None;
+        for &ci in root_children {
+            let Some(score) = self.lcb_score(ci) else {
+                continue;
+            };
+            match best {
+                None => best = Some((ci, score)),
+                Some((_, bs)) if score > bs => best = Some((ci, score)),
+                _ => {}
+            }
+        }
+        best.map(|(i, _)| i)
+    }
+
     /// Select the best root child using LCB: `Q(a) − 1.96·sqrt(Var(a)/N(a))`.
     /// Children with fewer than 2 visits fall back to raw Q.
     pub fn lcb_best_move(&self) -> Option<Move> {
-        if self.nodes.is_empty() {
+        if self.nodes.is_empty() || self.nodes[0].children.is_empty() {
             return None;
         }
-        let root = &self.nodes[0];
-        if root.children.is_empty() {
-            return None;
-        }
-        let mut best_idx = root.children[0];
-        let mut best_score = f64::NEG_INFINITY;
-        for &ci in &root.children {
-            let c = &self.nodes[ci];
-            if c.visit_count == 0 {
-                continue;
-            }
-            let q = -c.q_value();
-            let lcb = if c.visit_count < 2 {
-                q
-            } else {
-                let var = c.variance().max(0.0);
-                q - LCB_Z_95 * (var / c.visit_count as f64).sqrt()
-            };
-            if lcb > best_score {
-                best_score = lcb;
-                best_idx = ci;
-            }
-        }
+        let root_children = self.nodes[0].children.clone();
+        let best_idx = self.lcb_best_child_idx(&root_children)?;
         self.nodes[best_idx].action
     }
 
@@ -2215,6 +2239,100 @@ mod tests {
         let best = search.lcb_best_move().unwrap();
         assert_eq!(best.from, legal[1].from);
         assert_eq!(best.to, legal[1].to);
+    }
+
+    /// Regression: `SearchConfig::eval()` sets `use_lcb = true`, but until we
+    /// fixed extract_result, greedy selection still went through
+    /// `max_by_key(visit_count)`. Drives extract_result end-to-end and
+    /// asserts the LCB winner is played even when visit-max would not choose
+    /// it — and that the policy target still tracks visit counts.
+    #[test]
+    fn extract_result_honors_lcb_when_enabled() {
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        search.set_config(SearchConfig::eval());
+        assert!(search.config().use_lcb);
+
+        let state = GameState::new();
+        let legal = state.legal_moves();
+        assert!(legal.len() >= 2);
+
+        // Construct a fake expanded root. c_a has more visits but a wider
+        // Q distribution; c_b has fewer visits but much tighter variance.
+        // Visit-max picks c_a; LCB picks c_b.
+        let mut root = MctsNode::new(None, None, 1.0);
+        root.is_expanded = true;
+        search.nodes.push(root);
+
+        let mut c_a = MctsNode::new(Some(legal[0]), Some(0), 0.5);
+        c_a.visit_count = 200;
+        c_a.value_sum = -100.0; // Q = -0.5 → root-side q = 0.5
+        c_a.m2 = 50.0; // var ≈ 0.2513
+        search.nodes.push(c_a);
+        search.nodes[0].children.push(1);
+
+        let mut c_b = MctsNode::new(Some(legal[1]), Some(1), 0.5);
+        c_b.visit_count = 100;
+        c_b.value_sum = -48.0; // Q = -0.48 → q = 0.48
+        c_b.m2 = 0.5; // var ≈ 0.00505
+        search.nodes.push(c_b);
+        search.nodes[0].children.push(2);
+
+        // Sanity: visit-max would pick c_a (more visits).
+        let visit_max_idx = *search.nodes[0]
+            .children
+            .iter()
+            .max_by_key(|&&i| search.nodes[i].visit_count)
+            .unwrap();
+        assert_eq!(visit_max_idx, 1, "visit-max baseline should be c_a");
+
+        // Greedy extract in eval mode should pick LCB winner (c_b).
+        let result = search.extract_result(&state, 0.0);
+        assert_eq!(result.best_move.from, legal[1].from);
+        assert_eq!(result.best_move.to, legal[1].to);
+
+        // Policy target must still reflect visit counts, not LCB — so c_a
+        // (more visits) should get strictly more mass than c_b.
+        let policy_a = result.policy[0];
+        let policy_b = result.policy[1];
+        assert!(
+            policy_a > policy_b,
+            "policy target should follow visits (a={policy_a}, b={policy_b})"
+        );
+    }
+
+    /// Training mode (`use_lcb = false`) must keep the visit-max behaviour
+    /// unchanged — LCB is strictly an eval-path selection rule.
+    #[test]
+    fn extract_result_uses_visit_max_when_lcb_disabled() {
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        assert!(!search.config().use_lcb);
+
+        let state = GameState::new();
+        let legal = state.legal_moves();
+        assert!(legal.len() >= 2);
+
+        let mut root = MctsNode::new(None, None, 1.0);
+        root.is_expanded = true;
+        search.nodes.push(root);
+
+        // Same values as the LCB test — LCB would pick c_b, visit-max picks c_a.
+        let mut c_a = MctsNode::new(Some(legal[0]), Some(0), 0.5);
+        c_a.visit_count = 200;
+        c_a.value_sum = -100.0;
+        c_a.m2 = 50.0;
+        search.nodes.push(c_a);
+        search.nodes[0].children.push(1);
+
+        let mut c_b = MctsNode::new(Some(legal[1]), Some(1), 0.5);
+        c_b.visit_count = 100;
+        c_b.value_sum = -48.0;
+        c_b.m2 = 0.5;
+        search.nodes.push(c_b);
+        search.nodes[0].children.push(2);
+
+        let result = search.extract_result(&state, 0.0);
+        assert_eq!(result.best_move.from, legal[0].from);
+        assert_eq!(result.best_move.to, legal[0].to);
     }
 
     #[test]
