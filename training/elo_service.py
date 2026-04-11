@@ -223,7 +223,23 @@ def _finalize_active(state: dict, active_players: list[str]) -> None:
 def _build_state(records: list[dict], active_players: list[str]) -> dict:
     """Replay per-game records to produce the full Elo state projection."""
     state = _empty_state()
-    for rec in sorted(records, key=lambda r: r.get("timestamp", "") or ""):
+    # Stable total ordering: timestamp first, then payload fields as
+    # tie-breakers so projection rebuilds are deterministic even when many
+    # records share the same timestamp granularity.
+    def _record_sort_key(r: dict) -> tuple:
+        return (
+            r.get("timestamp", "") or "",
+            r.get("white", "") or "",
+            r.get("black", "") or "",
+            r.get("outcome", "") or "",
+            int(r.get("moves", 0) or 0),
+            int(r.get("white_moves", 0) or 0),
+            int(r.get("black_moves", 0) or 0),
+            float(r.get("white_time", 0.0) or 0.0),
+            float(r.get("black_time", 0.0) or 0.0),
+        )
+
+    for rec in sorted(records, key=_record_sort_key):
         _apply_record(state, rec)
     _finalize_active(state, active_players)
     return state
