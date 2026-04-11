@@ -245,6 +245,8 @@ class ReplayBuffer(IterableDataset):
             "positions": self.total_positions,
         }
 
+    _REQUIRED_KEYS = ("boards", "policies", "legal_masks", "outcomes")
+
     def __iter__(self):
         if not self.files:
             return
@@ -255,12 +257,24 @@ class ReplayBuffer(IterableDataset):
             [chosen] = random.choices(self.files, k=1)
             try:
                 data = np.load(chosen, mmap_mode="r")
-                boards = data["boards"]
-                policies = data["policies"]
-                legal_masks = data["legal_masks"]
-                outcomes = data["outcomes"]
-            except (OSError, ValueError, KeyError):
+            except (OSError, ValueError):
+                # Corrupt/unreadable file — skip and resample. These errors
+                # do NOT indicate a schema mismatch; schema mismatches fall
+                # through to the explicit check below and raise loudly so
+                # stale pre-legal_mask data cannot silently hang the trainer.
                 continue
+
+            missing = [k for k in self._REQUIRED_KEYS if k not in data.files]
+            if missing:
+                raise RuntimeError(
+                    f"Imitation .npz {chosen} is missing required field(s) "
+                    f"{missing}. Regenerate imitation data after the "
+                    "legal_mask schema change."
+                )
+            boards = data["boards"]
+            policies = data["policies"]
+            legal_masks = data["legal_masks"]
+            outcomes = data["outcomes"]
 
             n = len(outcomes)
             k = min(n, self.SAMPLE_PER_FILE)
@@ -400,17 +414,22 @@ class ReplayBufferV2(IterableDataset):
                 self.imitation_files
                 and random.random() < self.imitation_mix
             )
+            # NB: we deliberately do NOT catch KeyError here. The loaders
+            # raise KeyError when a .npz is missing the legal_mask field,
+            # which means stale pre-schema-change data is still in the
+            # cache — we want the trainer to fail loudly instead of
+            # silently retrying forever.
             if use_imitation:
                 [chosen] = random.choices(self.imitation_files, k=1)
                 try:
                     b = load_imitation_npz(chosen)
-                except (OSError, ValueError, KeyError):
+                except (OSError, ValueError):
                     continue
             else:
                 [chosen] = random.choices(self.files, k=1)
                 try:
                     b = load_v2_npz(chosen)
-                except (OSError, ValueError, KeyError):
+                except (OSError, ValueError):
                     continue
             # Mirror augmentation: 50% of files get horizontally mirrored
             # via the Rust mirror table. Cheap 2x effective data multiplier.

@@ -106,6 +106,31 @@ def test_empty_full_search_raises(tmp_path: Path):
         load_v2_npz(path)
 
 
+def test_load_v2_npz_raises_on_missing_legal_mask(tmp_path: Path):
+    """Stale v2 .npz without legal_mask must raise a clear schema error.
+
+    This guards the trainer: ``ReplayBufferV2`` lets the KeyError escape
+    so stale pre-schema-change cached files crash loudly instead of
+    silently hanging the retry loop.
+    """
+    path = tmp_path / "stale.npz"
+    n, nm = 3, 5
+    arrays = {
+        "boards": np.zeros((n, 22, 11, 11), dtype=np.int8),
+        "policy": np.zeros((n, nm), dtype=np.float16),
+        "policy_aux_opp": np.zeros((n, nm), dtype=np.float16),
+        # Deliberately omit legal_mask.
+        "wdl_terminal": np.zeros((n, 3), dtype=np.float32),
+        "wdl_short": np.zeros((n, 3), dtype=np.float32),
+        "mlh": np.zeros((n,), dtype=np.int16),
+        "was_full_search": np.ones((n,), dtype=bool),
+        "ply": np.zeros((n,), dtype=np.int16),
+    }
+    np.savez_compressed(str(path), **arrays)
+    with pytest.raises(KeyError, match="legal_mask"):
+        load_v2_npz(path)
+
+
 def test_legal_mask_includes_unvisited_legal_moves(tmp_path: Path):
     """Regression: the loader must read the written legal mask verbatim.
 

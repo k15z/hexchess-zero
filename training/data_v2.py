@@ -82,6 +82,39 @@ def _decode_boards(boards_int8: np.ndarray) -> np.ndarray:
     return boards_int8.astype(np.float32)
 
 
+_IMITATION_REQUIRED_KEYS = ("boards", "policies", "legal_masks", "outcomes")
+_V2_REQUIRED_KEYS = (
+    "boards",
+    "policy",
+    "policy_aux_opp",
+    "legal_mask",
+    "wdl_terminal",
+    "wdl_short",
+    "mlh",
+    "was_full_search",
+    "ply",
+)
+
+
+def _check_required_keys(
+    data: np.lib.npyio.NpzFile, required: tuple[str, ...], path: Path
+) -> None:
+    """Raise a clear schema error if any required key is missing.
+
+    Stale pre-legal_mask data would otherwise surface as a bare ``KeyError``
+    that trainer iterators happily swallow. Giving the error a structured
+    message and a specific list of missing keys makes the failure mode
+    obvious when a regenerate is needed.
+    """
+    missing = [k for k in required if k not in data.files]
+    if missing:
+        raise KeyError(
+            f"{path} is missing required field(s) {missing}. This .npz was "
+            "written with an older schema — regenerate it after the "
+            "legal_mask change."
+        )
+
+
 def load_imitation_npz(path: str | Path) -> V2Batch:
     """Load an imitation .npz (boards/policies/legal_masks/outcomes) as a V2Batch.
 
@@ -97,6 +130,7 @@ def load_imitation_npz(path: str | Path) -> V2Batch:
     """
     path = Path(path)
     data = np.load(str(path))
+    _check_required_keys(data, _IMITATION_REQUIRED_KEYS, path)
 
     boards = np.asarray(data["boards"]).astype(np.float32)
     policy = np.asarray(data["policies"]).astype(np.float32)
@@ -128,6 +162,7 @@ def load_v2_npz(path: str | Path) -> V2Batch:
     """
     path = Path(path)
     data = np.load(str(path))
+    _check_required_keys(data, _V2_REQUIRED_KEYS, path)
 
     was_full = np.asarray(data["was_full_search"]).astype(bool)
     idx = np.nonzero(was_full)[0]
