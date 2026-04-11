@@ -28,7 +28,7 @@ class _BaseConfig:
     run_id: str = field(default_factory=_default_run_id)
 
     # --- MCTS ---
-    num_simulations: int = 200  # match play / gating sims (was 800; sequential CPU gating was ~55h for 200 games)
+    num_simulations: int = 800  # quality-over-speed default: deeper search for cleaner self-play targets
 
     # --- Self-play ---
     temperature_threshold: int = 60  # after this many moves, temperature drops to temperature_low
