@@ -50,7 +50,7 @@ def notify_elo_update(
     if not SLACK_WEBHOOK_URL:
         return
 
-    from .elo import conservative_rating, to_elo_sigma
+    from .elo import conservative_rating, is_evaluated
 
     sorted_players = sorted(
         ratings.items(),
@@ -59,9 +59,11 @@ def notify_elo_update(
     )
     lines = []
     for rank, (name, r) in enumerate(sorted_players, 1):
-        elo = conservative_rating(r["mu"], r["sigma"])
-        sigma = to_elo_sigma(r["sigma"])
-        lines.append(f"{rank}. {name} ({elo:+d} ±{sigma})")
+        cr = conservative_rating(r["mu"], r["sigma"])
+        marker = "" if is_evaluated(r["sigma"]) else " [prov]"
+        lines.append(
+            f"{rank}. {name} {cr:+.2f} (μ={r['mu']:.2f} ±{r['sigma']:.2f}){marker}"
+        )
     table = "\n".join(lines)
 
     header = "*Hexchess Elo Update*"

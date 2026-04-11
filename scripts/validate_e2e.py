@@ -185,7 +185,10 @@ def train_model(cfg: AsyncConfig) -> str:
 
 def evaluate_model(onnx_path: str, cfg: AsyncConfig, games_per_pair: int = 6) -> bool:
     """Play MCTS+NN vs MCTS+heuristic and Minimax-2. Returns True if NN wins."""
-    from training.elo import MctsPlayer, MinimaxPlayer, play_game, compute_elo, format_elo_table
+    from training.elo import (
+        MctsPlayer, MinimaxPlayer, play_game, compute_elo, conservative_rating,
+        format_elo_table,
+    )
 
     logger.info("Evaluating MCTS+NN vs baselines ({} games/pair, {} sims, random openings)...",
                 games_per_pair, cfg.num_simulations)
@@ -230,16 +233,20 @@ def evaluate_model(onnx_path: str, cfg: AsyncConfig, games_per_pair: int = 6) ->
             print(f"    => {p1.name}: {a_wins}W, {p2.name}: {b_wins}W, draws: {draws}")
 
     player_names = [p.name for p in players]
-    elo = compute_elo(player_names, results, anchor="Minimax-2")
+    ratings = compute_elo(player_names, results, anchor="Minimax-2")
 
-    print("\n  Elo Ratings:")
-    print(format_elo_table(elo))
+    print("\n  Ratings:")
+    print(format_elo_table(ratings))
 
-    nn_elo = elo.get("MCTS-NN", 0)
-    heuristic_elo = elo.get("MCTS-Heuristic", 0)
-    nn_beats_heuristic = nn_elo > heuristic_elo
+    def _score(name: str) -> float:
+        r = ratings.get(name)
+        return conservative_rating(r["mu"], r["sigma"]) if r else 0.0
 
-    print(f"\n  MCTS-NN ({nn_elo}) vs MCTS-Heuristic ({heuristic_elo}): "
+    nn_score = _score("MCTS-NN")
+    heuristic_score = _score("MCTS-Heuristic")
+    nn_beats_heuristic = nn_score > heuristic_score
+
+    print(f"\n  MCTS-NN ({nn_score:+.2f}) vs MCTS-Heuristic ({heuristic_score:+.2f}): "
           f"{'PASS' if nn_beats_heuristic else 'FAIL'}")
     return nn_beats_heuristic
 

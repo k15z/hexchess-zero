@@ -146,7 +146,10 @@ def validate_outcome_balance(n_games: int = 50) -> bool:
 
 def validate_strength_ordering(games_per_pair: int = 6) -> bool:
     """Run round-robin tournament with random openings to verify strength ordering."""
-    from training.elo import MinimaxPlayer, MctsPlayer, play_game, compute_elo, format_elo_table
+    from training.elo import (
+        MinimaxPlayer, MctsPlayer, play_game, compute_elo, conservative_rating,
+        format_elo_table,
+    )
 
     print(f"\n{'='*60}")
     print(f"STRENGTH ORDERING: round-robin tournament ({games_per_pair} games/pair, random openings)...")
@@ -204,22 +207,28 @@ def validate_strength_ordering(games_per_pair: int = 6) -> bool:
             print(f"    => {p1.name}: {a_wins}W, {p2.name}: {b_wins}W, draws: {draws}")
 
     player_names = [p.name for p in players]
-    elo = compute_elo(player_names, results, anchor="Minimax-2")
+    ratings = compute_elo(player_names, results, anchor="Minimax-2")
 
-    print("\n  Elo Ratings:")
-    print(format_elo_table(elo))
+    print("\n  Ratings:")
+    print(format_elo_table(ratings))
+
+    # Scalar score for monotonicity / comparison checks.
+    scores = {
+        n: conservative_rating(ratings[n]["mu"], ratings[n]["sigma"])
+        for n in player_names
+    }
 
     # Check monotonic ordering
     expected_order = ["Minimax-4", "Minimax-3", "Minimax-2", "MCTS-Heuristic"]
-    actual_order = sorted(elo.keys(), key=lambda k: elo[k], reverse=True)
+    actual_order = sorted(scores.keys(), key=lambda k: scores[k], reverse=True)
 
     print(f"\n  Expected ordering: {' > '.join(expected_order)}")
     print(f"  Actual ordering:   {' > '.join(actual_order)}")
 
     # Check that minimax-4 >= minimax-3 >= minimax-2
-    monotonic = (elo.get("Minimax-4", 0) >= elo.get("Minimax-3", 0) >= elo.get("Minimax-2", 0))
+    monotonic = (scores.get("Minimax-4", 0) >= scores.get("Minimax-3", 0) >= scores.get("Minimax-2", 0))
     # Check that minimax-2 >= MCTS-Heuristic (with some tolerance since few games)
-    beats_heuristic = elo.get("Minimax-2", 0) >= elo.get("MCTS-Heuristic", 0) - 50
+    beats_heuristic = scores.get("Minimax-2", 0) >= scores.get("MCTS-Heuristic", 0) - 1.0
 
     passed = monotonic and beats_heuristic
     print(f"  Monotonic minimax: {'PASS' if monotonic else 'FAIL'}")

@@ -22,25 +22,20 @@ _model = PlackettLuce()
 # Conservative rating: mu - Z * sigma
 CONSERVATIVE_Z = 2.0
 
-# Rescale OpenSkill (mu=25, sigma=8.33) to Elo-like numbers for display.
-# Maps default mu=25 -> 1500, with ~400 points per sigma-equivalent.
-ELO_SCALE = 400 / _model.rating().sigma  # ~48
-ELO_OFFSET = 1500 - 25 * ELO_SCALE
+# Sigma below this means OpenSkill's posterior on the player is tight enough
+# that we treat their mu as meaningful. Default rating starts at sigma≈8.33
+# and drops below this after ~20-30 games vs a well-calibrated opponent.
+EVALUATED_SIGMA_THRESHOLD = 2.5
 
 
-def to_elo(mu: float) -> int:
-    """Convert OpenSkill mu to Elo-like scale."""
-    return round(mu * ELO_SCALE + ELO_OFFSET)
+def conservative_rating(mu: float, sigma: float) -> float:
+    """Raw conservative rating: mu - Z*sigma (OpenSkill scale, no rescaling)."""
+    return mu - CONSERVATIVE_Z * sigma
 
 
-def to_elo_sigma(sigma: float) -> int:
-    """Convert OpenSkill sigma to Elo-like scale."""
-    return round(sigma * ELO_SCALE)
-
-
-def conservative_rating(mu: float, sigma: float) -> int:
-    """Conservative rating estimate: mu - Z*sigma, in Elo scale."""
-    return to_elo(mu - CONSERVATIVE_Z * sigma)
+def is_evaluated(sigma: float) -> bool:
+    """True if the posterior is tight enough that mu is meaningful."""
+    return sigma <= EVALUATED_SIGMA_THRESHOLD
 
 
 # ---------------------------------------------------------------------------
@@ -216,12 +211,13 @@ def compute_elo(
     players: list[str],
     results: list[dict],
     anchor: str = "Minimax-2",
-) -> dict[str, int]:
-    """Compute ratings from batch pairwise results. Returns {name: conservative_elo}.
+) -> dict[str, dict]:
+    """Compute ratings from batch pairwise results. Returns {name: {mu, sigma}}.
 
     This is a convenience wrapper for scripts that run round-robin tournaments.
-    It replays all results through OpenSkill and returns conservative ratings
-    on the Elo scale.
+    It replays all results through OpenSkill and returns the raw OpenSkill
+    posteriors. Callers that want a single scalar for ordering should call
+    ``conservative_rating(mu, sigma)``.
 
     results: [{"a": str, "b": str, "a_wins": int, "b_wins": int, "draws": int}, ...]
     """
@@ -242,33 +238,30 @@ def compute_elo(
 
     replay_results(ratings, pair_results)
 
-    return {p: conservative_rating(ratings[p]["mu"], ratings[p]["sigma"]) for p in players}
+    return ratings
 
 
-def format_elo_table(ratings: dict) -> str:
-    """Format ratings as a ranked table string.
+def format_elo_table(ratings: dict[str, dict]) -> str:
+    """Format OpenSkill ratings as a ranked table string.
 
-    Accepts either:
-      {name: {"mu": float, "sigma": float}}  (OpenSkill, from elo_service)
-      {name: int}                             (scalar, from compute_elo)
+    ratings: {name: {"mu": float, "sigma": float}}
+
+    Players are sorted by conservative rating (mu - 2σ). An ``[eval]`` marker
+    flags players whose posterior is tight (sigma ≤ EVALUATED_SIGMA_THRESHOLD);
+    unmarked players are still provisional and their mu should not be trusted
+    on its own.
     """
+    sorted_players = sorted(
+        ratings.items(),
+        key=lambda x: conservative_rating(x[1]["mu"], x[1]["sigma"]),
+        reverse=True,
+    )
     lines = []
-
-    # Detect format
-    sample = next(iter(ratings.values()), None)
-    if isinstance(sample, dict):
-        sorted_players = sorted(
-            ratings.items(),
-            key=lambda x: conservative_rating(x[1]["mu"], x[1]["sigma"]),
-            reverse=True,
+    for rank, (name, r) in enumerate(sorted_players, 1):
+        cr = conservative_rating(r["mu"], r["sigma"])
+        marker = "[eval]" if is_evaluated(r["sigma"]) else "[prov]"
+        lines.append(
+            f"  {rank}. {name:<20s} {cr:>6.2f}  "
+            f"(μ={r['mu']:5.2f} ±{r['sigma']:4.2f}) {marker}"
         )
-        for rank, (name, r) in enumerate(sorted_players, 1):
-            elo = conservative_rating(r["mu"], r["sigma"])
-            sigma_elo = to_elo_sigma(r["sigma"])
-            lines.append(f"  {rank}. {name:<20s} {elo:>+6d}  (+/-{sigma_elo})")
-    else:
-        sorted_players = sorted(ratings.items(), key=lambda x: x[1], reverse=True)
-        for rank, (name, elo) in enumerate(sorted_players, 1):
-            lines.append(f"  {rank}. {name:<20s} {elo:>+6d}")
-
     return "\n".join(lines)

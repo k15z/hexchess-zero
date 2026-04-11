@@ -25,17 +25,20 @@ state = storage.get_json(storage.ELO_STATE)
 ```
 
 **IMPORTANT — do not sort by raw `mu`.** The system ranks players by a *conservative*
-Elo-scaled rating that subtracts an uncertainty penalty:
+rating that subtracts an uncertainty penalty. Ratings are on the raw OpenSkill
+scale (default μ=25, σ≈8.33) — there is no Elo rescaling.
 
 ```python
-from training.elo import format_elo_table, conservative_rating, to_elo, to_elo_sigma
-# conservative_rating(mu, sigma) -> int Elo (= round((mu - 2*sigma) * 48 + 300))
-print(format_elo_table(state["ratings"]))  # already sorted correctly
+from training.elo import format_elo_table, conservative_rating, is_evaluated
+# conservative_rating(mu, sigma) -> float = mu - 2 * sigma
+# is_evaluated(sigma) -> bool; True iff sigma <= 2.5 (posterior tight)
+print(format_elo_table(state["ratings"]))  # already sorted, marks eval/prov
 ```
 
 Use `format_elo_table` (or `conservative_rating` directly) for any ranking. Sorting by
 raw `mu` will rank high-uncertainty players (e.g. baselines that haven't played much)
-above well-calibrated stronger models.
+above well-calibrated stronger models. When comparing strengths, prefer players
+marked `[eval]` — a `[prov]` player's μ is not yet trustworthy.
 
 ### 2. Model versions
 ```python

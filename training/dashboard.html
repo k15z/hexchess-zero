@@ -184,6 +184,29 @@
   }
 
   th.r, td.r { text-align: right; }
+  th.c, td.c { text-align: center; }
+
+  /* --- Evaluated / provisional badge --- */
+  .eval-badge {
+    display: inline-block;
+    font-size: 9px;
+    font-weight: 600;
+    padding: 1px 5px;
+    border-radius: 2px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    border: 1px solid transparent;
+  }
+  .eval-badge.eval {
+    color: var(--green);
+    border-color: rgba(34, 197, 94, 0.35);
+    background: rgba(34, 197, 94, 0.08);
+  }
+  .eval-badge.prov {
+    color: var(--amber);
+    border-color: rgba(234, 179, 8, 0.35);
+    background: rgba(234, 179, 8, 0.08);
+  }
 
   td {
     padding: 4px 8px;
@@ -326,15 +349,14 @@
 
 <script>
 const REFRESH_MS = 60000;
-const ELO_SIGMA_DEFAULT = 25.0 / 3.0;
-const ELO_SCALE = 400 / ELO_SIGMA_DEFAULT;
-const ELO_OFFSET = 1500 - 25 * ELO_SCALE;
 const CONSERVATIVE_Z = 2.0;
+// Sigma posterior tight enough that mu is meaningful. Must match
+// EVALUATED_SIGMA_THRESHOLD in training/elo.py.
+const EVALUATED_SIGMA_THRESHOLD = 2.5;
 const BASELINES = new Set(['Minimax-2', 'Minimax-3', 'Minimax-4', 'Heuristic']);
 
-function toElo(mu) { return Math.round(mu * ELO_SCALE + ELO_OFFSET); }
-function toEloSigma(sigma) { return Math.round(sigma * ELO_SCALE); }
-function conservRating(mu, sigma) { return toElo(mu - CONSERVATIVE_Z * sigma); }
+function conservRating(mu, sigma) { return mu - CONSERVATIVE_Z * sigma; }
+function isEvaluated(sigma) { return sigma <= EVALUATED_SIGMA_THRESHOLD; }
 
 function ago(ts) {
   if (!ts) return '';
@@ -394,38 +416,50 @@ function renderRatingTable(players, ratings, playerStats) {
     .filter(n => ratings[n])
     .map(n => {
       const r = ratings[n];
-      return { name: n, mu: r.mu, sigma: r.sigma, elo: conservRating(r.mu, r.sigma), eloSigma: toEloSigma(r.sigma) };
+      return {
+        name: n,
+        mu: r.mu,
+        sigma: r.sigma,
+        cr: conservRating(r.mu, r.sigma),
+        evaluated: isEvaluated(r.sigma),
+      };
     })
-    .sort((a, b) => b.elo - a.elo);
+    .sort((a, b) => b.cr - a.cr);
 
   if (!items.length) return '';
 
-  const minElo = Math.min(...items.map(i => i.elo - i.eloSigma));
-  const maxElo = Math.max(...items.map(i => i.elo + i.eloSigma));
-  const range = Math.max(maxElo - minElo, 50);
-  const base = minElo - range * 0.05;
+  const minCr = Math.min(...items.map(i => i.mu - i.sigma));
+  const maxCr = Math.max(...items.map(i => i.mu + i.sigma));
+  const range = Math.max(maxCr - minCr, 1);
+  const base = minCr - range * 0.05;
   const span = range * 1.1;
 
-  let html = '<table><tr><th style="width:24px">#</th><th>player</th><th class="r">rating</th><th class="r" style="width:52px">\u00b1</th><th class="r" style="width:52px">s/mv</th><th style="min-width:100px"></th></tr>';
+  let html = '<table><tr><th style="width:24px">#</th><th>player</th><th class="r">rating</th><th class="r" style="width:56px">\u03bc</th><th class="r" style="width:48px">\u00b1\u03c3</th><th class="c" style="width:52px">state</th><th class="r" style="width:52px">s/mv</th><th style="min-width:100px"></th></tr>';
 
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
     const ps = playerStats[it.name];
     const avg = ps && ps.total_moves > 0 ? (ps.total_time / ps.total_moves).toFixed(2) : '\u2014';
 
-    const barLeft = Math.max(0, ((it.elo - it.eloSigma) - base) / span * 100);
-    const barRight = Math.min(100, ((it.elo + it.eloSigma) - base) / span * 100);
-    const barCenter = (it.elo - base) / span * 100;
+    const barLeft = Math.max(0, ((it.mu - it.sigma) - base) / span * 100);
+    const barRight = Math.min(100, ((it.mu + it.sigma) - base) / span * 100);
+    const barCenter = (it.mu - base) / span * 100;
 
     const isBaseline = BASELINES.has(it.name);
     const barColor = isBaseline ? 'var(--accent-dim)' : 'var(--accent)';
-    const ratingColor = it.elo >= 1500 ? 'var(--green)' : it.elo >= 1200 ? 'var(--text-primary)' : 'var(--red)';
+    // Provisional players (wide posterior) get dimmed — mu isn't trustworthy yet.
+    const rowOpacity = it.evaluated ? '1' : '0.55';
+    const stateBadge = it.evaluated
+      ? `<span class="eval-badge eval" title="sigma \u2264 ${EVALUATED_SIGMA_THRESHOLD} — posterior tight, mu meaningful">eval</span>`
+      : `<span class="eval-badge prov" title="sigma > ${EVALUATED_SIGMA_THRESHOLD} — provisional, mu not yet trustworthy">prov</span>`;
 
-    html += `<tr>
+    html += `<tr style="opacity:${rowOpacity}">
       <td class="r muted">${i + 1}</td>
       <td style="${isBaseline ? 'color:var(--text-dim)' : ''}">${it.name}</td>
-      <td class="r" style="font-weight:600;color:${ratingColor}">${it.elo > 0 ? '+' : ''}${it.elo}</td>
-      <td class="r muted">${it.eloSigma}</td>
+      <td class="r" style="font-weight:600">${it.cr >= 0 ? '+' : ''}${it.cr.toFixed(2)}</td>
+      <td class="r muted">${it.mu.toFixed(2)}</td>
+      <td class="r muted">${it.sigma.toFixed(2)}</td>
+      <td class="c">${stateBadge}</td>
       <td class="r muted">${avg}</td>
       <td>
         <div class="rating-bar-track">
