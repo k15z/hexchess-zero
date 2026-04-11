@@ -42,6 +42,7 @@ SELFPLAY_PREFIX = "data/selfplay/"
 SELFPLAY_TRACES_PREFIX = "data/selfplay_traces/"
 IMITATION_PREFIX = "data/imitation/"
 ELO_STATE = "state/elo.json"
+GATE_STATE = "state/gate.json"
 ELO_GAMES_PREFIX = "state/elo_games/"  # one object per game, race-free writes
 HEARTBEATS_PREFIX = "heartbeats/"
 
