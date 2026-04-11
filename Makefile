@@ -1,4 +1,4 @@
-.PHONY: setup worker trainer elo dashboard status test bench lint docs-dev docs-build clean
+.PHONY: setup worker trainer elo dashboard status test test-py bench lint docs-dev docs-build clean
 
 # --- Training pipeline ---
 
@@ -25,6 +25,11 @@ status: ## Show training pipeline status
 
 test: ## Run engine tests
 	cargo test -p hexchess-engine
+
+test-py: ## Run Python tests (build hexchess bindings first)
+	uv sync --group dev
+	uv run maturin develop --release -m bindings/python/Cargo.toml
+	uv run pytest
 
 bench: ## Run move generation benchmark
 	cargo bench --bench movegen

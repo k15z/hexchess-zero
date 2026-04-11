@@ -28,6 +28,9 @@ Python wheels are available for Linux, macOS, and Windows (3.9–3.13); the npm 
 # Run engine tests
 make test
 
+# Run Python tests (builds Python bindings first)
+make test-py
+
 # One-time setup: uv sync + build Python bindings
 make setup
 
