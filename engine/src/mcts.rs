@@ -521,9 +521,7 @@ impl MctsSearch {
 
     /// Replace the entire search configuration.
     pub fn set_config(&mut self, config: SearchConfig) {
-        if let Some(seed) = config.rng_seed {
-            self.rng = Some(StdRng::seed_from_u64(seed));
-        }
+        self.rng = config.rng_seed.map(StdRng::seed_from_u64);
         self.config = config;
     }
 
@@ -1045,18 +1043,17 @@ impl MctsSearch {
     }
 
     /// Extract the search result after all simulations.
-    fn extract_result(&self, _state: &GameState, temperature: f32) -> SearchResult {
-        let root = &self.nodes[0];
+    fn extract_result(&mut self, _state: &GameState, temperature: f32) -> SearchResult {
         let num_indices = serialization::num_move_indices();
         let mut policy = vec![0.0f32; num_indices];
+        let root_children = self.nodes[0].children.clone();
 
-        let total_child_visits: u32 = root
-            .children
+        let total_child_visits: u32 = root_children
             .iter()
             .map(|&i| self.nodes[i].visit_count)
             .sum();
 
-        for &child_idx in &root.children {
+        for &child_idx in &root_children {
             let child = &self.nodes[child_idx];
             if let Some(mv_idx) = child.action_index
                 && mv_idx < num_indices
@@ -1066,13 +1063,12 @@ impl MctsSearch {
         }
 
         let best_child_idx = if temperature < 1e-4 {
-            *root
-                .children
+            *root_children
                 .iter()
                 .max_by_key(|&&i| self.nodes[i].visit_count)
                 .expect("root must have children")
         } else {
-            self.select_by_temperature(root, temperature)
+            self.select_by_temperature(&root_children, temperature)
         };
 
         let best_move = self.nodes[best_child_idx]
@@ -1116,7 +1112,7 @@ impl MctsSearch {
             }
         }
 
-        let value = root.q_value() as f32;
+        let value = self.nodes[0].q_value() as f32;
 
         SearchResult {
             best_move,
@@ -1127,30 +1123,34 @@ impl MctsSearch {
     }
 
     /// Select a child of root proportionally to visit_count^(1/temperature).
-    fn select_by_temperature(&self, root: &MctsNode, temperature: f32) -> usize {
+    fn select_by_temperature(&mut self, root_children: &[usize], temperature: f32) -> usize {
         let inv_temp = 1.0 / temperature;
-        let weights: Vec<f64> = root
-            .children
+        let weights: Vec<f64> = root_children
             .iter()
             .map(|&i| (self.nodes[i].visit_count as f64).powf(inv_temp as f64))
             .collect();
 
         let total: f64 = weights.iter().sum();
         if total == 0.0 {
-            return root.children[0];
+            return root_children[0];
         }
 
         // Sample from the categorical distribution defined by weights.
-        let mut rng = rand::rng();
-        let threshold: f64 = rng.random::<f64>() * total;
+        let threshold: f64 = match self.rng.as_mut() {
+            Some(rng) => rng.random::<f64>() * total,
+            None => {
+                let mut thread = rand::rng();
+                thread.random::<f64>() * total
+            }
+        };
         let mut cumulative = 0.0;
         for (i, &w) in weights.iter().enumerate() {
             cumulative += w;
             if cumulative >= threshold {
-                return root.children[i];
+                return root_children[i];
             }
         }
-        *root.children.last().unwrap()
+        *root_children.last().unwrap()
     }
 
     // ------------------------------------------------------------------
@@ -2027,6 +2027,21 @@ mod tests {
     }
 
     #[test]
+    fn set_config_without_seed_clears_internal_rng() {
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        search.set_rng_seed(123);
+        assert!(search.rng.is_some(), "set_rng_seed should initialize rng");
+
+        // Default configs carry `rng_seed = None`, which should clear any
+        // previously seeded RNG and return to thread-local randomness.
+        search.set_config(SearchConfig::training());
+        assert!(
+            search.rng.is_none(),
+            "set_config with rng_seed=None should clear internal rng",
+        );
+    }
+
+    #[test]
     fn temperature_schedule_decays_and_clamps() {
         let ts = TemperatureSchedule::default();
         assert!((ts.temperature_at(0) - 1.0).abs() < 1e-5);
@@ -2099,6 +2114,26 @@ mod tests {
         assert!(
             full_count > 0 && fast_count > 0,
             "both branches should fire"
+        );
+    }
+
+    #[test]
+    fn seeded_temperature_search_is_reproducible() {
+        let state = GameState::new();
+        let mut a = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut b = MctsSearch::new(Box::new(HeuristicEvaluator));
+        a.set_rng_seed(7);
+        b.set_rng_seed(7);
+
+        let ra = a.search_with_temperature(&state, 64, 1.0);
+        let rb = b.search_with_temperature(&state, 64, 1.0);
+
+        assert_eq!(ra.best_move.from, rb.best_move.from);
+        assert_eq!(ra.best_move.to, rb.best_move.to);
+        assert_eq!(ra.best_move.promotion, rb.best_move.promotion);
+        assert_eq!(
+            ra.policy, rb.policy,
+            "same seed should produce identical visit policy"
         );
     }
 
