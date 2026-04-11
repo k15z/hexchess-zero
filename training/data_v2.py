@@ -65,12 +65,15 @@ def _decode_boards(boards_int8: np.ndarray) -> np.ndarray:
     (side-to-move, en-passant, in-check, last-move-from/to, validity),
     and the {0,1,2}-valued repetition plane.
 
-    Lossy: the three normalized fractional planes fullmove/100 (ch 13),
-    halfmove_clock/100 (ch 14), and halfmove_clock/50 (ch 21). These
-    carried values in [0, ~1] and were binarized by ``rint``. No
-    rescale is applied on load — we feed the int8-rounded values
-    straight to the net. See ``training/worker.py`` module docstring
-    for the rationale and the path forward if this signal matters.
+    Lossy: the three normalized scalar planes. ch 14
+    (halfmove_clock/100) and ch 21 (halfmove_clock/50, clamped) are
+    both capped at [0, 1] by the 50-move rule and are binarized by
+    ``rint``. ch 13 (fullmove/100) is not clamped, so it survives as
+    small non-negative integers (0 for moves <50, 1 for ~50-150, ...)
+    — coarse but not collapsed. No rescale is applied on load; we feed
+    the int8-rounded values straight to the net. See
+    ``training/worker.py`` module docstring for the path forward if
+    these signals turn out to matter.
     """
     return boards_int8.astype(np.float32)
 

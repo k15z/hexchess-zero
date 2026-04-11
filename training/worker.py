@@ -26,14 +26,17 @@ Only full-search PCR positions (was_full_search=True) are kept as samples.
 Board quantization: the `boards` float32 -> int8 cast is lossless for all
 {0,1}-valued planes (12 piece planes, side-to-move, en-passant, validity,
 in-check, last-move from/to) and for the 0/1/2-valued repetition plane.
-The three *normalized* fractional planes — fullmove/100 (ch 13),
-halfmove_clock/100 (ch 14), and halfmove_clock/50 (ch 21) — are lossy:
-`np.rint` on values in [0, ~1] effectively binarizes them (e.g. fullmove
-50 -> 0.50 -> rounds to 0 or 1). This is a known precision loss; the
-loader in `training/data_v2.py` does NOT rescale on load and treats the
-stored int8 values as-is. If this signal turns out to matter we would
-need to either bump the schema to store the raw integer clocks or scale
-them before quantization — see `data_v2._decode_boards`.
+The three normalized scalar planes are lossy:
+  - ch 14 (halfmove_clock/100) — halfmove_clock is capped at 100 by the
+    50-move rule, so this plane lives in [0, 1] and `rint` binarizes it.
+  - ch 21 (halfmove_clock/50, clamped [0, 1]) — same story, binarized.
+  - ch 13 (fullmove/100) — fullmove is unbounded, so this plane is
+    quantized to small non-negative integers (0 for moves <50, 1 for
+    ~50-150, 2 for ~150-250, ...). Coarse but not collapsed.
+The loader in `training/data_v2.py` does NOT rescale on load and treats
+the stored int8 values as-is. If these signals turn out to matter we
+would need to either bump the schema to store raw integer clocks or
+scale them before quantization — see `data_v2._decode_boards`.
 """
 
 from __future__ import annotations
