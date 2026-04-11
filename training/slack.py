@@ -50,19 +50,14 @@ def notify_elo_update(
     if not SLACK_WEBHOOK_URL:
         return
 
-    from .elo import conservative_rating, is_evaluated
+    from .elo import conservative_rating, eval_marker, rank_by_conservative
 
-    sorted_players = sorted(
-        ratings.items(),
-        key=lambda x: conservative_rating(x[1]["mu"], x[1]["sigma"]),
-        reverse=True,
-    )
     lines = []
-    for rank, (name, r) in enumerate(sorted_players, 1):
+    for rank, (name, r) in enumerate(rank_by_conservative(ratings), 1):
         cr = conservative_rating(r["mu"], r["sigma"])
-        marker = "" if is_evaluated(r["sigma"]) else " [prov]"
         lines.append(
-            f"{rank}. {name} {cr:+.2f} (μ={r['mu']:.2f} ±{r['sigma']:.2f}){marker}"
+            f"{rank}. {name} {cr:+.2f} "
+            f"(μ={r['mu']:.2f} ±{r['sigma']:.2f}) {eval_marker(r['sigma'])}"
         )
     table = "\n".join(lines)
 

@@ -433,9 +433,7 @@ function renderRatingTable(players, ratings, playerStats) {
 
   if (!items.length) return '';
 
-  // Bar is centered on the conservative rating (same value shown in the
-  // "rating" column) with ±σ as the CI half-width, so the tick always
-  // lines up with the displayed number.
+  // Bar is centered on `cr` so the tick aligns with the "rating" column.
   const minCr = Math.min(...items.map(i => i.cr - i.sigma));
   const maxCr = Math.max(...items.map(i => i.cr + i.sigma));
   const range = Math.max(maxCr - minCr, 1);
@@ -455,8 +453,6 @@ function renderRatingTable(players, ratings, playerStats) {
 
     const isBaseline = BASELINES.has(it.name);
     const barColor = isBaseline ? 'var(--accent-dim)' : 'var(--accent)';
-    // Provisional players get a "prov" class — CSS dims their text cells
-    // only (not the CI bar, which already has its own opacity).
     const rowClass = it.evaluated ? '' : 'provisional';
     const stateBadge = it.evaluated
       ? `<span class="eval-badge eval" title="sigma \u2264 ${EVALUATED_SIGMA_THRESHOLD} — posterior tight, mu meaningful">eval</span>`

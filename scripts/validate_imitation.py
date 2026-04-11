@@ -147,7 +147,7 @@ def validate_outcome_balance(n_games: int = 50) -> bool:
 def validate_strength_ordering(games_per_pair: int = 6) -> bool:
     """Run round-robin tournament with random openings to verify strength ordering."""
     from training.elo import (
-        MinimaxPlayer, MctsPlayer, play_game, compute_elo, conservative_rating,
+        MinimaxPlayer, MctsPlayer, play_game, compute_elo, conservative_ratings,
         format_elo_table,
     )
 
@@ -212,11 +212,7 @@ def validate_strength_ordering(games_per_pair: int = 6) -> bool:
     print("\n  Ratings:")
     print(format_elo_table(ratings))
 
-    # Scalar score for monotonicity / comparison checks.
-    scores = {
-        n: conservative_rating(ratings[n]["mu"], ratings[n]["sigma"])
-        for n in player_names
-    }
+    scores = conservative_ratings(ratings)
 
     # Check monotonic ordering
     expected_order = ["Minimax-4", "Minimax-3", "Minimax-2", "MCTS-Heuristic"]

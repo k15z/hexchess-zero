@@ -27,6 +27,9 @@ CONSERVATIVE_Z = 2.0
 # and drops below this after ~20-30 games vs a well-calibrated opponent.
 EVALUATED_SIGMA_THRESHOLD = 2.5
 
+EVAL_MARKER = "[eval]"
+PROV_MARKER = "[prov]"
+
 
 def conservative_rating(mu: float, sigma: float) -> float:
     """Raw conservative rating: mu - Z*sigma (OpenSkill scale, no rescaling)."""
@@ -36,6 +39,27 @@ def conservative_rating(mu: float, sigma: float) -> float:
 def is_evaluated(sigma: float) -> bool:
     """True if the posterior is tight enough that mu is meaningful."""
     return sigma <= EVALUATED_SIGMA_THRESHOLD
+
+
+def eval_marker(sigma: float) -> str:
+    """Return the [eval] or [prov] tag for display alongside a rating."""
+    return EVAL_MARKER if is_evaluated(sigma) else PROV_MARKER
+
+
+def conservative_ratings(ratings: dict[str, dict]) -> dict[str, float]:
+    """Project {name: {mu, sigma}} to {name: mu - 2σ} for scalar comparison."""
+    return {n: conservative_rating(r["mu"], r["sigma"]) for n, r in ratings.items()}
+
+
+def rank_by_conservative(
+    ratings: dict[str, dict],
+) -> list[tuple[str, dict]]:
+    """Return ratings sorted by conservative rating (mu - 2σ), best first."""
+    return sorted(
+        ratings.items(),
+        key=lambda kv: conservative_rating(kv[1]["mu"], kv[1]["sigma"]),
+        reverse=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -245,22 +269,16 @@ def format_elo_table(ratings: dict[str, dict]) -> str:
 
     ratings: {name: {"mu": float, "sigma": float}}
 
-    Players are sorted by conservative rating (mu - 2σ). An ``[eval]`` marker
-    flags players whose posterior is tight (sigma ≤ EVALUATED_SIGMA_THRESHOLD);
-    unmarked players are still provisional and their mu should not be trusted
-    on its own.
+    Players are sorted by conservative rating (mu - 2σ). Each row is tagged
+    [eval] or [prov] based on whether σ ≤ EVALUATED_SIGMA_THRESHOLD; prefer
+    [eval] players when comparing strengths — a [prov] player's μ has not
+    converged yet.
     """
-    sorted_players = sorted(
-        ratings.items(),
-        key=lambda x: conservative_rating(x[1]["mu"], x[1]["sigma"]),
-        reverse=True,
-    )
     lines = []
-    for rank, (name, r) in enumerate(sorted_players, 1):
+    for rank, (name, r) in enumerate(rank_by_conservative(ratings), 1):
         cr = conservative_rating(r["mu"], r["sigma"])
-        marker = "[eval]" if is_evaluated(r["sigma"]) else "[prov]"
         lines.append(
             f"  {rank}. {name:<20s} {cr:>6.2f}  "
-            f"(μ={r['mu']:5.2f} ±{r['sigma']:4.2f}) {marker}"
+            f"(μ={r['mu']:5.2f} ±{r['sigma']:4.2f}) {eval_marker(r['sigma'])}"
         )
     return "\n".join(lines)

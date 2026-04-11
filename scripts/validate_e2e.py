@@ -186,7 +186,7 @@ def train_model(cfg: AsyncConfig) -> str:
 def evaluate_model(onnx_path: str, cfg: AsyncConfig, games_per_pair: int = 6) -> bool:
     """Play MCTS+NN vs MCTS+heuristic and Minimax-2. Returns True if NN wins."""
     from training.elo import (
-        MctsPlayer, MinimaxPlayer, play_game, compute_elo, conservative_rating,
+        MctsPlayer, MinimaxPlayer, play_game, compute_elo, conservative_ratings,
         format_elo_table,
     )
 
@@ -238,12 +238,9 @@ def evaluate_model(onnx_path: str, cfg: AsyncConfig, games_per_pair: int = 6) ->
     print("\n  Ratings:")
     print(format_elo_table(ratings))
 
-    def _score(name: str) -> float:
-        r = ratings.get(name)
-        return conservative_rating(r["mu"], r["sigma"]) if r else 0.0
-
-    nn_score = _score("MCTS-NN")
-    heuristic_score = _score("MCTS-Heuristic")
+    scores = conservative_ratings(ratings)
+    nn_score = scores.get("MCTS-NN", 0.0)
+    heuristic_score = scores.get("MCTS-Heuristic", 0.0)
     nn_beats_heuristic = nn_score > heuristic_score
 
     print(f"\n  MCTS-NN ({nn_score:+.2f}) vs MCTS-Heuristic ({heuristic_score:+.2f}): "
