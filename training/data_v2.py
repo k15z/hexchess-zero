@@ -26,17 +26,17 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
-from .hexchess_binding import load_hexchess
 
 # Mirror move-index table from the Rust engine. The mirror used is central
 # inversion (q,r) → (-q,-r) — the only hex involution that preserves Glinski's
 # pawn directions and promotion edges. See engine/src/serialization.rs.
-_hexchess = load_hexchess(required=False)
-if _hexchess is not None and hasattr(_hexchess, "mirror_indices_array"):
+try:
+    import hexchess as _hexchess
+
     MIRROR_INDICES: np.ndarray | None = np.asarray(
         _hexchess.mirror_indices_array(), dtype=np.int64
     )
-else:  # binding not built or pre-mirror
+except (ImportError, AttributeError):  # binding not built or pre-mirror
     MIRROR_INDICES = None
 
 

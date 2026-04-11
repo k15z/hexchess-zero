@@ -27,9 +27,10 @@ from pathlib import Path
 
 from . import storage
 from .config import AsyncConfig
-from .hexchess_binding import load_hexchess
-
-hexchess = load_hexchess(required=False)  # type: ignore[assignment]
+try:
+    import hexchess  # type: ignore
+except ImportError:  # pragma: no cover - binding optional during tests
+    hexchess = None  # type: ignore
 
 
 def find_trace_key(game_id: int) -> str:
@@ -94,8 +95,10 @@ def replay(
     if search_factory is None:
         if hexchess is None:
             raise ImportError("hexchess bindings not available")
-        # Replay verifies worker self-play determinism, so it must use the
-        # same training-mode SearchConfig and Dirichlet settings as the worker
+        search_factory = lambda: hexchess.MctsSearch(  # noqa: E731
+        if hexchess is None:
+            raise ImportError("hexchess bindings not available")
+        game_factory = lambda: hexchess.Game()  # noqa: E731
         # — NOT eval_mode. New traces record the noise parameters explicitly;
         # older traces fall back to the current AsyncConfig defaults.
         simulations, dirichlet_epsilon, dirichlet_alpha = _trace_search_config(trace)

@@ -18,9 +18,10 @@ from pathlib import Path
 
 from . import storage
 from .config import AsyncConfig
-from .hexchess_binding import load_hexchess
-
-hexchess = load_hexchess(required=False)  # type: ignore[assignment]
+try:
+    import hexchess  # type: ignore
+except ImportError:  # pragma: no cover
+    hexchess = None  # type: ignore
 
 
 def _project_root() -> Path:
@@ -74,6 +75,7 @@ def run_position(position: dict, model_path: str, simulations: int = 800) -> dic
     if hexchess is None:
         raise ImportError("hexchess bindings not available")
     game = hexchess.Game()
+    search = hexchess.MctsSearch(
     _apply_moves(game, position.get("moves", []))
 
     search = hexchess.MctsSearch(

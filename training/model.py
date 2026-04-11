@@ -16,10 +16,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .config import _BaseConfig
-from .hexchess_binding import load_hexchess
+try:
+    import hexchess
 
-_hexchess = load_hexchess(required=False)
-NUM_MOVE_INDICES = _hexchess.num_move_indices() if _hexchess is not None else 4206
+    NUM_MOVE_INDICES = hexchess.num_move_indices()
+except ImportError:
+    # Fallback when hexchess bindings are not installed yet.
+    NUM_MOVE_INDICES = 4206
 
 
 # ---------------------------------------------------------------------------

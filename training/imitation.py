@@ -15,9 +15,10 @@ import time
 
 import numpy as np
 from loguru import logger
-from .hexchess_binding import load_hexchess
-
-hexchess = load_hexchess(required=False)  # type: ignore[assignment]
+try:
+    import hexchess
+except ImportError:
+    hexchess = None  # type: ignore[assignment]
 
 from .config import AsyncConfig
 

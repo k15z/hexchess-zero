@@ -27,12 +27,14 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
-from .hexchess_binding import load_hexchess
 from .losses import LossBreakdown, assert_healthy_initial_losses
 from .model import NUM_MOVE_INDICES, HexChessNet
 
-hexchess = load_hexchess(required=False)
-_HAS_HEXCHESS = hexchess is not None
+try:
+    import hexchess  # Rust bindings.
+    _HAS_HEXCHESS = True
+except ImportError:  # pragma: no cover — bindings are a build-time requirement.
+    _HAS_HEXCHESS = False
 
 
 # ---------------------------------------------------------------------------

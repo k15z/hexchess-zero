@@ -51,11 +51,13 @@ from loguru import logger
 
 from . import storage
 from .config import AsyncConfig
-from .hexchess_binding import load_hexchess
 from .imitation import play_imitation_game
 from .logging_setup import log_event, setup_json_logging
 
-hexchess = load_hexchess(required=False)
+try:
+    import hexchess
+except ImportError:
+    hexchess = None
 
 
 # ---------------------------------------------------------------------------
