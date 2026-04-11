@@ -317,7 +317,18 @@ def _placement_pair(state: dict) -> tuple[str, str] | None:
 
 
 def _select_pair(state: dict) -> tuple[str, str] | None:
-    """Placement first, then sample uniformly from the top-5% predict_draw pairs."""
+    """Placement → uncertainty exploration → predict_draw matchmaking.
+
+    Priority order:
+    1. Placement: brand-new models play 1 game vs each baseline first.
+    2. Uncertainty: if any player has σ > 4, pair them with a well-measured
+       opponent (lowest σ) to shrink the wide CI fastest. Without this,
+       predict_draw actively avoids new models because large |Δμ| → low
+       draw probability → never selected. Observed: v6/v7 got stuck at
+       σ=6+ for hours while v4/v5 kept getting re-matched.
+    3. predict_draw: sample uniformly from the top-5% most-likely-draw pairs
+       among unsaturated matchups.
+    """
     players = state["active_players"]
     if len(players) < 2:
         return None
@@ -326,7 +337,27 @@ def _select_pair(state: dict) -> tuple[str, str] | None:
     if pair is not None:
         return pair
 
+    # Uncertainty exploration: prioritize highest-σ player.
     ratings = state["ratings"]
+    uncertain = [
+        (ratings[p].get("sigma", 0), p)
+        for p in players
+        if p in ratings and ratings[p].get("sigma", 0) > 4
+    ]
+    if uncertain:
+        uncertain.sort(reverse=True)
+        target = uncertain[0][1]
+        # Pair with the lowest-σ opponent (most informative matchup).
+        opponents = [
+            (ratings[p].get("sigma", 99), p)
+            for p in players
+            if p != target and p in ratings
+            and _pair_game_count(state, target, p) < SATURATION_THRESHOLD
+        ]
+        if opponents:
+            opponents.sort()
+            return (target, opponents[0][1])
+
     candidates: list[tuple[float, str, str]] = []
     for i in range(len(players)):
         for j in range(i + 1, len(players)):
