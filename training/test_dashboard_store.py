@@ -276,3 +276,94 @@ def test_snapshots_listing(fake: FakeStorage, store: DashboardStore) -> None:
     assert sorted(names) == ["1.onnx", "2.onnx"]
 
 
+def test_trainer_metrics_etag_sync(
+    fake: FakeStorage, store: DashboardStore
+) -> None:
+    store.refresh_once()
+    assert store.snapshot()["trainer_metrics"] == {}
+
+    fake.put_json(
+        storage.TRAINER_METRICS,
+        {"cycles": [{"cycle": 1, "loss_policy": 0.5, "version": 1}]},
+    )
+    store.refresh_once()
+    snap = store.snapshot()
+    assert snap["trainer_metrics"]["cycles"][0]["cycle"] == 1
+
+    # ETag unchanged → no re-download.
+    calls: list[str] = []
+    real = fake.get_json
+
+    def counting(key: str) -> dict:
+        calls.append(key)
+        return real(key)
+
+    fake.get_json = counting  # type: ignore[method-assign]
+    store.refresh_once()
+    assert storage.TRAINER_METRICS not in calls
+
+    # Updated metrics → exactly one GET.
+    fake.put_json(
+        storage.TRAINER_METRICS,
+        {"cycles": [{"cycle": 2, "loss_policy": 0.4, "version": 1}]},
+    )
+    store.refresh_once()
+    assert calls == [storage.TRAINER_METRICS]
+    assert store.snapshot()["trainer_metrics"]["cycles"][0]["cycle"] == 2
+
+
+def test_benchmark_results_incremental_fetch(
+    fake: FakeStorage, store: DashboardStore
+) -> None:
+    store.refresh_once()
+    assert store.snapshot()["benchmark_versions"] == []
+    assert store.snapshot()["benchmark_results"] == {}
+
+    # Write one version.
+    fake.put_json(
+        "benchmarks/results/v1.json",
+        {"version": 1, "results": [
+            {"id": "opening_001", "category": "opening", "best_move": "f6-f7", "value": 0.1}
+        ]},
+    )
+    store.refresh_once()
+    snap = store.snapshot()
+    assert len(snap["benchmark_versions"]) == 1
+    assert snap["benchmark_versions"][0]["version"] == 1
+    assert "v1" in snap["benchmark_results"]
+    assert snap["benchmark_results"]["v1"]["version"] == 1
+
+    # Write a second version — first must not be re-fetched.
+    fake.put_json(
+        "benchmarks/results/v2.json",
+        {"version": 2, "results": [
+            {"id": "opening_001", "category": "opening", "best_move": "f6-g5", "value": 0.15}
+        ]},
+    )
+    gets: list[str] = []
+    real = fake.get_json
+
+    def tracking(key: str) -> dict:
+        gets.append(key)
+        return real(key)
+
+    fake.get_json = tracking  # type: ignore[method-assign]
+    store.refresh_once()
+    assert gets == ["benchmarks/results/v2.json"]
+    snap = store.snapshot()
+    assert len(snap["benchmark_versions"]) == 2
+    assert {v["version"] for v in snap["benchmark_versions"]} == {1, 2}
+    assert "v2" in snap["benchmark_results"]
+
+
+def test_empty_snapshot_has_new_keys(store: DashboardStore) -> None:
+    store.refresh_once()
+    snap = store.snapshot()
+    assert "trainer_metrics" in snap
+    assert "benchmark_versions" in snap
+    assert "benchmark_results" in snap
+    assert snap["trainer_metrics"] == {}
+    assert snap["benchmark_versions"] == []
+    assert snap["benchmark_results"] == {}
+
+

@@ -688,6 +688,53 @@ def _try_gate_promotion(
 
 
 # ---------------------------------------------------------------------------
+# Trainer metrics publishing (plan §7.6 page 3)
+# ---------------------------------------------------------------------------
+
+def _publish_trainer_metrics(
+    *,
+    cycle: int,
+    version: int,
+    steps: int,
+    total_steps: int,
+    n_total: int,
+    avg_policy: float,
+    avg_value: float,
+    avg_mlh: float,
+    avg_stv: float,
+    avg_aux: float,
+) -> None:
+    """Append a cycle summary to ``state/trainer_metrics.json`` (rolling 200).
+
+    This is a read-modify-write operation. It is safe because only one trainer
+    runs at a time — concurrent writes are not possible in normal operation.
+    A crash between GET and PUT silently drops the in-flight cycle from the
+    history, which is acceptable (the loss value is recoverable from logs).
+    """
+    try:
+        existing = storage.get_json(storage.TRAINER_METRICS)
+        history: list[dict] = existing.get("cycles", [])
+    except KeyError:
+        history = []
+    history.append({
+        "cycle": cycle,
+        "version": version,
+        "steps": steps,
+        "total_steps": total_steps,
+        "n_total": n_total,
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "loss_policy": round(avg_policy, 6),
+        "loss_value": round(avg_value, 6),
+        "loss_mlh": round(avg_mlh, 6),
+        "loss_stv": round(avg_stv, 6),
+        "loss_aux": round(avg_aux, 6),
+    })
+    if len(history) > 200:
+        history = history[-200:]
+    storage.put_json(storage.TRAINER_METRICS, {"cycles": history})
+
+
+# ---------------------------------------------------------------------------
 # Main trainer loop
 # ---------------------------------------------------------------------------
 
@@ -955,12 +1002,14 @@ def run_trainer(cfg: AsyncConfig) -> None:
         train_elapsed = time.time() - train_t0
         avg_policy = cycle_policy_loss / max(step, 1)
         avg_value = cycle_value_loss / max(step, 1)
+        avg_mlh = cycle_mlh_loss / max(step, 1)
+        avg_stv = cycle_stv_loss / max(step, 1)
+        avg_aux = cycle_aux_loss / max(step, 1)
         logger.info(
             "Cycle done: {} steps in {:.0f}s | policy={:.4f} value={:.4f} "
             "mlh={:.4f} stv={:.4f} aux={:.4f}",
             step, train_elapsed, avg_policy, avg_value,
-            cycle_mlh_loss / max(step, 1), cycle_stv_loss / max(step, 1),
-            cycle_aux_loss / max(step, 1),
+            avg_mlh, avg_stv, avg_aux,
         )
 
         # Promotion gate: only promote every cfg.promote_every_new_positions new positions.
@@ -1016,3 +1065,18 @@ def run_trainer(cfg: AsyncConfig) -> None:
             policy_loss=avg_policy, value_loss=avg_value,
             elapsed_seconds=cycle_elapsed,
         )
+        try:
+            _publish_trainer_metrics(
+                cycle=cycle,
+                version=current_version,
+                steps=step,
+                total_steps=total_steps_all_time,
+                n_total=n_total,
+                avg_policy=avg_policy,
+                avg_value=avg_value,
+                avg_mlh=avg_mlh,
+                avg_stv=avg_stv,
+                avg_aux=avg_aux,
+            )
+        except Exception as _exc:  # noqa: BLE001
+            logger.warning("Failed to publish trainer metrics to S3: {}", _exc)

@@ -44,6 +44,8 @@ IMITATION_PREFIX = "data/imitation/"
 ELO_STATE = "state/elo.json"
 ELO_GAMES_PREFIX = "state/elo_games/"  # one object per game, race-free writes
 HEARTBEATS_PREFIX = "heartbeats/"
+TRAINER_METRICS = "state/trainer_metrics.json"
+BENCHMARK_RESULTS_PREFIX = "benchmarks/results/"
 
 # ---------------------------------------------------------------------------
 # Client
