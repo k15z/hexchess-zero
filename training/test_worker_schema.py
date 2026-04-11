@@ -244,6 +244,38 @@ def test_legal_mask_from_moves_is_stm_framed_white() -> None:
     np.testing.assert_array_equal(mask, expected)
 
 
+def _black_to_move_asymmetric_position():
+    """Return a Glinski game in a black-to-move position whose legal-move
+    set is deliberately not closed under the mirror involution.
+
+    Apply a white move from an off-center file (``q != 0``) so the
+    resulting position is asymmetric under the central inversion that
+    defines the STM frame, and so black's legal move set cannot be
+    mirror-invariant. This makes the frame regression tests robust to
+    engine move-ordering changes — it doesn't rely on ``legal_moves()[0]``
+    landing on any particular move.
+    """
+    import hexchess
+
+    game = hexchess.Game()
+    board = {(p.q, p.r): p for p in game.board_state()}
+    chosen = None
+    for mv in game.legal_moves():
+        # Off-center pawn push: guarantees q != 0 on both endpoints and
+        # therefore a non-self-mirror-symmetric move index, which in turn
+        # breaks mirror-invariance of the resulting legal-move set for
+        # anything short of a full symmetrically-paired response.
+        src = board.get((mv.from_q, mv.from_r))
+        if src is None or src.piece != "pawn" or mv.from_q == 0:
+            continue
+        chosen = mv
+        break
+    assert chosen is not None, "no off-center pawn push found at starting position"
+    game.apply(chosen)
+    assert game.side_to_move() == "black"
+    return game
+
+
 def test_legal_mask_from_moves_is_stm_framed_black() -> None:
     """Black-to-move: legal mask indices must match game.policy_index,
     which remaps via MIRROR_INDEX. This is the load-bearing regression
@@ -253,9 +285,7 @@ def test_legal_mask_from_moves_is_stm_framed_black() -> None:
     """
     import hexchess
 
-    game = hexchess.Game()
-    game.apply(game.legal_moves()[0])  # flip STM to black
-    assert game.side_to_move() == "black"
+    game = _black_to_move_asymmetric_position()
     legal = game.legal_moves()
     num_moves = hexchess.num_move_indices()
     mask = legal_mask_from_moves(game, legal, num_moves)
@@ -269,17 +299,17 @@ def test_legal_mask_from_moves_is_stm_framed_black() -> None:
     np.testing.assert_array_equal(mask, expected_stm)
 
     # And: the would-be absolute-frame mask must *differ* from the STM
-    # mask (otherwise this test is vacuous — we need at least one move
-    # that is not self-mirror-symmetric to meaningfully catch the bug).
+    # mask. At an asymmetric black-to-move position, at least one legal
+    # move's mirrored index must lie at a different slot than its
+    # absolute index — so the sets-as-bitmaps differ.
     absolute = np.zeros(num_moves, dtype=bool)
     for mv in legal:
         absolute[hexchess.move_to_index(
             mv.from_q, mv.from_r, mv.to_q, mv.to_r, mv.promotion
         )] = True
     assert not np.array_equal(mask, absolute), (
-        "black-to-move legal mask equals the absolute-frame mask, "
-        "meaning either no asymmetric moves are present or the STM "
-        "remap silently reverted to identity"
+        "black-to-move legal mask equals the absolute-frame mask on an "
+        "asymmetric position — the STM remap silently reverted to identity"
     )
 
 

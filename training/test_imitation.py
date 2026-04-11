@@ -24,34 +24,58 @@ def _minimax_moves(game, depth: int = 1):
     return hexchess.minimax_search_with_policy(game, depth).moves
 
 
-def test_scores_to_policy_and_mask_indices_match_white() -> None:
+def _black_to_move_asymmetric_position():
+    """Apply a white off-center pawn push so the resulting black-to-move
+    position has an asymmetric legal-move set — the mirror-frame and
+    absolute-frame masks are guaranteed to differ. Avoids depending on
+    engine move ordering for robustness across refactors.
+    """
+    game = hexchess.Game()
+    board = {(p.q, p.r): p for p in game.board_state()}
+    chosen = None
+    for mv in game.legal_moves():
+        src = board.get((mv.from_q, mv.from_r))
+        if src is None or src.piece != "pawn" or mv.from_q == 0:
+            continue
+        chosen = mv
+        break
+    assert chosen is not None, "no off-center pawn push found at starting position"
+    game.apply(chosen)
+    assert game.side_to_move() == "black"
+    return game
+
+
+def test_scores_to_policy_and_mask_is_absolute_identity_white() -> None:
+    """White-to-move: STM-frame indexing collapses to the identity, so
+    the mask must match a hand-built absolute-frame mask exactly. This
+    pins the white-half contract independently of the black test, so a
+    regression that broke only the white path would still surface here.
+    """
     game = hexchess.Game()
     assert game.side_to_move() == "white"
     moves = _minimax_moves(game, depth=1)
     policy, mask = _scores_to_policy_and_mask(game, moves, temperature=100.0)
 
-    # Every move in the minimax result must land at game.policy_index.
+    expected = np.zeros_like(mask)
     for entry in moves:
         mv = entry.move
-        idx = game.policy_index(
+        expected[hexchess.move_to_index(
             mv.from_q, mv.from_r, mv.to_q, mv.to_r, mv.promotion
-        )
-        assert mask[idx], "legal mask missing a minimax move"
-        assert policy[idx] > 0.0, "policy target zero at a minimax move"
+        )] = True
+    np.testing.assert_array_equal(mask, expected)
+
     # Mask and policy-support are identical for this helper (imitation
     # always sets both for every legal move).
     np.testing.assert_array_equal(mask, policy > 0.0)
 
 
 def test_scores_to_policy_and_mask_is_stm_framed_black() -> None:
-    """Black-to-move: indices must come from ``game.policy_index``, not
+    """Black-to-move on an asymmetric position: indices must come from
+    ``game.policy_index`` (mirrored via MIRROR_INDEX), not
     ``hexchess.move_to_index``. Regression for the bug where the helper
     used absolute indices while the board tensor sat in STM frame.
     """
-    game = hexchess.Game()
-    game.apply(game.legal_moves()[0])
-    assert game.side_to_move() == "black"
-
+    game = _black_to_move_asymmetric_position()
     moves = _minimax_moves(game, depth=1)
     policy, mask = _scores_to_policy_and_mask(game, moves, temperature=100.0)
 
@@ -64,8 +88,9 @@ def test_scores_to_policy_and_mask_is_stm_framed_black() -> None:
         )] = True
     np.testing.assert_array_equal(mask, expected_stm)
 
-    # And a would-be absolute-frame mask must differ — otherwise the test
-    # is vacuous (no asymmetric moves), which would hide a regression.
+    # And a would-be absolute-frame mask must differ — our asymmetric
+    # position guarantees a non-mirror-invariant legal-move set, so the
+    # sets-as-bitmaps must not coincide.
     absolute = np.zeros_like(mask)
     for entry in moves:
         mv = entry.move
@@ -78,5 +103,5 @@ def test_scores_to_policy_and_mask_is_stm_framed_black() -> None:
     )
 
     # Policy and mask are in the same frame: the policy's support equals
-    # the legal mask on a 1:1 basis here (every minimax move gets both).
+    # the legal mask on a 1:1 basis here.
     np.testing.assert_array_equal(mask, policy > 0.0)
