@@ -39,7 +39,10 @@ class LossWeights:
 
     value: float = 1.5
     policy: float = 1.0
-    mlh: float = 0.1
+    # Increased from 0.1: with 43% of v6 games ending in insufficient-material
+    # draws, the NN needs stronger "make progress" pressure. MLH teaches
+    # "end the game sooner" which penalizes shuffle/trade-into-draw strategies.
+    mlh: float = 0.3
     stv: float = 0.15
     aux_policy: float = 0.15
     # MLH targets are raw plies (e.g. [0, 250]). Huber loss on raw plies

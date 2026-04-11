@@ -80,12 +80,14 @@ class _BaseConfig:
     # random-init v1. Ratchet back to 800 once the NN is strong enough that
     # sim depth limits performance.
     pcr_p_full: float = 0.25
-    # Ratcheted back from 200: at 200 sims the search is too shallow for the
-    # NN's learned prior to compound, producing noisy policy targets (observed:
-    # policy loss stuck at 3.1–3.5 across 4 promotions). 400 is the middle
-    # ground that still lets 22 workers produce ~180 pos/min.
-    pcr_n_full: int = 400
-    pcr_n_fast: int = 100
+    # Production target: 800 sims. Earlier reductions (200, 400) produced
+    # noisy policy targets — v6 self-play is 66% draws (43% insufficient
+    # material) because the search can't find winning tactics at low depth.
+    # At 800 sims the NN's learned prior compounds over the search tree,
+    # producing sharper visit distributions that the network can learn from.
+    # Throughput drops to ~90 pos/min with 22 workers — v7 cycle ~2 days.
+    pcr_n_full: int = 800
+    pcr_n_fast: int = 160
 
     # --- Resignation (plan §1.10) ---
     resign_threshold: float = 0.05
