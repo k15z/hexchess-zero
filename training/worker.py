@@ -22,10 +22,18 @@ Schema (see notes/13-implementation-plan.md §5.3):
     game_id               (N,)                   uint64
 
 Only full-search PCR positions (was_full_search=True) are kept as samples.
-The `boards` int8 cast is lossless for the binary piece planes; the four
-normalized meta planes (fullmove, halfmove clock, repetition, validity/other
-scalar channels) are rounded to the nearest integer in int8 range. This is a
-small precision loss the trainer will compensate for by rescaling on load.
+
+Board quantization: the `boards` float32 -> int8 cast is lossless for all
+{0,1}-valued planes (12 piece planes, side-to-move, en-passant, validity,
+in-check, last-move from/to) and for the 0/1/2-valued repetition plane.
+The three *normalized* fractional planes — fullmove/100 (ch 13),
+halfmove_clock/100 (ch 14), and halfmove_clock/50 (ch 21) — are lossy:
+`np.rint` on values in [0, ~1] effectively binarizes them (e.g. fullmove
+50 -> 0.50 -> rounds to 0 or 1). This is a known precision loss; the
+loader in `training/data_v2.py` does NOT rescale on load and treats the
+stored int8 values as-is. If this signal turns out to matter we would
+need to either bump the schema to store the raw integer clocks or scale
+them before quantization — see `data_v2._decode_boards`.
 """
 
 from __future__ import annotations
@@ -269,9 +277,10 @@ def write_samples_to_npz(
     game_id = np.full((n,), record.game_id, dtype=np.uint64)
 
     for i, pos in enumerate(record.positions):
-        # Cast float board to int8. Piece planes are {0,1}; scalar meta
-        # planes in [0, ~127] round safely into int8 (worker.py module
-        # docstring documents this).
+        # Cast float board to int8. Binary planes and the {0,1,2}
+        # repetition plane round-trip exactly; the three normalized
+        # fractional planes (ch 13/14/21) are effectively binarized.
+        # See module docstring for details.
         boards[i] = np.clip(np.rint(pos.board), -128, 127).astype(np.int8)
         policy[i] = pos.policy.astype(np.float16)
         policy_aux_opp[i] = pos.policy_aux_opp.astype(np.float16)
