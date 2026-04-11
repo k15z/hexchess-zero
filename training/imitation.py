@@ -37,15 +37,25 @@ def _softmax_probs(move_scores, temperature: float) -> np.ndarray:
     return exp_scores / exp_scores.sum()
 
 
-def _scores_to_policy(move_scores, temperature: float) -> np.ndarray:
-    """Convert minimax move scores to a softmax policy vector."""
+def _scores_to_policy_and_mask(
+    move_scores, temperature: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """Convert minimax move scores to a softmax policy vector + legal mask.
+
+    The minimax search returns every legal move with its score, so the
+    full legal-move set is available here without a separate enumeration.
+    We build both the policy target and the legal mask in one pass so
+    they stay in sync.
+    """
     probs = _softmax_probs(move_scores, temperature)
     policy = np.zeros(NUM_MOVES, dtype=np.float32)
+    legal_mask = np.zeros(NUM_MOVES, dtype=bool)
     for entry, p in zip(move_scores, probs):
         mv = entry.move
         idx = hexchess.move_to_index(mv.from_q, mv.from_r, mv.to_q, mv.to_r, mv.promotion)
         policy[idx] = p
-    return policy
+        legal_mask[idx] = True
+    return policy, legal_mask
 
 
 def _score_to_wdl(score: int) -> np.ndarray:
@@ -106,7 +116,7 @@ def play_imitation_game(cfg: AsyncConfig, log_interval: int = 50) -> list[dict]:
     exploration phase, always plays the best minimax move.
     """
     game = hexchess.Game()
-    pending = []  # (board_tensor, policy, eval_score, side_to_move)
+    pending = []  # (board_tensor, policy, legal_mask, eval_score, side_to_move)
 
     ply = 0
     # Glinski self-play games can run 500+ plies (notes/12 §7); cap at 600
@@ -119,11 +129,13 @@ def play_imitation_game(cfg: AsyncConfig, log_interval: int = 50) -> list[dict]:
         result = hexchess.minimax_search_with_policy(game, cfg.imitation_depth)
 
         board_tensor = np.array(hexchess.encode_board(game), dtype=np.float32)
-        policy = _scores_to_policy(result.moves, cfg.imitation_temperature)
+        policy, legal_mask = _scores_to_policy_and_mask(
+            result.moves, cfg.imitation_temperature
+        )
         best_score = result.best_score
         side = game.side_to_move()
 
-        pending.append((board_tensor, policy, best_score, side))
+        pending.append((board_tensor, policy, legal_mask, best_score, side))
 
         if ply < cfg.imitation_exploration_plies and len(result.moves) > 1:
             mv = _sample_move(result.moves, cfg.imitation_temperature)
@@ -143,7 +155,7 @@ def play_imitation_game(cfg: AsyncConfig, log_interval: int = 50) -> list[dict]:
     lam = cfg.imitation_wdl_lambda
 
     samples = []
-    for board_tensor, policy, eval_score, side in pending:
+    for board_tensor, policy, legal_mask, eval_score, side in pending:
         # Eval-derived WDL is from the side-to-move's perspective.
         eval_wdl = _score_to_wdl(eval_score)
 
@@ -161,6 +173,7 @@ def play_imitation_game(cfg: AsyncConfig, log_interval: int = 50) -> list[dict]:
         samples.append({
             "board": board_tensor,
             "policy": policy,
+            "legal_mask": legal_mask,
             "outcome": blended_wdl,
         })
 

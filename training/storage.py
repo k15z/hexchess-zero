@@ -270,10 +270,15 @@ def select_recent_files(prefix: str, max_positions: int) -> list[dict]:
 def flush_samples(samples: list[dict], key_prefix: str) -> str:
     """Stack sample dicts, compress, and upload as .npz. Returns the S3 key.
 
-    Each sample must have 'board', 'policy', and 'outcome' numpy arrays.
+    Each sample must have 'board', 'policy', 'legal_mask', and 'outcome'
+    numpy arrays. ``legal_mask`` is the per-position legality bitmap over
+    the full move-index space — downstream loss masking uses this directly
+    (never policy > 0), so that legal-but-unvisited moves stay in the
+    softmax denominator and the network is penalized for misplaced mass.
     """
     boards = np.stack([s["board"] for s in samples])
     policies = np.stack([s["policy"] for s in samples])
+    legal_masks = np.stack([s["legal_mask"] for s in samples]).astype(bool)
     outcomes = np.array([s["outcome"] for s in samples], dtype=np.float32)
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
@@ -281,19 +286,30 @@ def flush_samples(samples: list[dict], key_prefix: str) -> str:
     n = len(outcomes)
     key = f"{key_prefix}{ts}_{rand:08x}_n{n}.npz"
 
-    upload_npz(key, boards=boards, policies=policies, outcomes=outcomes)
+    upload_npz(
+        key,
+        boards=boards,
+        policies=policies,
+        legal_masks=legal_masks,
+        outcomes=outcomes,
+    )
     return key
 
 
 def upload_npz(key: str, *, boards: np.ndarray, policies: np.ndarray,
-               outcomes: np.ndarray) -> None:
+               legal_masks: np.ndarray, outcomes: np.ndarray) -> None:
     """Compress and upload training data arrays as a .npz file."""
     # suffix=".npz" ensures numpy doesn't double-append
     with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as tmp:
         tmp_path = tmp.name
     try:
-        np.savez_compressed(tmp_path, boards=boards, policies=policies,
-                            outcomes=outcomes)
+        np.savez_compressed(
+            tmp_path,
+            boards=boards,
+            policies=policies,
+            legal_masks=legal_masks,
+            outcomes=outcomes,
+        )
         put_file(key, tmp_path)
     finally:
         if os.path.exists(tmp_path):

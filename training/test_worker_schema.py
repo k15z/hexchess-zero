@@ -34,10 +34,18 @@ def _fake_position(ply: int, side: str, root_q: float = 0.0) -> PositionSample:
     board[0, 0, 0] = float(ply)
     policy = np.zeros(NUM_MOVES, dtype=np.float32)
     policy[ply % NUM_MOVES] = 1.0
+    # Legal mask: the visited index plus a handful of unvisited legal
+    # moves, so tests exercise the fact that legal_mask is wider than
+    # `policy > 0` (the entire point of this schema field).
+    legal_mask = np.zeros(NUM_MOVES, dtype=bool)
+    legal_mask[ply % NUM_MOVES] = True
+    for extra in range(1, 6):
+        legal_mask[(ply + extra) % NUM_MOVES] = True
     return PositionSample(
         board=board,
         policy=policy,
         policy_aux_opp=np.full(NUM_MOVES, 1.0 / NUM_MOVES, dtype=np.float32),
+        legal_mask=legal_mask,
         root_q=root_q,
         root_n=800,
         root_entropy=1.23,
@@ -95,6 +103,7 @@ def test_npz_schema_dtypes_and_shapes(tmp_path: Path) -> None:
         "boards": ((n, 22, 11, 11), np.int8),
         "policy": ((n, NUM_MOVES), np.float16),
         "policy_aux_opp": ((n, NUM_MOVES), np.float16),
+        "legal_mask": ((n, NUM_MOVES), np.bool_),
         "wdl_terminal": ((n, 3), np.float32),
         "wdl_short": ((n, 3), np.float32),
         "mlh": ((n,), np.int16),

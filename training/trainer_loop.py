@@ -65,13 +65,15 @@ from .swa import SwaSnapshotBuffer, update_bn_stats
 def _build_imitation_targets(
     policies: torch.Tensor,
     outcomes: torch.Tensor,
-) -> tuple[dict[str, torch.Tensor], torch.Tensor | None]:
-    """Bootstrap targets dict from the old imitation .npz schema.
+) -> dict[str, torch.Tensor]:
+    """Bootstrap targets dict from the imitation .npz schema.
 
-    Imitation data only has ``boards``, ``policies``, ``outcomes`` — we
-    supply neutral placeholders for the MLH/STV/aux heads so they still
-    produce gradients (weighted small per :class:`LossWeights`) without
-    biasing the trunk. Legal mask is derived from the policy target.
+    Imitation data has ``boards``, ``policies``, ``legal_masks``, and
+    ``outcomes``. This helper produces the target dict alone — the legal
+    mask is loaded separately and threaded directly to
+    :func:`compute_losses`. Neutral placeholders fill the MLH/STV/aux heads
+    so they still produce gradients (weighted small per
+    :class:`LossWeights`) without biasing the trunk.
     """
     batch = policies.shape[0]
     num_moves = policies.shape[1]
@@ -81,14 +83,13 @@ def _build_imitation_targets(
     aux_policy_placeholder = torch.full(
         (batch, num_moves), 1.0 / num_moves, device=device
     )
-    legal_mask = policies > 0.0
     return {
         "policy": policies,
         "wdl": outcomes,
         "mlh": mlh_placeholder,
         "stv": stv_placeholder,
         "aux_policy": aux_policy_placeholder,
-    }, legal_mask
+    }
 
 
 def _v2_batch_to_torch(
@@ -244,19 +245,36 @@ class ReplayBuffer(IterableDataset):
             "positions": self.total_positions,
         }
 
+    _REQUIRED_KEYS = ("boards", "policies", "legal_masks", "outcomes")
+
     def __iter__(self):
         if not self.files:
             return
 
-        buf_b, buf_p, buf_o = [], [], []
+        buf_b, buf_p, buf_m, buf_o = [], [], [], []
 
         while True:
             [chosen] = random.choices(self.files, k=1)
             try:
                 data = np.load(chosen, mmap_mode="r")
-                boards, policies, outcomes = data["boards"], data["policies"], data["outcomes"]
-            except (OSError, ValueError, KeyError):
+            except (OSError, ValueError):
+                # Corrupt/unreadable file — skip and resample. These errors
+                # do NOT indicate a schema mismatch; schema mismatches fall
+                # through to the explicit check below and raise loudly so
+                # stale pre-legal_mask data cannot silently hang the trainer.
                 continue
+
+            missing = [k for k in self._REQUIRED_KEYS if k not in data.files]
+            if missing:
+                raise RuntimeError(
+                    f"Imitation .npz {chosen} is missing required field(s) "
+                    f"{missing}. Regenerate imitation data after the "
+                    "legal_mask schema change."
+                )
+            boards = data["boards"]
+            policies = data["policies"]
+            legal_masks = data["legal_masks"]
+            outcomes = data["outcomes"]
 
             n = len(outcomes)
             k = min(n, self.SAMPLE_PER_FILE)
@@ -264,6 +282,7 @@ class ReplayBuffer(IterableDataset):
             idx.sort()
             buf_b.append(np.array(boards[idx]))
             buf_p.append(np.array(policies[idx]))
+            buf_m.append(np.array(legal_masks[idx]))
             buf_o.append(np.array(outcomes[idx]))
 
             total = sum(len(b) for b in buf_b)
@@ -271,16 +290,19 @@ class ReplayBuffer(IterableDataset):
             if total >= self.SHUFFLE_BUFFER_SIZE:
                 merged_b = np.concatenate(buf_b)
                 merged_p = np.concatenate(buf_p)
+                merged_m = np.concatenate(buf_m)
                 merged_o = np.concatenate(buf_o)
                 perm = np.random.permutation(len(merged_b))
                 drain = len(perm) // 2
                 for j in perm[:drain]:
                     yield (torch.from_numpy(merged_b[j].copy()),
                            torch.from_numpy(merged_p[j].copy()),
+                           torch.from_numpy(merged_m[j].copy()),
                            torch.tensor(merged_o[j], dtype=torch.float32))
                 keep = perm[drain:]
                 buf_b = [merged_b[keep]]
                 buf_p = [merged_p[keep]]
+                buf_m = [merged_m[keep]]
                 buf_o = [merged_o[keep]]
 
 
@@ -392,17 +414,22 @@ class ReplayBufferV2(IterableDataset):
                 self.imitation_files
                 and random.random() < self.imitation_mix
             )
+            # NB: we deliberately do NOT catch KeyError here. The loaders
+            # raise KeyError when a .npz is missing the legal_mask field,
+            # which means stale pre-schema-change data is still in the
+            # cache — we want the trainer to fail loudly instead of
+            # silently retrying forever.
             if use_imitation:
                 [chosen] = random.choices(self.imitation_files, k=1)
                 try:
                     b = load_imitation_npz(chosen)
-                except (OSError, ValueError, KeyError):
+                except (OSError, ValueError):
                     continue
             else:
                 [chosen] = random.choices(self.files, k=1)
                 try:
                     b = load_v2_npz(chosen)
-                except (OSError, ValueError, KeyError):
+                except (OSError, ValueError):
                     continue
             # Mirror augmentation: 50% of files get horizontally mirrored
             # via the Rust mirror table. Cheap 2x effective data multiplier.
@@ -475,16 +502,17 @@ def _run_bootstrap(cfg: AsyncConfig, model: torch.nn.Module,
     t0 = time.time()
 
     while total_steps < total_steps_target:
-        for boards, policies, outcomes in dataloader:
+        for boards, policies, legal_mask, outcomes in dataloader:
             if total_steps >= total_steps_target:
                 break
 
             boards = boards.to(device)
             policies = policies.to(device)
+            legal_mask = legal_mask.to(device).bool()
             outcomes = outcomes.to(device)
 
             preds = model(boards)
-            targets, legal_mask = _build_imitation_targets(policies, outcomes)
+            targets = _build_imitation_targets(policies, outcomes)
             breakdown: LossBreakdown = compute_losses(
                 preds, targets, legal_mask=legal_mask,
                 weights=loss_weights, debug=(total_steps == 0),
