@@ -110,6 +110,12 @@ def update_bn_stats(
         if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d,
                           nn.SyncBatchNorm)):
             has_bn = True
+            # BN modules are declared with track_running_stats=True in
+            # HexChessNet, so these buffers are always present. The asserts
+            # both document the invariant and narrow `Tensor | None` for ty.
+            assert m.running_mean is not None
+            assert m.running_var is not None
+            assert m.num_batches_tracked is not None
             momenta[m] = m.momentum
             m.running_mean = torch.zeros_like(m.running_mean)
             m.running_var = torch.ones_like(m.running_var)
@@ -134,6 +140,6 @@ def update_bn_stats(
             model(x)
     finally:
         for m, mom in momenta.items():
-            m.momentum = mom
+            m.momentum = mom  # ty: ignore[unresolved-attribute]
         if not was_training:
             model.eval()

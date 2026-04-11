@@ -88,7 +88,8 @@ def replay(
     """Replay the game; return the number of full-search plies verified.
 
     ``search_factory`` and ``game_factory`` exist so tests can inject fakes
-    without requiring the native binding.
+    in place of the real MCTS search (which is slow). The native ``hexchess``
+    binding is still required to import this module.
     """
     if search_factory is None:
         # Replay verifies worker self-play determinism, so it must use the

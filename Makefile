@@ -33,7 +33,7 @@ lint: ## Run clippy + format check + ruff + ty
 	cargo clippy -p hexchess-engine -- -D warnings
 	cargo fmt --all --check
 	uvx ruff check
-	uvx ty check
+	uvx ty check --error-on-warning
 
 # --- Documentation ---
 

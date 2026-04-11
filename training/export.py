@@ -65,9 +65,11 @@ def export_to_onnx(
     from .health_checks import check_bn_eval_mode
     _bn = check_bn_eval_mode(export_model)
     assert _bn.passed, f"BN eval-mode invariant failed before ONNX export: {_bn.message}"
+    # `args` must be a tuple per torch.onnx.export; a single-tensor sugar works
+    # at runtime but the stub rejects it, and the tuple form is clearer anyway.
     torch.onnx.export(
         export_model,
-        dummy_input,
+        (dummy_input,),
         str(output_path),
         input_names=["board"],
         output_names=["policy", "value"],
@@ -117,6 +119,8 @@ def verify_onnx(onnx_path: Path) -> None:
         policy, value = outputs
         assert isinstance(policy, np.ndarray) and isinstance(value, np.ndarray)
         print(f"  Inference test: policy shape={policy.shape}, WDL shape={value.shape}")
-        print(f"  WDL logits: {value[0]}")
+        # numpy's typed __getitem__ overloads don't admit Literal[0] on object dtype
+        # in every ORT-stub path; the isinstance assert above guarantees ndarray.
+        print(f"  WDL logits: {value[0]}")  # ty: ignore[invalid-argument-type]
     except ImportError:
         print("  (onnxruntime not installed, skipping inference test)")

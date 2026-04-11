@@ -70,6 +70,9 @@ def notify_elo_update(
 
 def _post(text: str) -> None:
     """Post a message to the configured Slack webhook."""
+    # All public callers check `SLACK_WEBHOOK_URL` before invoking `_post`;
+    # assert to document the invariant and narrow `str | None` for ty.
+    assert SLACK_WEBHOOK_URL is not None, "_post called without SLACK_WEBHOOK_URL set"
     payload = json.dumps({"text": text}).encode()
     req = urllib.request.Request(
         SLACK_WEBHOOK_URL,

@@ -66,7 +66,7 @@ def rank_by_conservative(
 class Player(Protocol):
     name: str
 
-    def pick_move(self, game) -> dict: ...
+    def pick_move(self, game: hexchess.Game) -> hexchess.Move: ...
 
 
 class MinimaxPlayer:
@@ -200,7 +200,10 @@ def update_ratings(
     else:
         ranks = [1, 1]
 
-    [[new_a], [new_b]] = _model.rate(teams=[[ra], [rb]], ranks=ranks)
+    # openskill's `rate` is overload-typed around Rating instances; we pass
+    # serializable mu/sigma dicts (see `conservative_ratings` callers) and
+    # unpack mu/sigma off the returned Rating objects below.
+    [[new_a], [new_b]] = _model.rate(teams=[[ra], [rb]], ranks=ranks)  # ty: ignore[invalid-argument-type]
     return (
         {"mu": new_a.mu, "sigma": new_a.sigma},
         {"mu": new_b.mu, "sigma": new_b.sigma},

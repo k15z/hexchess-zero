@@ -1,9 +1,11 @@
 """Type stubs for the `hexchess` Rust PyO3 bindings.
 
-Hand-maintained. The surface covered here is the subset the Python training
-code (`training/`) uses — not every attribute the Rust module exposes. If you
-add a new binding and the training code imports it, add it here so `ty` can
-type-check usages.
+Hand-maintained. If you add a Rust binding and the training code starts
+referencing it, update this file so `ty` can type-check usages — the drift
+guard at `training/test_hexchess_stub.py` enforces *presence* (name exists)
+but not signature accuracy, so wrong signatures here will silently mask
+real bugs. When in doubt, check `bindings/python/src/lib.rs` for the
+`#[pyo3(signature = ...)]` attribute.
 
 The native module lives in `bindings/python/src/lib.rs`; `maturin develop`
 installs it into the project venv as the top-level `hexchess` package.
@@ -24,9 +26,14 @@ class Move:
     to_r: int
     promotion: str | None
     notation: str
+    # Tuple aliases exposed on the Rust type.
+    from_: tuple[int, int]
+    to: tuple[int, int]
 
     @staticmethod
-    def from_notation(notation: str) -> "Move": ...
+    def from_notation(notation: str) -> "Move":
+        """Parse a move from Glinski notation like 'f5-f6' or 'f10-f11=Q'."""
+        ...
 
 
 class RankedMove:
@@ -39,13 +46,26 @@ class Piece:
     piece: str
     q: int
     r: int
-    square: int
+    # `square` is the Glinski notation for the cell (e.g. "b1"), not a numeric index.
+    square: str
 
 
 class Game:
     def __init__(self) -> None: ...
-    def apply(self, move: Move) -> None: ...
-    def apply_move(self, move: Move) -> None: ...
+    def apply(self, move: Move | str) -> None:
+        """Apply a move given as a Move object or a Glinski notation string
+        (e.g. 'f5-f6', 'f10-f11=Q'). Raises ValueError if the move is illegal."""
+        ...
+    def apply_move(
+        self,
+        from_q: int,
+        from_r: int,
+        to_q: int,
+        to_r: int,
+        promotion: str | None = ...,
+    ) -> None:
+        """Legacy five-positional-args API. Prefer `apply(mv)` for new code."""
+        ...
     def undo_move(self) -> None: ...
     def clone(self) -> "Game": ...
     def is_game_over(self) -> bool: ...
@@ -77,13 +97,24 @@ class MctsSearch:
     def __init__(
         self,
         simulations: int = ...,
+        c_puct: float | None = ...,
         model_path: str | None = ...,
+        batch_size: int = ...,
+        tt_capacity: int = ...,
+        intra_threads: int = ...,
+        use_weighted_eval: bool = ...,
+        dirichlet_epsilon: float = ...,
+        dirichlet_alpha: float = ...,
         eval_mode: bool = ...,
-        **kwargs: Any,
     ) -> None: ...
     def run(self, game: Game, temperature: float = ...) -> MctsResult: ...
-    def run_pcr(self, game: Game, *args: Any, **kwargs: Any) -> dict[str, Any]: ...
-    def aux_opponent_policy(self) -> np.ndarray: ...
+    def run_pcr(self, game: Game, ply: int = ...) -> dict[str, Any]:
+        """Returns {best_move, value, nodes, was_full_search, policy_target (or None), ...}."""
+        ...
+    def aux_opponent_policy(self) -> np.ndarray | None:
+        """Opponent-reply visit distribution from the previous search, or
+        `None` if unavailable (no search yet, or best child unexpanded)."""
+        ...
     def config_summary(self) -> dict[str, Any]: ...
     def set_resign_enabled(self, enabled: bool) -> None: ...
     def set_rng_seed(self, seed: int) -> None: ...
@@ -115,8 +146,15 @@ class MinimaxAllResult:
 
 def encode_board(game: Game) -> np.ndarray: ...
 def encode_batch(games: list[Game]) -> np.ndarray: ...
-def from_notation(notation: str) -> Move: ...
-def to_notation(move: Move) -> str: ...
+def to_notation(q: int, r: int) -> str:
+    """Convert axial (q, r) to Glinski notation like 'f6'."""
+    ...
+def from_notation(s: str) -> tuple[int, int]:
+    """Parse Glinski notation like 'f6' into (q, r). Raises ValueError on bad input.
+
+    See `Move.from_notation` for parsing a full move string like 'f5-f6'.
+    """
+    ...
 def index_to_move(index: int) -> Move: ...
 def move_to_index(
     from_q: int,
@@ -125,23 +163,20 @@ def move_to_index(
     to_r: int,
     promotion: str | None = ...,
 ) -> int: ...
-def mirror_indices_array() -> list[int]: ...
+def mirror_indices_array() -> np.ndarray: ...
 def num_move_indices() -> int: ...
 def minimax_search(
     game: Game,
     depth: int,
     weights: EvalWeights | None = ...,
-    **kwargs: Any,
 ) -> MinimaxResult: ...
 def minimax_search_all(
     game: Game,
     depth: int,
     weights: EvalWeights | None = ...,
-    **kwargs: Any,
 ) -> MinimaxAllResult: ...
 def minimax_search_with_policy(
     game: Game,
     depth: int,
     weights: EvalWeights | None = ...,
-    **kwargs: Any,
 ) -> MinimaxPolicyResult: ...

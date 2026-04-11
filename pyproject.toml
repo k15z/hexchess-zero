@@ -58,14 +58,7 @@ exclude = [
 ]
 
 [tool.ty.rules]
-# Third-party libs (torch, loguru, boto3, openskill, onnx) lack complete stubs,
-# so these rules produce a lot of noise without catching real bugs. Downgrade
-# to warn or off and let us enable selectively as stubs improve.
-unresolved-attribute = "warn"
-invalid-argument-type = "warn"
+# `possibly-missing-attribute` is too noisy on torch's `Module.__getattr__`
+# fallthrough (every parameter lookup looks "possibly missing" to ty). Leave
+# it at warn globally; the useful bug-catching rules stay as errors.
 possibly-missing-attribute = "warn"
-# torch's .pyi uses `Tensor | None` for parameter.data and SparseTensor-inclusive
-# union return types that confuse narrowing — the runtime values are always
-# concrete Tensors in our code paths. Demoted to warn so real bugs still surface.
-call-non-callable = "warn"
-unsupported-operator = "warn"
