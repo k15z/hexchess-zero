@@ -19,6 +19,7 @@ from training.worker import (
     PositionSample,
     compute_opening_hash,
     finalize_game_targets,
+    legal_mask_from_moves,
     write_samples_to_npz,
     write_trace_json,
     _root_q_to_wdl,
@@ -34,10 +35,18 @@ def _fake_position(ply: int, side: str, root_q: float = 0.0) -> PositionSample:
     board[0, 0, 0] = float(ply)
     policy = np.zeros(NUM_MOVES, dtype=np.float32)
     policy[ply % NUM_MOVES] = 1.0
+    # Legal mask: the visited index plus a handful of unvisited legal
+    # moves, so tests exercise the fact that legal_mask is wider than
+    # `policy > 0` (the entire point of this schema field).
+    legal_mask = np.zeros(NUM_MOVES, dtype=bool)
+    legal_mask[ply % NUM_MOVES] = True
+    for extra in range(1, 6):
+        legal_mask[(ply + extra) % NUM_MOVES] = True
     return PositionSample(
         board=board,
         policy=policy,
         policy_aux_opp=np.full(NUM_MOVES, 1.0 / NUM_MOVES, dtype=np.float32),
+        legal_mask=legal_mask,
         root_q=root_q,
         root_n=800,
         root_entropy=1.23,
@@ -95,6 +104,7 @@ def test_npz_schema_dtypes_and_shapes(tmp_path: Path) -> None:
         "boards": ((n, 22, 11, 11), np.int8),
         "policy": ((n, NUM_MOVES), np.float16),
         "policy_aux_opp": ((n, NUM_MOVES), np.float16),
+        "legal_mask": ((n, NUM_MOVES), np.bool_),
         "wdl_terminal": ((n, 3), np.float32),
         "wdl_short": ((n, 3), np.float32),
         "mlh": ((n,), np.int16),
@@ -202,3 +212,74 @@ def test_empty_record_rejected(tmp_path: Path) -> None:
     rec = _fake_record(game_len=0, wdl_white=[0.0, 1.0, 0.0])
     with pytest.raises(ValueError):
         write_samples_to_npz(tmp_path / "empty.npz", rec, num_move_indices=NUM_MOVES)
+
+
+# ---------------------------------------------------------------------------
+# legal_mask_from_moves — STM-frame consistency with policy targets
+# ---------------------------------------------------------------------------
+
+
+def test_legal_mask_from_moves_is_stm_framed_white() -> None:
+    """White-to-move: legal mask indices must equal absolute indices.
+
+    In STM frame, white-to-move policy indexing is the identity
+    (``game.policy_index == hexchess.move_to_index``), so the mask built
+    by ``legal_mask_from_moves(game, ...)`` must sit at exactly the same
+    indices as a hypothetical absolute-frame mask. Catches a regression
+    to the previous absolute-frame implementation in the trivial case.
+    """
+    import hexchess
+
+    game = hexchess.Game()
+    assert game.side_to_move() == "white"
+    legal = game.legal_moves()
+    num_moves = hexchess.num_move_indices()
+    mask = legal_mask_from_moves(game, legal, num_moves)
+
+    expected = np.zeros(num_moves, dtype=bool)
+    for mv in legal:
+        expected[hexchess.move_to_index(
+            mv.from_q, mv.from_r, mv.to_q, mv.to_r, mv.promotion
+        )] = True
+    np.testing.assert_array_equal(mask, expected)
+
+
+def test_legal_mask_from_moves_is_stm_framed_black() -> None:
+    """Black-to-move: legal mask indices must match game.policy_index,
+    which remaps via MIRROR_INDEX. This is the load-bearing regression
+    test: the previous absolute-frame ``hexchess.move_to_index`` impl
+    would put the mask at DIFFERENT indices than the policy target
+    (built via ``search.run_pcr``'s STM-framed visit distribution).
+    """
+    import hexchess
+
+    game = hexchess.Game()
+    game.apply(game.legal_moves()[0])  # flip STM to black
+    assert game.side_to_move() == "black"
+    legal = game.legal_moves()
+    num_moves = hexchess.num_move_indices()
+    mask = legal_mask_from_moves(game, legal, num_moves)
+
+    # Expected: STM-frame indices via game.policy_index.
+    expected_stm = np.zeros(num_moves, dtype=bool)
+    for mv in legal:
+        expected_stm[game.policy_index(
+            mv.from_q, mv.from_r, mv.to_q, mv.to_r, mv.promotion
+        )] = True
+    np.testing.assert_array_equal(mask, expected_stm)
+
+    # And: the would-be absolute-frame mask must *differ* from the STM
+    # mask (otherwise this test is vacuous — we need at least one move
+    # that is not self-mirror-symmetric to meaningfully catch the bug).
+    absolute = np.zeros(num_moves, dtype=bool)
+    for mv in legal:
+        absolute[hexchess.move_to_index(
+            mv.from_q, mv.from_r, mv.to_q, mv.to_r, mv.promotion
+        )] = True
+    assert not np.array_equal(mask, absolute), (
+        "black-to-move legal mask equals the absolute-frame mask, "
+        "meaning either no asymmetric moves are present or the STM "
+        "remap silently reverted to identity"
+    )
+
+

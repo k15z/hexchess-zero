@@ -9,6 +9,7 @@ Schema (see notes/13-implementation-plan.md §5.3):
     boards                (N, 22, 11, 11)        int8
     policy                (N, num_move_indices)  float16
     policy_aux_opp        (N, num_move_indices)  float16
+    legal_mask            (N, num_move_indices)  bool
     wdl_terminal          (N, 3)                 float32
     wdl_short             (N, 3)                 float32
     mlh                   (N,)                   int16
@@ -21,11 +22,28 @@ Schema (see notes/13-implementation-plan.md §5.3):
     ply                   (N,)                   int16
     game_id               (N,)                   uint64
 
+`legal_mask` is True on every legal-move index at the position, regardless
+of whether MCTS visited that move. The policy-loss softmax masks illegal
+moves using this field — *not* by deriving a mask from `policy > 0`, which
+would incorrectly exclude legal-but-unvisited moves from the softmax
+denominator and leave the network unpenalized for putting mass on them.
+
 Only full-search PCR positions (was_full_search=True) are kept as samples.
-The `boards` int8 cast is lossless for the binary piece planes; the four
-normalized meta planes (fullmove, halfmove clock, repetition, validity/other
-scalar channels) are rounded to the nearest integer in int8 range. This is a
-small precision loss the trainer will compensate for by rescaling on load.
+
+Board quantization: the `boards` float32 -> int8 cast is lossless for all
+{0,1}-valued planes (12 piece planes, side-to-move, en-passant, validity,
+in-check, last-move from/to) and for the 0/1/2-valued repetition plane.
+The three normalized scalar planes are lossy:
+  - ch 14 (halfmove_clock/100) — halfmove_clock is capped at 100 by the
+    50-move rule, so this plane lives in [0, 1] and `rint` binarizes it.
+  - ch 21 (halfmove_clock/50, clamped [0, 1]) — same story, binarized.
+  - ch 13 (fullmove/100) — fullmove is unbounded, so this plane is
+    quantized to small non-negative integers (0 for moves <50, 1 for
+    ~50-150, 2 for ~150-250, ...). Coarse but not collapsed.
+The loader in `training/data_v2.py` does NOT rescale on load and treats
+the stored int8 values as-is. If these signals turn out to matter we
+would need to either bump the schema to store raw integer clocks or
+scale them before quantization — see `data_v2._decode_boards`.
 """
 
 from __future__ import annotations
@@ -70,6 +88,7 @@ class PositionSample:
     board: np.ndarray            # (22, 11, 11) float32 from encode_board
     policy: np.ndarray           # (num_moves,) float32 (PTP-pruned)
     policy_aux_opp: np.ndarray   # (num_moves,) float32 opponent-reply visit dist
+    legal_mask: np.ndarray       # (num_moves,) bool — True on every legal move
     root_q: float                # [-1, 1] from STM perspective
     root_n: int                  # total visits at root
     root_entropy: float
@@ -256,6 +275,7 @@ def write_samples_to_npz(
     boards = np.zeros((n, 22, 11, 11), dtype=np.int8)
     policy = np.zeros((n, num_move_indices), dtype=np.float16)
     policy_aux_opp = np.zeros((n, num_move_indices), dtype=np.float16)
+    legal_mask = np.zeros((n, num_move_indices), dtype=bool)
     wdl_terminal = np.zeros((n, 3), dtype=np.float32)
     wdl_short = np.zeros((n, 3), dtype=np.float32)
     mlh = np.zeros((n,), dtype=np.int16)
@@ -269,12 +289,14 @@ def write_samples_to_npz(
     game_id = np.full((n,), record.game_id, dtype=np.uint64)
 
     for i, pos in enumerate(record.positions):
-        # Cast float board to int8. Piece planes are {0,1}; scalar meta
-        # planes in [0, ~127] round safely into int8 (worker.py module
-        # docstring documents this).
+        # Cast float board to int8. Binary planes and the {0,1,2}
+        # repetition plane round-trip exactly; the three normalized
+        # fractional planes (ch 13/14/21) are effectively binarized.
+        # See module docstring for details.
         boards[i] = np.clip(np.rint(pos.board), -128, 127).astype(np.int8)
         policy[i] = pos.policy.astype(np.float16)
         policy_aux_opp[i] = pos.policy_aux_opp.astype(np.float16)
+        legal_mask[i] = pos.legal_mask.astype(bool)
         wdl_terminal[i] = pos.trace.get("wdl_terminal_stm", [0.0, 1.0, 0.0])
         wdl_short[i] = pos.trace.get("wdl_short_stm", [0.0, 1.0, 0.0])
         mlh[i] = int(pos.trace.get("mlh", 0))
@@ -292,6 +314,7 @@ def write_samples_to_npz(
         boards=boards,
         policy=policy,
         policy_aux_opp=policy_aux_opp,
+        legal_mask=legal_mask,
         wdl_terminal=wdl_terminal,
         wdl_short=wdl_short,
         mlh=mlh,
@@ -369,6 +392,27 @@ def _move_to_str(mv) -> str:
         return f"{mv.from_q},{mv.from_r}->{mv.to_q},{mv.to_r}"
 
 
+def legal_mask_from_moves(game, legal_moves, num_move_indices: int) -> np.ndarray:
+    """Build a ``(num_move_indices,) bool`` mask for a list of legal moves.
+
+    Indexes each move via ``game.policy_index`` so the mask lives in the
+    **STM frame** — the same frame the board tensor and the policy target
+    are in. Using ``hexchess.move_to_index`` (absolute frame) here would
+    put the mask at absolute indices while the policy sits at STM indices,
+    silently corrupting every black-to-move sample. Promotion variants
+    occupy distinct indices so each shows up as its own legal move in the
+    source list.
+    """
+    assert hexchess is not None
+    mask = np.zeros(num_move_indices, dtype=bool)
+    for mv in legal_moves:
+        idx = game.policy_index(
+            mv.from_q, mv.from_r, mv.to_q, mv.to_r, mv.promotion
+        )
+        mask[idx] = True
+    return mask
+
+
 def _play_one_game_pcr(
     search: "hexchess.MctsSearch",
     cfg: AsyncConfig,
@@ -409,6 +453,7 @@ def _play_one_game_pcr(
 
         if was_full and policy_target is not None:
             policy_np = np.asarray(policy_target, dtype=np.float32)
+            legal_mask_np = legal_mask_from_moves(game, legal, num_moves)
 
             # Opponent-reply visit distribution from the MCTS tree. Falls
             # back to uniform-over-legal if the best child is unexpanded
@@ -432,6 +477,7 @@ def _play_one_game_pcr(
                 board=board_tensor.astype(np.float32),
                 policy=policy_np,
                 policy_aux_opp=aux_opp,
+                legal_mask=legal_mask_np,
                 root_q=value,
                 root_n=nodes,
                 root_entropy=_entropy(policy_np),
