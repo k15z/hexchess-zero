@@ -627,6 +627,43 @@ mod tests {
     }
 
     #[test]
+    fn test_promotion_resets_halfmove_derived_planes() {
+        let mut board = Board::empty();
+        // Minimal legal-ish setup: kings + one pawn ready to promote.
+        board.set(
+            HexCoord::new(0, -4),
+            Some(Piece::new(PieceKind::King, Color::White)),
+        );
+        board.white_king = HexCoord::new(0, -4);
+        board.set(
+            HexCoord::new(3, 2),
+            Some(Piece::new(PieceKind::King, Color::Black)),
+        );
+        board.black_king = HexCoord::new(3, 2);
+        board.set(
+            HexCoord::new(0, 4),
+            Some(Piece::new(PieceKind::Pawn, Color::White)),
+        );
+        board.halfmove_clock = 99;
+        board.side_to_move = Color::White;
+
+        let mut state = GameState::from_board(board);
+        state.apply_move(Move {
+            from: HexCoord::new(0, 4),
+            to: HexCoord::new(0, 5),
+            promotion: Some(PieceKind::Queen),
+            captured: None,
+            is_en_passant: false,
+        });
+
+        let tensor = encode_board(&state);
+        // Channel 14 = halfmove_clock / 100
+        assert_eq!(tensor[14 * BOARD_DIM * BOARD_DIM], 0.0);
+        // Channel 21 = halfmove_clock / 50 clamped
+        assert_eq!(tensor[21 * BOARD_DIM * BOARD_DIM], 0.0);
+    }
+
+    #[test]
     fn test_encode_board_starting_position_piece_planes() {
         let state = GameState::new();
         let tensor = encode_board(&state);

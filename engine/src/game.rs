@@ -242,6 +242,7 @@ impl GameState {
             .board
             .get(mv.from)
             .expect("apply_move: no piece at `from`");
+        let moved_kind = piece.kind;
         self.board.set(mv.from, None);
 
         // 3. Handle en passant capture
@@ -292,7 +293,7 @@ impl GameState {
         }
 
         // 8. Update clocks
-        if piece.kind == PieceKind::Pawn || mv.captured.is_some() || mv.is_en_passant {
+        if moved_kind == PieceKind::Pawn || mv.captured.is_some() || mv.is_en_passant {
             self.board.halfmove_clock = 0;
         } else {
             self.board.halfmove_clock += 1;
@@ -631,6 +632,38 @@ mod tests {
 
         game.undo_move();
         assert_eq!(game.board.cells, cells_before);
+    }
+
+    #[test]
+    fn test_promotion_resets_halfmove_clock() {
+        let mut board = kings_only_board();
+        // Replace black king's original square with a white pawn one step from promotion.
+        board.set(
+            HexCoord::new(0, 4),
+            Some(Piece::new(PieceKind::Pawn, Color::White)),
+        );
+        // Move black king away from (0,4) in this custom setup.
+        board.set(
+            HexCoord::new(3, 2),
+            Some(Piece::new(PieceKind::King, Color::Black)),
+        );
+        board.black_king = HexCoord::new(3, 2);
+        board.halfmove_clock = 99;
+
+        let mut game = GameState::from_board(board);
+        let promo_move = Move {
+            from: HexCoord::new(0, 4),
+            to: HexCoord::new(0, 5),
+            promotion: Some(PieceKind::Queen),
+            captured: None,
+            is_en_passant: false,
+        };
+
+        game.apply_move(promo_move);
+        assert_eq!(
+            game.board.halfmove_clock, 0,
+            "pawn promotion move must reset halfmove clock"
+        );
     }
 
     // ----- test: K vs K is insufficient material -----
