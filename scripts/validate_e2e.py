@@ -132,18 +132,22 @@ def train_model(cfg: AsyncConfig) -> str:
     t0 = time.time()
 
     while step < TRAIN_STEPS:
-        for boards, policies, outcomes in dataloader:
+        for boards, policies, legal_mask, outcomes in dataloader:
             if step >= TRAIN_STEPS:
                 break
 
             boards = boards.to(device)
             policies = policies.to(device)
+            legal_mask = legal_mask.to(device).bool()
             outcomes = outcomes.to(device)
 
             preds = model(boards)
             pred_policy, pred_wdl = preds["policy"], preds["wdl"]
 
-            log_probs = torch.log_softmax(pred_policy, dim=1)
+            # Mask illegal moves before the softmax so the denominator
+            # spans legal moves only (including legal-but-unvisited).
+            masked_logits = pred_policy.float().masked_fill(~legal_mask, -1e9)
+            log_probs = torch.log_softmax(masked_logits, dim=1)
             policy_loss = -torch.sum(policies * log_probs, dim=1).mean()
 
             log_probs_v = torch.log_softmax(pred_wdl, dim=1)
