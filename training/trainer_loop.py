@@ -14,6 +14,7 @@ All data exchange happens via S3 (DigitalOcean Spaces / R2 / etc).
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 import random
 import time
 from datetime import datetime, timezone
@@ -23,6 +24,7 @@ import numpy as np
 import torch
 import torch.optim as optim
 from loguru import logger
+from numpy.lib.npyio import NpzFile
 from torch.utils.data import DataLoader, IterableDataset
 
 from . import storage
@@ -51,6 +53,7 @@ from .model import build_model
 from .replay_window import sublinear_window_size
 from .slack import notify_training_cycle
 from .swa import SwaSnapshotBuffer, update_bn_stats
+from .types import V2BatchDict, V2Sample, parse_latest_model_meta
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +95,7 @@ def _build_imitation_targets(
 
 
 def _v2_batch_to_torch(
-    batch_np: dict[str, np.ndarray], device: torch.device,
+    batch_np: V2BatchDict, device: torch.device,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor], torch.Tensor]:
     """Collate a dict of numpy arrays from the v2 loader into torch tensors."""
     boards = torch.from_numpy(batch_np["boards"]).to(device)
@@ -110,7 +113,7 @@ def _v2_batch_to_torch(
 def _read_model_version() -> int:
     """Read the current model version from S3."""
     try:
-        return storage.get_json(storage.LATEST_META).get("version", 0)
+        return parse_latest_model_meta(storage.get_json(storage.LATEST_META))["version"]
     except KeyError:
         return 0
 
@@ -236,7 +239,7 @@ class ReplayBuffer(IterableDataset):
 
         return local_files, total
 
-    def stats(self) -> dict:
+    def stats(self) -> dict[str, int]:
         if not self.files:
             return {}
         return {
@@ -244,7 +247,7 @@ class ReplayBuffer(IterableDataset):
             "positions": self.total_positions,
         }
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
         if not self.files:
             return
 
@@ -253,7 +256,7 @@ class ReplayBuffer(IterableDataset):
         while True:
             [chosen] = random.choices(self.files, k=1)
             try:
-                data = np.load(chosen, mmap_mode="r")
+                data: NpzFile = np.load(chosen, mmap_mode="r")
                 boards, policies, outcomes = data["boards"], data["policies"], data["outcomes"]
             except (OSError, ValueError, KeyError):
                 continue
@@ -358,16 +361,16 @@ class ReplayBufferV2(IterableDataset):
             local_files.append(lp)
         return local_files
 
-    def stats(self) -> dict:
+    def stats(self) -> dict[str, int]:
         return {"files": len(self.files), "positions": self.total_positions,
                 "window_size": self.window_size,
                 "imitation_files": len(self.imitation_files)}
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[V2Sample]:
         if not self.files:
             return
 
-        def _yield_from_batch(b: V2Batch):
+        def _yield_from_batch(b: V2Batch) -> Iterator[V2Sample]:
             n = len(b)
             k = min(n, self.SAMPLE_PER_FILE)
             idx = np.random.choice(n, size=k, replace=False)
@@ -382,7 +385,7 @@ class ReplayBufferV2(IterableDataset):
                     "legal_mask": b.legal_mask[i],
                 }
 
-        shuffle_buf: list[dict] = []
+        shuffle_buf: list[V2Sample] = []
         while True:
             # Mix imitation data: with probability imitation_mix, load from
             # imitation files instead of self-play. This anchors the policy
@@ -418,11 +421,17 @@ class ReplayBufferV2(IterableDataset):
                 shuffle_buf = shuffle_buf[drain:]
 
 
-def _v2_collate(samples: list[dict]) -> dict[str, np.ndarray]:
+def _v2_collate(samples: list[V2Sample]) -> V2BatchDict:
     """Stack a list of per-sample dicts into a batch dict of numpy arrays."""
-    out: dict[str, np.ndarray] = {}
-    for k in samples[0].keys():
-        out[k] = np.stack([s[k] for s in samples])
+    out: V2BatchDict = {
+        "boards": np.stack([s["boards"] for s in samples]),
+        "policy": np.stack([s["policy"] for s in samples]),
+        "aux_policy": np.stack([s["aux_policy"] for s in samples]),
+        "wdl_terminal": np.stack([s["wdl_terminal"] for s in samples]),
+        "wdl_short": np.stack([s["wdl_short"] for s in samples]),
+        "mlh": np.stack([s["mlh"] for s in samples]),
+        "legal_mask": np.stack([s["legal_mask"] for s in samples]),
+    }
     return out
 
 

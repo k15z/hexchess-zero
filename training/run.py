@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from typing import cast
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -11,6 +12,26 @@ from loguru import logger
 load_dotenv()
 
 from .config import AsyncConfig  # noqa: E402 — must load .env before importing config
+
+
+class WorkerArgs(argparse.Namespace):
+    simulations: int | None
+    batch_size: int | None
+
+
+class TrainerArgs(argparse.Namespace):
+    steps: int | None
+    batch_size: int | None
+
+
+class DashboardArgs(argparse.Namespace):
+    port: int
+
+
+class EloServiceArgs(argparse.Namespace):
+    simulations: int
+    max_versions: int
+    notify_interval: int
 
 
 def _configure_logging() -> None:
@@ -23,7 +44,7 @@ def _configure_logging() -> None:
     )
 
 
-def cmd_worker(args) -> None:
+def cmd_worker(args: WorkerArgs) -> None:
     """Run the async self-play worker loop."""
     _configure_logging()
     from .worker import run_worker
@@ -37,7 +58,7 @@ def cmd_worker(args) -> None:
     run_worker(cfg)
 
 
-def cmd_trainer(args) -> None:
+def cmd_trainer(args: TrainerArgs) -> None:
     """Run the async continuous trainer loop."""
     _configure_logging()
     from .trainer_loop import run_trainer
@@ -51,7 +72,7 @@ def cmd_trainer(args) -> None:
     run_trainer(cfg)
 
 
-def cmd_status(args) -> None:
+def cmd_status(_args: argparse.Namespace) -> None:
     """Show the status of the training pipeline."""
     from .metrics import print_progress
     print_progress()
@@ -94,9 +115,9 @@ def main() -> None:
         return
 
     if args.command == "worker":
-        cmd_worker(args)
+        cmd_worker(cast(WorkerArgs, args))
     elif args.command == "trainer":
-        cmd_trainer(args)
+        cmd_trainer(cast(TrainerArgs, args))
     elif args.command == "status":
         cmd_status(args)
     elif args.command == "progress":
@@ -104,14 +125,16 @@ def main() -> None:
         print_progress()
     elif args.command == "dashboard":
         from .dashboard import run_dashboard
-        run_dashboard(AsyncConfig(), port=args.port)
+        dash_args = cast(DashboardArgs, args)
+        run_dashboard(AsyncConfig(), port=dash_args.port)
     elif args.command == "elo-service":
         _configure_logging()
         from .elo_service import run_elo_service
+        elo_args = cast(EloServiceArgs, args)
         run_elo_service(
-            simulations=args.simulations,
-            max_versions=args.max_versions,
-            notify_interval=args.notify_interval,
+            simulations=elo_args.simulations,
+            max_versions=elo_args.max_versions,
+            notify_interval=elo_args.notify_interval,
         )
 
 

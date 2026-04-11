@@ -26,10 +26,22 @@ The HTTP handler just reads ``store.snapshot()`` — no S3 calls on the hot path
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import TypeVar, cast
 
 from . import storage
+from .types import (
+    AggregateBucket,
+    CachedHeartbeat,
+    DashboardModelState,
+    DataAggregate,
+    JsonObject,
+    ModelSnapshotEntry,
+    StorageLike,
+    parse_heartbeat_record,
+    parse_latest_model_meta,
+)
 
 _GAMES_TAIL = 50
 
@@ -38,6 +50,7 @@ _GAMES_TAIL = 50
 # older than this belongs to a retired pod (k8s rolling restart, OOM, scale-in)
 # whose name will never recur.
 _HEARTBEAT_STALE_SECONDS = 2 * 60 * 60
+_T = TypeVar("_T")
 
 
 class DashboardStore:
@@ -47,8 +60,8 @@ class DashboardStore:
     latest status dict (safe to serialise without the lock).
     """
 
-    def __init__(self, storage_mod=storage, interval: float = 60.0) -> None:
-        self._s = storage_mod
+    def __init__(self, storage_mod: object = storage, interval: float = 60.0) -> None:
+        self._s: StorageLike = cast(StorageLike, storage_mod)
         self._interval = interval
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -56,20 +69,20 @@ class DashboardStore:
 
         self._etag_meta: str | None = None
         self._etag_elo: str | None = None
-        self._model: dict = {"version": 0, "promoted_at": None}
-        self._elo: dict = {}
+        self._model: DashboardModelState = {"version": 0, "promoted_at": None}
+        self._elo: JsonObject = {}
 
         self._sp_files: dict[str, tuple[int, str]] = {}
         self._im_files: dict[str, tuple[int, str]] = {}
-        self._sp_agg: dict[str, Any] = _empty_agg()
-        self._im_agg: dict[str, Any] = _empty_agg()
+        self._sp_agg: DataAggregate = _empty_agg()
+        self._im_agg: DataAggregate = _empty_agg()
 
-        self._game_records: dict[str, dict] = {}  # key -> record (tail window)
+        self._game_records: dict[str, JsonObject] = {}  # key -> record (tail window)
 
         # name -> {"lm": iso, "data": {...}}
-        self._heartbeats: dict[str, dict] = {}
+        self._heartbeats: dict[str, CachedHeartbeat] = {}
 
-        self._snapshots: list[dict] = []
+        self._snapshots: list[ModelSnapshotEntry] = []
 
         self._last_sync: str | None = None
         self._last_error: str | None = None
@@ -101,13 +114,17 @@ class DashboardStore:
     # ------------------------------------------------------------------- sync
 
     def refresh_once(self) -> None:
+        def _to_model_state(raw: JsonObject) -> DashboardModelState:
+            meta = parse_latest_model_meta(raw)
+            return {
+                "version": meta["version"],
+                "promoted_at": meta["timestamp"] or None,
+            }
+
         self._model = self._sync_etagged_json(
             storage.LATEST_META,
             "_etag_meta",
-            lambda d: {
-                "version": d.get("version", 0),
-                "promoted_at": d.get("timestamp"),
-            },
+            _to_model_state,
             fallback=self._model,
         )
         self._elo = self._sync_etagged_json(
@@ -128,10 +145,10 @@ class DashboardStore:
         self,
         key: str,
         etag_attr: str,
-        transform: Callable[[dict], dict],
+        transform: Callable[[JsonObject], _T],
         *,
-        fallback: dict,
-    ) -> dict:
+        fallback: _T,
+    ) -> _T:
         meta = self._s.head(key)
         if meta is None:
             return fallback
@@ -151,10 +168,10 @@ class DashboardStore:
         # already cached and early-out when the tail window is unchanged.
         keys = sorted(self._s.ls(storage.ELO_GAMES_PREFIX), reverse=True)
         tail = set(keys[:_GAMES_TAIL])
-        if tail == self._game_records.keys():
+        if tail == set(self._game_records):
             return
 
-        new_records = {}
+        new_records: dict[str, JsonObject] = {}
         for k in tail:
             if k in self._game_records:
                 new_records[k] = self._game_records[k]
@@ -196,7 +213,7 @@ class DashboardStore:
         listed = self._s.list_with_meta(storage.HEARTBEATS_PREFIX)
         now = datetime.now(timezone.utc)
         seen_names: set[str] = set()
-        updates: dict[str, dict] = {}
+        updates: dict[str, CachedHeartbeat] = {}
         for obj in listed:
             name = obj["key"].rsplit("/", 1)[-1].removesuffix(".json")
             if not name:
@@ -205,7 +222,7 @@ class DashboardStore:
             # Garbage-collect heartbeats from retired pods. Pod names contain
             # a replicaset hash that changes on every redeploy, so stale keys
             # accumulate forever otherwise.
-            if hasattr(lm, "tzinfo"):
+            if lm is not None:
                 age = (now - lm).total_seconds()
                 if age > _HEARTBEAT_STALE_SECONDS:
                     try:
@@ -214,12 +231,12 @@ class DashboardStore:
                         pass
                     continue
             seen_names.add(name)
-            lm_iso = lm.isoformat() if hasattr(lm, "isoformat") else str(lm)
+            lm_iso = "" if lm is None else lm.isoformat()
             cached = self._heartbeats.get(name)
             if cached is not None and cached.get("lm") == lm_iso:
                 continue
             try:
-                data = self._s.get_json(obj["key"])
+                data = parse_heartbeat_record(self._s.get_json(obj["key"]))
             except KeyError:
                 continue
             updates[name] = {"lm": lm_iso, "data": data}
@@ -233,7 +250,7 @@ class DashboardStore:
 
     def _sync_snapshots(self) -> None:
         keys = self._s.ls(storage.VERSIONS_PREFIX)
-        snaps = [{"name": k.rsplit("/", 1)[-1]} for k in keys]
+        snaps: list[ModelSnapshotEntry] = [{"name": k.rsplit("/", 1)[-1]} for k in keys]
         with self._lock:
             self._snapshots = snaps
 
@@ -269,11 +286,11 @@ class DashboardStore:
             }
 
 
-def _empty_agg() -> dict[str, Any]:
+def _empty_agg() -> DataAggregate:
     return {"total_files": 0, "total_positions": 0, "by_version": {}}
 
 
-def _aggregate(cache: dict[str, tuple[int, str]]) -> dict[str, Any]:
+def _aggregate(cache: dict[str, tuple[int, str]]) -> DataAggregate:
     by_version: dict[str, dict[str, int]] = {}
     total_positions = 0
     for pos, ver in cache.values():
@@ -284,5 +301,5 @@ def _aggregate(cache: dict[str, tuple[int, str]]) -> dict[str, Any]:
     return {
         "total_files": len(cache),
         "total_positions": total_positions,
-        "by_version": by_version,
+        "by_version": cast(dict[str, AggregateBucket], by_version),
     }

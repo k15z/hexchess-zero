@@ -19,16 +19,26 @@ Bucket layout:
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 import json
 import os
 import re
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, cast
 
 import boto3
 import numpy as np
 from botocore.exceptions import ClientError
+
+from .types import (
+    DataFileRecord,
+    HeadObjectRecord,
+    ImitationSample,
+    JsonObject,
+    ListedObjectRecord,
+)
 
 # ---------------------------------------------------------------------------
 # S3 key constants
@@ -49,10 +59,10 @@ HEARTBEATS_PREFIX = "heartbeats/"
 # Client
 # ---------------------------------------------------------------------------
 
-_cached_client = None
+_cached_client: Any | None = None
 
 
-def _client():
+def _client() -> Any:
     global _cached_client
     if _cached_client is None:
         _cached_client = boto3.client(
@@ -95,9 +105,12 @@ def get(key: str) -> bytes:
         raise
 
 
-def get_json(key: str) -> dict:
+def get_json(key: str) -> JsonObject:
     """Download and parse a JSON object."""
-    return json.loads(get(key))
+    parsed = json.loads(get(key))
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{key} did not contain a JSON object")
+    return cast(JsonObject, parsed)
 
 
 def get_file(key: str, local_path: str | Path) -> Path:
@@ -108,9 +121,9 @@ def get_file(key: str, local_path: str | Path) -> Path:
     return local_path
 
 
-def put_json(key: str, obj: dict) -> None:
+def put_json(key: str, obj: Mapping[str, object]) -> None:
     """Upload a dict as JSON."""
-    put(key, json.dumps(obj, indent=2))
+    put(key, json.dumps(dict(obj), indent=2))
 
 
 def delete(key: str) -> None:
@@ -130,7 +143,7 @@ def copy(src_key: str, dst_key: str) -> None:
     )
 
 
-def head(key: str) -> dict | None:
+def head(key: str) -> HeadObjectRecord | None:
     """Return {'etag', 'size', 'last_modified'} for a key, or None if missing.
 
     Cheap change-detection primitive — a single HEAD request.
@@ -163,11 +176,11 @@ def get_range(key: str, start: int, end: int | None = None) -> bytes:
         raise
 
 
-def list_with_meta(prefix: str) -> list[dict]:
+def list_with_meta(prefix: str) -> list[ListedObjectRecord]:
     """List keys under a prefix with size + last_modified metadata."""
     client = _client()
     bucket = _bucket()
-    out = []
+    out: list[ListedObjectRecord] = []
     token = None
     while True:
         kwargs = {"Bucket": bucket, "Prefix": prefix}
@@ -213,14 +226,14 @@ def ls(prefix: str) -> list[str]:
 _NPZ_PATTERN = re.compile(r"_n(\d+)\.npz$")
 
 
-def list_data_files(prefix: str = SELFPLAY_PREFIX) -> list[dict]:
+def list_data_files(prefix: str = SELFPLAY_PREFIX) -> list[DataFileRecord]:
     """List training data files with parsed metadata.
 
     Returns list of {"key", "positions", "timestamp", "version"} sorted by
     timestamp descending (most recent first). ``version`` is the ``v{N}``
     path segment for selfplay data, or "unknown" for other prefixes.
     """
-    files = []
+    files: list[DataFileRecord] = []
     for key in ls(prefix):
         m = _NPZ_PATTERN.search(key)
         if not m:
@@ -244,13 +257,13 @@ def count_positions(prefix: str = SELFPLAY_PREFIX) -> int:
     return sum(f["positions"] for f in list_data_files(prefix))
 
 
-def select_recent_files(prefix: str, max_positions: int) -> list[dict]:
+def select_recent_files(prefix: str, max_positions: int) -> list[DataFileRecord]:
     """Select most recent files up to max_positions.
 
     Returns in chronological order (oldest first).
     """
     files = list_data_files(prefix)
-    selected = []
+    selected: list[DataFileRecord] = []
     total = 0
     for f in files:
         selected.append(f)
@@ -265,7 +278,7 @@ def select_recent_files(prefix: str, max_positions: int) -> list[dict]:
 # Flush helpers
 # ---------------------------------------------------------------------------
 
-def flush_samples(samples: list[dict], key_prefix: str) -> str:
+def flush_samples(samples: Sequence[ImitationSample], key_prefix: str) -> str:
     """Stack sample dicts, compress, and upload as .npz. Returns the S3 key.
 
     Each sample must have 'board', 'policy', and 'outcome' numpy arrays.
@@ -298,7 +311,7 @@ def upload_npz(key: str, *, boards: np.ndarray, policies: np.ndarray,
             os.unlink(tmp_path)
 
 
-def put_game_record(record: dict) -> str:
+def put_game_record(record: Mapping[str, object]) -> str:
     """Write one Elo game result as its own S3 object. Returns the key.
 
     Per-game objects replace the old append-to-jsonl pattern so multiple

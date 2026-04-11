@@ -44,7 +44,7 @@ from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, TypedDict
 
 import numpy as np
 from loguru import logger
@@ -53,16 +53,52 @@ from . import storage
 from .config import AsyncConfig
 from .imitation import play_imitation_game
 from .logging_setup import log_event, setup_json_logging
+from .types import HeartbeatRecord, ImitationSample, parse_latest_model_meta
 
 try:
     import hexchess
 except ImportError:
-    hexchess = None
+    hexchess = None  # type: ignore[assignment]
 
 
 # ---------------------------------------------------------------------------
 # In-memory game record types
 # ---------------------------------------------------------------------------
+
+
+class PositionTrace(TypedDict, total=False):
+    selected_move: str
+    selection_reason: str
+    noise_used: bool
+    search_ms: float | None
+    mlh: int
+    wdl_terminal_stm: list[float]
+    wdl_short_stm: list[float]
+    mlh_ply: int
+    game_len: int
+
+
+class WorkerSampleMeta(TypedDict):
+    game_id_range: list[int]
+    model_version: int
+    worker: str
+    started_at: str
+    duration_s: float
+    num_full_search_positions: int
+    num_total_positions: int
+    result: str
+    termination: str
+    resigned_skipped: bool
+    openings_hash: str
+    git_sha: str
+    rng_seed: int
+
+
+class SearchLike(Protocol):
+    def set_rng_seed(self, seed: int) -> None: ...
+    def set_resign_enabled(self, enabled: bool) -> None: ...
+    def run_pcr(self, game: "hexchess.Game", ply: int) -> dict[str, Any]: ...
+    def aux_opponent_policy(self) -> Any: ...
 
 @dataclass
 class PositionSample:
@@ -80,7 +116,7 @@ class PositionSample:
     was_full_search: bool = True
 
     # Per-ply trace entry (recorded at emit time; opaque dict).
-    trace: dict = field(default_factory=dict)
+    trace: PositionTrace = field(default_factory=dict)
 
 
 @dataclass
@@ -230,7 +266,7 @@ def write_samples_to_npz(
     record: GameRecord,
     *,
     num_move_indices: int | None = None,
-) -> dict[str, Any]:
+) -> WorkerSampleMeta:
     """Materialize a GameRecord to disk as .npz + .meta.json sidecar.
 
     Writes two files:
@@ -304,7 +340,7 @@ def write_samples_to_npz(
         game_id=game_id,
     )
 
-    meta = {
+    meta: WorkerSampleMeta = {
         "game_id_range": [int(record.game_id), int(record.game_id)],
         "model_version": int(record.model_version),
         "worker": record.worker,
@@ -332,7 +368,7 @@ def write_trace_json(path: str | Path, record: GameRecord) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     entries = []
     for pos in record.positions:
-        entry = {
+        entry: dict[str, object] = {
             "ply": int(pos.ply),
             "side": pos.side,
             "root_q": float(pos.root_q),
@@ -341,7 +377,8 @@ def write_trace_json(path: str | Path, record: GameRecord) -> None:
             "nn_value_at_position": float(pos.nn_value_at_position),
             "legal_count": int(pos.legal_count),
         }
-        entry.update(pos.trace)
+        for key, value in pos.trace.items():
+            entry[key] = value
         entries.append(entry)
     path.write_text(json.dumps({
         "game_id": int(record.game_id),
@@ -367,7 +404,7 @@ def _move_to_str(mv) -> str:
 
 
 def _play_one_game_pcr(
-    search: "hexchess.MctsSearch",
+    search: SearchLike,
     cfg: AsyncConfig,
     *,
     game_id: int,
@@ -514,8 +551,8 @@ def flush_game_record(record: GameRecord, model_version: int) -> str | None:
 
 def _read_model_version(cfg: AsyncConfig) -> tuple[int, str | None]:
     try:
-        meta = storage.get_json(storage.LATEST_META)
-        version = meta.get("version", 0)
+        meta = parse_latest_model_meta(storage.get_json(storage.LATEST_META))
+        version = meta["version"]
     except KeyError:
         return 0, None
 
@@ -523,7 +560,7 @@ def _read_model_version(cfg: AsyncConfig) -> tuple[int, str | None]:
     local_meta = cfg.model_cache_dir / "latest.meta.json"
 
     if local_meta.exists() and local_path.exists():
-        cached = json.loads(local_meta.read_text())
+        cached = parse_latest_model_meta(json.loads(local_meta.read_text()))
         if cached.get("version") == version:
             return version, str(local_path)
 
@@ -534,12 +571,13 @@ def _read_model_version(cfg: AsyncConfig) -> tuple[int, str | None]:
 
 def _write_heartbeat(cfg: AsyncConfig, version: int, total_games: int,
                      total_positions: int) -> None:
-    storage.put_json(f"{storage.HEARTBEATS_PREFIX}{_worker_name()}.json", {
+    heartbeat: HeartbeatRecord = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "model_version": version,
         "total_games": total_games,
         "total_positions": total_positions,
-    })
+    }
+    storage.put_json(f"{storage.HEARTBEATS_PREFIX}{_worker_name()}.json", heartbeat)
 
 
 # ---------------------------------------------------------------------------
@@ -581,7 +619,7 @@ def run_worker(cfg: AsyncConfig) -> None:
         imitation_games = 0
         imitation_positions = 0
         batch_size = cfg.worker_batch_size
-        pending_samples: list[dict] = []
+        pending_samples: list[ImitationSample] = []
         pending_games = 0
 
         with ProcessPoolExecutor(max_workers=num_workers) as pool:

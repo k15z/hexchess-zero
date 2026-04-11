@@ -26,6 +26,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
+from numpy.lib.npyio import NpzFile
 
 # Mirror move-index table from the Rust engine. The mirror used is central
 # inversion (q,r) → (-q,-r) — the only hex involution that preserves Glinski's
@@ -101,7 +102,7 @@ def load_imitation_npz(path: str | Path) -> V2Batch:
     regresses (observed: v2 was WORSE than heuristic despite v1 being strong).
     """
     path = Path(path)
-    data = np.load(str(path))
+    data: NpzFile = np.load(str(path))
 
     boards = np.asarray(data["boards"]).astype(np.float32)
     policy = np.asarray(data["policies"]).astype(np.float32)
@@ -132,7 +133,7 @@ def load_v2_npz(path: str | Path) -> V2Batch:
     ``np.load`` (not mmap) because we copy every array to fp32 anyway.
     """
     path = Path(path)
-    data = np.load(str(path))
+    data: NpzFile = np.load(str(path))
 
     was_full = np.asarray(data["was_full_search"]).astype(bool)
     idx = np.nonzero(was_full)[0]

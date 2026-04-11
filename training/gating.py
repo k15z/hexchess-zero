@@ -22,8 +22,10 @@ The state machine is decoupled from the actual gauntlet runner via a
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
-from typing import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+
+from .types import coerce_int
 
 GATE_STATE_KEY = "state/gate.json"
 
@@ -44,14 +46,18 @@ class GateState:
     consecutive_gate_failures: int = 0
     gate_enabled: bool = True
 
-    def to_dict(self) -> dict:
-        return asdict(self)
+    def to_dict(self) -> dict[str, int | bool]:
+        return {
+            "promotions_since_start": self.promotions_since_start,
+            "consecutive_gate_failures": self.consecutive_gate_failures,
+            "gate_enabled": self.gate_enabled,
+        }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "GateState":
+    def from_dict(cls, d: Mapping[str, object]) -> "GateState":
         return cls(
-            promotions_since_start=int(d.get("promotions_since_start", 0)),
-            consecutive_gate_failures=int(d.get("consecutive_gate_failures", 0)),
+            promotions_since_start=coerce_int(d.get("promotions_since_start")),
+            consecutive_gate_failures=coerce_int(d.get("consecutive_gate_failures")),
             gate_enabled=bool(d.get("gate_enabled", True)),
         )
 
@@ -86,7 +92,11 @@ def decide_promotion(
         A ``GateDecision`` describing whether to promote and the new
         state that should be persisted afterwards.
     """
-    s = GateState(**state.to_dict())  # copy
+    s = GateState(
+        promotions_since_start=state.promotions_since_start,
+        consecutive_gate_failures=state.consecutive_gate_failures,
+        gate_enabled=state.gate_enabled,
+    )
 
     if not s.gate_enabled:
         return GateDecision(
