@@ -98,6 +98,7 @@ class GameRecord:
     rng_seed: int
     dirichlet_epsilon: float
     dirichlet_alpha: float
+    num_simulations: int
     worker: str
     git_sha: str
     num_total_positions: int     # full + fast combined
@@ -320,6 +321,7 @@ def write_samples_to_npz(
         "rng_seed": int(record.rng_seed),
         "dirichlet_epsilon": float(record.dirichlet_epsilon),
         "dirichlet_alpha": float(record.dirichlet_alpha),
+        "num_simulations": int(record.num_simulations),
     }
     meta_path = npz_path.with_suffix(".meta.json")
     meta_path.write_text(json.dumps(meta, indent=2))
@@ -351,6 +353,7 @@ def write_trace_json(path: str | Path, record: GameRecord) -> None:
         "rng_seed": int(record.rng_seed),
         "dirichlet_epsilon": float(record.dirichlet_epsilon),
         "dirichlet_alpha": float(record.dirichlet_alpha),
+        "num_simulations": int(record.num_simulations),
         "entries": entries,
     }, indent=2))
 
@@ -467,6 +470,7 @@ def _play_one_game_pcr(
         rng_seed=seed,
         dirichlet_epsilon=cfg.dirichlet_epsilon,
         dirichlet_alpha=cfg.dirichlet_alpha,
+        num_simulations=cfg.num_simulations,
         worker=_worker_name(),
         git_sha=_git_sha(),
         num_total_positions=total_ply,
@@ -589,7 +593,13 @@ def run_worker(cfg: AsyncConfig) -> None:
             while model_path is None:
                 done, futures = wait(futures, return_when=FIRST_COMPLETED)
                 for future in done:
-                    samples = future.result()
+                    try:
+                        samples = future.result()
+                    except Exception as exc:
+                        logger.exception("Imitation worker task failed: {}", exc)
+                        futures.add(pool.submit(play_imitation_game, cfg))
+                        _write_heartbeat(cfg, current_version, imitation_games, imitation_positions)
+                        continue
                     pending_samples.extend(samples)
                     pending_games += 1
                     imitation_games += 1
@@ -632,12 +642,18 @@ def run_worker(cfg: AsyncConfig) -> None:
     while True:
         game_t0 = time.time()
         game_id = game_id_base + total_games
-        record = _play_one_game_pcr(
-            search, cfg,
-            game_id=game_id,
-            model_version=current_version,
-            py_rng=py_rng,
-        )
+        try:
+            record = _play_one_game_pcr(
+                search, cfg,
+                game_id=game_id,
+                model_version=current_version,
+                py_rng=py_rng,
+            )
+        except Exception as exc:
+            logger.exception("self-play game crashed (game_id={}): {}", game_id, exc)
+            _write_heartbeat(cfg, current_version, total_games, total_positions)
+            time.sleep(1)
+            continue
         elapsed = time.time() - game_t0
         total_games += 1
         total_positions += len(record.positions)

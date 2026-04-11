@@ -89,6 +89,7 @@ def test_replay_default_search_factory_uses_trace_dirichlet(monkeypatch):
         "game_id": 42,
         "model_version": 1,
         "rng_seed": 12345,
+        "num_simulations": 640,
         "dirichlet_epsilon": 0.2,
         "dirichlet_alpha": 0.4,
         "entries": [{"ply": 0, "selected_move": moves[0]}],
@@ -98,7 +99,7 @@ def test_replay_default_search_factory_uses_trace_dirichlet(monkeypatch):
 
     assert verified == 1
     assert created == [{
-        "simulations": 800,
+        "simulations": 640,
         "model_path": "/tmp/model.onnx",
         "dirichlet_epsilon": 0.2,
         "dirichlet_alpha": 0.4,

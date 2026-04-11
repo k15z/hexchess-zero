@@ -69,6 +69,7 @@ def _fake_record(
         rng_seed=12345,
         dirichlet_epsilon=0.25,
         dirichlet_alpha=0.3,
+        num_simulations=800,
         worker="test-worker",
         git_sha="abc123def456",
         num_total_positions=game_len,
@@ -119,7 +120,7 @@ def test_npz_schema_dtypes_and_shapes(tmp_path: Path) -> None:
         "game_id_range", "model_version", "worker", "started_at", "duration_s",
         "num_full_search_positions", "num_total_positions", "result",
         "termination", "resigned_skipped", "openings_hash", "git_sha", "rng_seed",
-        "dirichlet_epsilon", "dirichlet_alpha",
+        "dirichlet_epsilon", "dirichlet_alpha", "num_simulations",
     ):
         assert key in loaded, f"meta sidecar missing {key}"
     assert loaded["game_id_range"] == [7, 7]
@@ -191,6 +192,7 @@ def test_write_trace_json(tmp_path: Path) -> None:
     assert loaded["result"] == "black_win"
     assert loaded["dirichlet_epsilon"] == pytest.approx(0.25)
     assert loaded["dirichlet_alpha"] == pytest.approx(0.3)
+    assert loaded["num_simulations"] == 800
     assert len(loaded["entries"]) == 3
     for entry in loaded["entries"]:
         assert "ply" in entry and "side" in entry and "root_q" in entry
