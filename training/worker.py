@@ -226,6 +226,14 @@ class ResignTracker:
 
     def record(self, side: str, p_win: float) -> bool:
         """Record an observation for ``side``. Returns True iff fired."""
+        # Defensive guard: intentional divergence from the Rust reference
+        # (engine/src/mcts.rs:1423). Rust's impl with k=0 would fire on
+        # every call (``hist.len() == 0 && all([])`` is vacuously true),
+        # which is almost certainly not what anyone wants. Config
+        # validation at training/config.py:193 already rules this out
+        # (``resign_streak >= 1``, ``resign_threshold > 0``); the guard
+        # just keeps the tracker well-defined if a caller ever bypasses
+        # the validator.
         if self.k <= 0 or self.v_resign <= 0.0:
             return False
         hist = self._white if side == "white" else self._black

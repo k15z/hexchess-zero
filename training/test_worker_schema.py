@@ -403,6 +403,112 @@ def test_resign_calibration_correct_cases():
     assert _resign_calibration_correct("black", "draw") is False
 
 
+def test_finalize_game_targets_on_resigned_game(tmp_path: Path) -> None:
+    """Integration test for the resign break path.
+
+    In ``_play_one_game_pcr`` we break the game loop *before* the final
+    ``game.apply(best_move)``, then set ``game_len_plies = total_ply + 1``
+    so that ``finalize_game_targets`` treats the resign position as if a
+    game-ending move were played from it (MLH = 1, wdl_short = terminal).
+    This test drives that exact shape end-to-end.
+
+    Setup: 10 positions (plies 0..9), white-to-move at ply 9 resigns.
+    wdl_terminal_white = [0,0,1] (white loses). game_len_plies = 10.
+    """
+    # Positions 0..9 alternate white/black. White is at even plies.
+    sides = ("white", "black")
+    positions = [
+        _fake_position(ply=i, side=sides[i % 2], root_q=-0.9 if i % 2 == 0 else 0.9)
+        for i in range(10)
+    ]
+    assert positions[9].side == "black"  # sanity: ply 9 is black-to-move
+    # But for this test we actually want white (even-ply mover) to be
+    # the resigning side for a cleaner assertion pattern. Re-shape:
+    # put white at ply 9 as the resigner by using a 9-position game
+    # ending at ply 8 (white-to-move) instead.
+    positions = [
+        _fake_position(ply=i, side=sides[i % 2], root_q=-0.9 if i % 2 == 0 else 0.9)
+        for i in range(9)
+    ]
+    assert positions[8].side == "white"  # resigning side
+
+    rec = GameRecord(
+        positions=positions,
+        game_id=42,
+        model_version=3,
+        started_at="2026-04-07T00:00:00+00:00",
+        duration_s=5.0,
+        result="black_win",
+        termination="resignation",
+        resigned_skipped=False,
+        opening_hash="a" * 16,
+        rng_seed=1,
+        dirichlet_epsilon=0.25,
+        dirichlet_alpha=0.3,
+        num_simulations=800,
+        worker="test-worker",
+        git_sha="abc123def456",
+        num_total_positions=9,           # total_ply at break = 8, +1 = 9
+        wdl_terminal_white=[0.0, 0.0, 1.0],  # white loses
+        game_len_plies=9,                # == total_ply + 1
+        resign_fired=True,
+        resign_would_fire_ply=8,
+        resign_would_fire_side="white",
+        resign_calibration_correct=True,
+    )
+    finalize_game_targets(rec)
+
+    # MLH at the resign position = 1 (one "virtual" move left).
+    resign_pos = rec.positions[8]
+    assert resign_pos.trace["mlh"] == 1, (
+        "MLH at the resign position should be 1 (game_len - pos.ply = 9 - 8)"
+    )
+    # MLH at ply 0 = game_len = 9.
+    assert rec.positions[0].trace["mlh"] == 9
+
+    # wdl_terminal_stm at the resign position: white is STM, white lost,
+    # so STM sees [W,D,L] = [0,0,1].
+    assert resign_pos.trace["wdl_terminal_stm"] == [0.0, 0.0, 1.0]
+    # Position at ply 0 (also white-to-move): same STM, same terminal.
+    assert rec.positions[0].trace["wdl_terminal_stm"] == [0.0, 0.0, 1.0]
+    # Position at ply 1 (black-to-move): flipped → black sees white's loss
+    # as [1,0,0] from its own perspective.
+    assert rec.positions[1].trace["wdl_terminal_stm"] == [1.0, 0.0, 0.0]
+
+    # wdl_short at the resign position: target_ply = 8+8 = 16 >= game_len=9,
+    # so it falls into the terminal branch and uses wdl_terminal_stm.
+    assert resign_pos.trace["wdl_short_stm"] == [0.0, 0.0, 1.0]
+    # wdl_short at an early position (ply 0): target = 8, game_len=9,
+    # 8 < 9 → non-terminal branch → uses root_q at ply 8.
+    # root_q at ply 8 = -0.9 (STM white, losing). Same-side as ply 0 →
+    # no flip → _root_q_to_wdl(-0.9) = [0, 0.1, 0.9].
+    expected_short_ply0 = _root_q_to_wdl(-0.9)
+    np.testing.assert_allclose(
+        rec.positions[0].trace["wdl_short_stm"], expected_short_ply0, atol=1e-6
+    )
+
+    # Round-trip through the NPZ writer to ensure the meta carries the
+    # resign fields, not just the in-memory record.
+    npz_path = tmp_path / "resign_full.npz"
+    meta = write_samples_to_npz(npz_path, rec, num_move_indices=NUM_MOVES)
+    loaded = json.loads(npz_path.with_suffix(".meta.json").read_text())
+    assert loaded["termination"] == "resignation"
+    assert loaded["result"] == "black_win"
+    assert loaded["resign_fired"] is True
+    assert loaded["resign_would_fire_side"] == "white"
+    assert loaded["resign_calibration_correct"] is True
+    assert meta == loaded
+
+    # And the per-sample WDL target column in the NPZ reflects the
+    # resigning-side loss — ply 8 (STM white) should have WDL [0, 0, 1].
+    data = np.load(npz_path)
+    np.testing.assert_allclose(data["wdl_terminal"][8], [0.0, 0.0, 1.0], atol=1e-6)
+    # And ply 0 (STM white) too.
+    np.testing.assert_allclose(data["wdl_terminal"][0], [0.0, 0.0, 1.0], atol=1e-6)
+    # Ply 1 (STM black) flipped: [1, 0, 0].
+    np.testing.assert_allclose(data["wdl_terminal"][1], [1.0, 0.0, 0.0], atol=1e-6)
+
+
 def test_npz_meta_includes_resignation_fields(tmp_path: Path) -> None:
     """The per-game meta sidecar must carry the resignation audit fields so
     the false-positive rate can be computed offline from S3."""
