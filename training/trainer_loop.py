@@ -117,6 +117,30 @@ def _read_model_version() -> int:
         return 0
 
 
+def _read_positions_at_last_promote() -> int:
+    """Read the positions watermark from S3.
+
+    Returns 0 if no metadata exists (bootstrap case).
+
+    Migration: if the field is missing but a model exists (old deployment),
+    use the current position count as a conservative estimate. This prevents
+    immediate re-promotion on stale data after the first restart post-rollout.
+    """
+    try:
+        meta = storage.get_json(storage.LATEST_META)
+    except KeyError:
+        # No metadata at all — bootstrap case
+        return 0
+
+    if "positions_at_promote" in meta:
+        return meta["positions_at_promote"]
+
+    # Migration: old meta.json without the field. Use current count to avoid
+    # treating all historical data as "new" and triggering stale re-promotion.
+    logger.info("Migrating positions watermark: field missing, using current count")
+    return storage.count_positions(storage.SELFPLAY_PREFIX)
+
+
 # ---------------------------------------------------------------------------
 # Train bucket (rate limiter)
 # ---------------------------------------------------------------------------
@@ -563,9 +587,10 @@ def _run_bootstrap(cfg: AsyncConfig, model: torch.nn.Module,
     train_elapsed = time.time() - t0
     logger.info("Bootstrap training complete: {:,} steps in {:.0f}s", total_steps, train_elapsed)
 
-    # Export and promote v1
+    # Export and promote v1. Self-play hasn't started yet, so positions = 0.
     new_version = 1
-    _promote_model(cfg, model, new_version)
+    bootstrap_selfplay_positions = storage.count_positions(storage.SELFPLAY_PREFIX)
+    _promote_model(cfg, model, new_version, positions_at_promote=bootstrap_selfplay_positions)
 
     logger.info("Promoted bootstrap model to v{} ({:,} steps, {:.0f}s)",
                 new_version, total_steps, train_elapsed)
@@ -582,12 +607,16 @@ def _promote_model(
     version: int,
     *,
     state_dict: dict[str, torch.Tensor] | None = None,
+    positions_at_promote: int | None = None,
 ) -> None:
     """Export ``model`` (or an override ``state_dict``) and publish as latest.
 
     If ``state_dict`` is given (e.g. SWA-averaged weights), it is written
     to disk and exported to ONNX instead of ``model.state_dict()``. The
     live trainer weights are not mutated.
+
+    ``positions_at_promote`` is persisted in the meta.json so the trainer
+    can resume the promotion cadence watermark after a restart.
     """
     cfg.ensure_cache_dirs()
 
@@ -602,10 +631,13 @@ def _promote_model(
     storage.put_file(storage.CHECKPOINT_PT, local_pt)
     storage.copy(f"{storage.VERSIONS_PREFIX}{version}.onnx", storage.LATEST_ONNX)
     # Meta is the commit point — workers poll this, so write it last
-    storage.put_json(storage.LATEST_META, {
+    meta: dict = {
         "version": version,
         "timestamp": datetime.now(timezone.utc).isoformat(),
-    })
+    }
+    if positions_at_promote is not None:
+        meta["positions_at_promote"] = positions_at_promote
+    storage.put_json(storage.LATEST_META, meta)
 
 
 # ---------------------------------------------------------------------------
@@ -807,7 +839,9 @@ def run_trainer(cfg: AsyncConfig) -> None:
     model = build_model(cfg).to(device)
     if current_version > 0:
         local_pt = cfg.model_cache_dir / "checkpoint.pt"
+        local_onnx = cfg.model_cache_dir / "latest.onnx"
         storage.get_file(storage.CHECKPOINT_PT, local_pt)
+        storage.get_file(storage.LATEST_ONNX, local_onnx)
         logger.info("Loading checkpoint v{}", current_version)
         model.load_state_dict(torch.load(local_pt, map_location=device, weights_only=True))
 
@@ -851,12 +885,10 @@ def run_trainer(cfg: AsyncConfig) -> None:
     )
     samples_since_last_snapshot = 0
     # Promotion is gated on *new* positions since the last promotion.
-    # On a fresh trainer start we set this to 0 so that all existing
-    # self-play data counts as "new since v{current}" — otherwise a
-    # restart after the trainer has been idle (or crashed before
-    # promoting) would treat the accumulated backlog as already-promoted
-    # and wait another full cycle to promote anything.
-    positions_at_last_promote = 0
+    # Read the watermark from S3 so promotion cadence survives restarts.
+    # Falls back to 0 for bootstrap (no meta.json yet).
+    positions_at_last_promote = _read_positions_at_last_promote()
+    logger.info("Loaded positions watermark: {:,}", positions_at_last_promote)
     # Rolling buffer of recent training batches for re-estimating BN
     # running stats after SWA averaging. update_bn_stats uses cumulative
     # averaging (momentum=None), so forwarding a single batch leaves the
@@ -1122,7 +1154,11 @@ def run_trainer(cfg: AsyncConfig) -> None:
         save_gate_state(gate_state)
 
         if promote:
-            _promote_model(cfg, model, new_version, state_dict=averaged_sd)
+            _promote_model(
+                cfg, model, new_version,
+                state_dict=averaged_sd,
+                positions_at_promote=n_total,
+            )
             current_version = new_version
             positions_at_last_promote = n_total
             logger.info(
