@@ -81,6 +81,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "boto3" },
+    { name = "hexchess-zero" },
     { name = "loguru" },
     { name = "numpy" },
     { name = "onnx" },
@@ -102,6 +103,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "boto3", specifier = ">=1.28" },
+    { name = "hexchess-zero", editable = "bindings/python" },
     { name = "loguru", specifier = ">=0.7" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "onnx", specifier = ">=1.14" },
@@ -118,6 +120,16 @@ dev = [
     { name = "pytest", specifier = ">=7.0" },
     { name = "scipy", specifier = ">=1.17.1" },
 ]
+
+[[package]]
+name = "hexchess-zero"
+source = { editable = "bindings/python" }
+dependencies = [
+    { name = "numpy" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "numpy", specifier = ">=1.21" }]
 
 [[package]]
 name = "iniconfig"
