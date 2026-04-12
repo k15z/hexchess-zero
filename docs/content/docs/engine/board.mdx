@@ -52,21 +52,27 @@ The hash incorporates piece positions, side to move, and en passant state.
 
 ## Tensor encoding
 
-For neural network input, the board maps into an **11x11 grid** using `col = q + 5, row = r + 5`. Invalid cells (outside the hex) are zero-padded. The full tensor shape is:
+For neural network input, the board maps into an **11x11 grid** using `col = q + 5, row = r + 5`. Invalid cells (outside the hex) are zero-padded. The current encoder is **side-to-move framed**: when Black is to move, the board is centrally inverted and colors are swapped so the network always sees "my pieces" moving toward "my" promotion edge. The full tensor shape is:
 
 $$
-(19, 11, 11) = \text{channels} \times \text{rows} \times \text{cols}
+(22, 11, 11) = \text{channels} \times \text{rows} \times \text{cols}
 $$
 
 | Channels | Content |
 |----------|---------|
-| 0–11 | Piece planes (6 types $\times$ 2 colors) |
-| 12 | Side to move |
+| 0–5 | Side-to-move piece planes (pawn, knight, bishop, rook, queen, king) |
+| 6–11 | Opponent piece planes |
+| 12 | Absolute side to move |
 | 13 | Fullmove number |
 | 14 | Halfmove clock |
-| 15 | En passant |
+| 15 | En passant target |
 | 16 | Repetition count |
 | 17 | Validity mask (1 for valid hex cells, 0 for padding) |
 | 18 | In-check flag |
+| 19 | Last-move from square |
+| 20 | Last-move to square |
+| 21 | Plies since pawn move (derived from the halfmove clock) |
+
+The policy vector is defined in the same frame. For training targets, use the STM-aware helpers (`game.policy_index(...)` in Python or `stm_policy_index` in Rust) so Black-to-move targets land in the same slot the network emits.
 
 See the [Python bindings](/docs/usage/python#board-encoding-for-training) for usage.

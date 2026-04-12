@@ -133,7 +133,7 @@ Things you should see:
 - Game length stable or slowly increasing (decisive games tend to get longer as both sides get
   better).
 
-## Hex-chess specific signals
+## Hexchess Zero specific signals
 
 For a small variant game, also worth logging:
 

@@ -83,4 +83,4 @@ make docs-build  # production build
 - **Move indices are immutable** — any change to the move table breaks all existing training data and models
 - Board tensor embedding: `col = q + 5, row = r + 5`
 - S3 key constants are defined in `training/storage.py` — use those, not raw strings
-- MCTS evaluations must use **at least 500 simulations** for meaningful results
+- MCTS evaluations should use **around 800 simulations** when you want numbers that match the production training setup

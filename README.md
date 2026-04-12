@@ -49,10 +49,10 @@ make docs-dev
 The pipeline has three asynchronous components that coordinate purely through **S3** (DigitalOcean Spaces / Cloudflare R2 / any S3-compatible store). Workers can run anywhere with credentials.
 
 1. **Workers** generate self-play games using MCTS + the latest model and flush `.npz` batches to S3.
-2. **Trainer** maintains a sliding-window replay buffer over recent self-play data, trains the network, exports ONNX, and promotes a new model version every cycle.
+2. **Trainer** maintains a sliding-window replay buffer over recent self-play data, trains a multi-head network, exports ONNX, and promotes a new model version once enough fresh data has accumulated.
 3. **Elo service** plays continuous matches between model versions and baselines, persisting per-game results to S3 and rating models with OpenSkill (Weng-Lin / Plackett-Luce).
 
-On first run (no model exists), the trainer bootstraps by training on minimax-supervised imitation data before switching to self-play.
+On first run (no model exists), the trainer bootstraps by training on minimax-supervised imitation data before switching to self-play. The production model consumes a **22-channel side-to-move tensor** and predicts five heads: main policy, terminal WDL value, moves-left, short-term value, and an auxiliary opponent-policy target.
 
 ### Configuration
 
@@ -78,10 +78,12 @@ All parameters live in `training/config.py`. Key dials:
 | `learning_rate` | 5e-4 | SGD learning rate after warmup. |
 | `l2_regularization` | 3e-5 | Weight decay. |
 | `window_c` / `window_alpha` / `window_beta` | 25,000 / 0.75 / 0.4 | KataGo-style sublinear replay-window parameters. |
-| `steps_per_cycle` | 3,000 | Training steps before promoting a new model version. |
+| `steps_per_cycle` | 3,000 | Trainer steps per cycle before reloading metrics, buffers, and promotion state. |
 | `reload_interval` | 1,000 | Re-scan S3 every N steps within a cycle to pick up fresh worker output. |
 | `max_train_steps_per_new_data` | 4.0 | KataGo-style token bucket: target training passes per new data point. Throttles the trainer when workers fall behind. |
 | `min_positions_to_start` | 200,000 | Bootstrap gate: self-play training won't start until this many positions exist. |
+| `promote_every_new_positions` | 300,000 | Minimum fresh self-play positions required between promotions. |
+| `imitation_mix_start` / `imitation_mix_end` / `imitation_mix_decay_end_version` | 0.3 / 0.0 / 5 | Early versions mix in minimax imitation data, then decay to pure self-play. |
 
 #### Bootstrap (Imitation)
 
@@ -105,7 +107,7 @@ These only apply to the initial bootstrap phase when no model exists yet:
 | `se_channels` | 32 | Squeeze-and-excitation bottleneck width. |
 | `global_pool_channels` | 32 | KataGo-style global pooling width. |
 | `global_pool_blocks` | (2, 5) | Which residual blocks get global pooling. |
-| `policy_channels` / `value_channels` | 4 / 32 | Conv channels in the policy and value heads. |
+| `policy_channels` / `aux_policy_channels` / `value_channels` | 4 / 2 / 32 | Conv channels in the main policy, auxiliary policy, and value heads. |
 | `board_channels` | 22 | Input tensor channels (piece planes + metadata). Must match `serialization.rs`. |
 | `board_height` / `board_width` | 11 | Hex grid embedded in 11×11 rectangle. Fixed by the coordinate system. |
 
@@ -115,7 +117,7 @@ These only apply to the initial bootstrap phase when no model exists yet:
 
 **Replay window vs cycle length.** The trainer no longer uses a fixed-size replay buffer. Instead it computes a KataGo-style sublinear window from the cumulative self-play count, so early training emphasizes recency while later training keeps more historical coverage without growing linearly forever.
 
-**Model version turnover.** Every `steps_per_cycle` steps, the trainer exports a new ONNX version and atomically promotes it via `models/latest.meta.json`. Workers poll for new versions after each batch of games.
+**Model version turnover.** The trainer only promotes after both conditions hold: it has completed a training cycle, and at least `promote_every_new_positions` new self-play positions have landed since the last promotion. Early versions can also be gated against the incumbent before `models/latest.meta.json` is advanced.
 
 ## S3 Layout
 

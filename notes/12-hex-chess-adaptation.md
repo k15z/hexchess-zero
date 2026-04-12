@@ -122,7 +122,7 @@ switching to pure self-play. This dodges the "everyone moves randomly" early pha
 
 ### 11. Anchor opponents for Elo
 
-The hex-chess project uses minimax at multiple depths as anchors. Also include:
+Hexchess Zero uses minimax at multiple depths as anchors. Also include:
 - Random
 - Material-only depth-1
 - Material+mobility depth-3

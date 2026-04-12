@@ -1,28 +1,16 @@
 # TODOs
 
-## Neural network architecture
+## Search and model
 
-- **Attention policy head** — Replace conv→flatten→FC policy head with attention layer mapping spatial features to move logits. Lc0's attention policy was +270 Elo over conv policy. More parameter-efficient for 4206-dim move output.
-
-- **Smolgen-style dynamic position encoding** — Lc0's chess-specific innovation: compress board state into a vector, generate supplemental attention logits per head. +50% effective capacity at 10% throughput cost.
-
-## MCTS optimizations
-
-- Tree reuse across moves — keep the subtree rooted at the chosen move instead of rebuilding from scratch
+- **Revisit the attention policy head with the real move table** — the earlier experiment used a placeholder move-index mapping and underperformed. If this comes back, it should be wired to the engine's actual `move_to_index()` table rather than sequential cell pairs.
+- **Smolgen-style dynamic position encoding** — Lc0's chess-specific idea: compress the board state into a vector and generate supplemental attention logits per head. Potentially useful if we revisit more attention-heavy policy heads.
+- **Tree reuse across moves** — keep the subtree rooted at the chosen move instead of rebuilding from scratch each turn.
 
 ## Training pipeline
 
-- **Surprise weighting for replay buffer sampling** — KataGo and Lc0 both upweight positions where the net's raw evaluation disagrees with the MCTS search result (policy KL divergence, value squared error). The intuition: these are positions where the net has the most to learn. KataGo stores per-position `targetWeight` in `.npz` files during self-play (`policySurpriseDataWeight`, `valueSurpriseDataWeight`). Lc0 calls it "diff-focus" (`diff_focus_q_weight`, `diff_focus_pol_scale`). Implementation: compute surprise weights in the worker (raw net output vs MCTS result), store as `sample_weights` in `.npz`, use in `ReplayBuffer` sampling.
+- **Surprise weighting for replay sampling** — upweight positions where the raw network disagrees with the final MCTS target (policy KL / value error) and carry those weights through replay.
 
-## Packaging / distribution
+## Testing and API ergonomics
 
-- npm package for WASM bindings
-- PyPI package for Python bindings
-
-## Testing
-
-- Property-based tests (fuzz movegen, verify apply/undo round-trips)
-
-## Evaluator API cleanup
-
-- The proposal specifies a zero-alloc `Policy` buffer API (`evaluate(&self, state, &mut Policy) -> f32`) but the current implementation returns `(Vec<f32>, f32)`. Consider switching to the buffer API to reduce allocations in the hot path.
+- **Property-based tests** — fuzz move generation, notation round-trips, and apply/undo invariants across randomized legal positions.
+- **Evaluator hot-path cleanup** — profile whether the current `(Vec<f32>, f32)` evaluator API is meaningfully allocating in search, and switch to a caller-owned policy buffer only if the profiler says it matters.
