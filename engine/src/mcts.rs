@@ -576,6 +576,10 @@ pub struct MctsSearch {
     /// Seeded RNG for Dirichlet noise and temperature sampling. `None` falls
     /// back to thread-local RNG.
     rng: Option<StdRng>,
+    /// Index of the child selected by the most recent `extract_result` call.
+    /// Used by `aux_opponent_policy` to report grandchildren of the actually
+    /// played child, not just the visit-max child.
+    last_selected_child_idx: Option<usize>,
 }
 
 impl MctsSearch {
@@ -594,6 +598,7 @@ impl MctsSearch {
             path_scratch: Vec::new(),
             leaves_scratch: Vec::new(),
             rng,
+            last_selected_child_idx: None,
         }
     }
 
@@ -650,6 +655,7 @@ impl MctsSearch {
 
     pub fn reset(&mut self) {
         self.nodes.clear();
+        self.last_selected_child_idx = None;
     }
 
     fn tt_insert(&mut self, key: TtKey, entry: (Vec<f32>, [f32; 3])) {
@@ -674,6 +680,7 @@ impl MctsSearch {
     pub fn reset_all(&mut self) {
         self.nodes.clear();
         self.tt.clear();
+        self.last_selected_child_idx = None;
     }
 
     /// Run MCTS for `num_simulations` iterations (greedy, temperature = 0).
@@ -1201,6 +1208,10 @@ impl MctsSearch {
             self.select_by_temperature(&root_children, temperature)
         };
 
+        // Record which child was selected so aux_opponent_policy can report
+        // grandchildren of the actually played move, not just visit-max.
+        self.last_selected_child_idx = Some(best_child_idx);
+
         let best_move = self.nodes[best_child_idx]
             .action
             .expect("child must have an action");
@@ -1317,7 +1328,14 @@ impl MctsSearch {
         let coin: f32 = rng.random();
         let was_full = coin < pcr.p_full;
         let sims = if was_full { pcr.n_full } else { pcr.n_fast };
-        let temperature = self.config.temperature.temperature_at(ply);
+        // Full searches use the temperature schedule for exploration; fast
+        // searches use greedy (temp=0) to be cheap but strong/clean, matching
+        // the KataGo PCR design where fast moves don't add noise.
+        let temperature = if was_full {
+            self.config.temperature.temperature_at(ply)
+        } else {
+            0.0
+        };
         let result = self.search_with_options(state, sims, temperature, was_full);
 
         let policy_target = if was_full {
@@ -1437,13 +1455,14 @@ impl MctsSearch {
         if self.nodes[0].children.is_empty() {
             return None;
         }
-        // Mirror extract_result's greedy-branch selection rule so that the
-        // exposed opponent-reply distribution is for the child that actually
-        // gets played. Temperature-sampled play has no single "played child"
-        // to point at, so we fall back to visit-max as a best approximation
-        // (training self-play never reads this under eval config anyway).
+        // Use the child that extract_result actually selected (which may have
+        // been temperature-sampled). Falls back to LCB/visit-max if no prior
+        // search recorded a selection (e.g. direct aux_opponent_policy call
+        // without going through extract_result).
         let root_children = self.nodes[0].children.clone();
-        let best_child_idx = if self.config.use_lcb {
+        let best_child_idx = if let Some(idx) = self.last_selected_child_idx {
+            idx
+        } else if self.config.use_lcb {
             self.lcb_best_child_idx(&root_children).or_else(|| {
                 root_children
                     .iter()
