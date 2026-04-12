@@ -70,6 +70,9 @@ def decide_promotion(
     current,
     *,
     play_gauntlet: GauntletFn | None = None,
+    promotion_horizon: int = GATE_PROMOTION_HORIZON,
+    escape_failures: int = GATE_ESCAPE_FAILURES,
+    pass_threshold: float = GATE_PASS_THRESHOLD,
 ) -> GateDecision:
     """Advance the gate state machine for one candidate evaluation.
 
@@ -81,6 +84,10 @@ def decide_promotion(
             the candidate's score fraction in ``[0, 1]``. If ``None``,
             defaults to returning 0.0 (which would always fail) — tests
             should inject a mock.
+        promotion_horizon: number of initial promotions to gate before
+            switching to continuous mode.
+        escape_failures: consecutive-failure escape hatch count.
+        pass_threshold: candidate must meet this score fraction to pass.
 
     Returns:
         A ``GateDecision`` describing whether to promote and the new
@@ -96,19 +103,19 @@ def decide_promotion(
     gauntlet = play_gauntlet or (lambda _c, _cur: 0.0)
     score = float(gauntlet(candidate, current))
 
-    if score >= GATE_PASS_THRESHOLD:
+    if score >= pass_threshold:
         s.promotions_since_start += 1
         s.consecutive_gate_failures = 0
-        if s.promotions_since_start >= GATE_PROMOTION_HORIZON:
+        if s.promotions_since_start >= promotion_horizon:
             s.gate_enabled = False
         return GateDecision(promote=True, reason="pass", score=score, state=s)
 
     s.consecutive_gate_failures += 1
-    if s.consecutive_gate_failures >= GATE_ESCAPE_FAILURES:
+    if s.consecutive_gate_failures >= escape_failures:
         # Escape hatch: promote anyway, reset failure counter.
         s.consecutive_gate_failures = 0
         s.promotions_since_start += 1
-        if s.promotions_since_start >= GATE_PROMOTION_HORIZON:
+        if s.promotions_since_start >= promotion_horizon:
             s.gate_enabled = False
         return GateDecision(
             promote=True, reason="escape_hatch", score=score, state=s,

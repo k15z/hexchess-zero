@@ -692,7 +692,12 @@ def _try_gate_promotion(
     """
     state = load_gate_state()
     if not state.gate_enabled:
-        decision = decide_promotion(state, candidate=None, current=None)
+        decision = decide_promotion(
+            state, candidate=None, current=None,
+            promotion_horizon=cfg.gating_enabled_first_n_versions,
+            escape_failures=cfg.gating_max_failures,
+            pass_threshold=cfg.gating_win_threshold,
+        )
         return decision.promote, decision.state, decision.score, decision.reason
 
     # Materialize candidate ONNX to a scratch path so the gauntlet can load it.
@@ -716,6 +721,9 @@ def _try_gate_promotion(
     decision = decide_promotion(
         state, candidate=scratch_onnx, current=current_onnx,
         play_gauntlet=gauntlet,
+        promotion_horizon=cfg.gating_enabled_first_n_versions,
+        escape_failures=cfg.gating_max_failures,
+        pass_threshold=cfg.gating_win_threshold,
     )
     return decision.promote, decision.state, decision.score, decision.reason
 
@@ -787,7 +795,9 @@ def run_trainer(cfg: AsyncConfig) -> None:
     else:
         device = torch.device("cpu")
     current_n_total = storage.count_positions(storage.SELFPLAY_PREFIX)
-    initial_window = sublinear_window_size(current_n_total)
+    initial_window = sublinear_window_size(
+        current_n_total, c=cfg.window_c, alpha=cfg.window_alpha, beta=cfg.window_beta,
+    )
     logger.info("Trainer starting on device: {} | N_total={:,} window={:,} "
                 "steps/cycle={}",
                 device, current_n_total, initial_window, cfg.steps_per_cycle)
@@ -831,7 +841,14 @@ def run_trainer(cfg: AsyncConfig) -> None:
                          max_tokens=float(cfg.steps_per_cycle * cfg.batch_size))
 
     # SWA snapshot buffer + sample counter.
-    swa_buf = SwaSnapshotBuffer()
+    # Build EMA-derived promotion weights from config: w_i = decay^i, then normalize.
+    _raw_w = tuple(cfg.swa_ema_decay ** i for i in range(cfg.swa_buffer_size))
+    _w_sum = sum(_raw_w)
+    _swa_weights = tuple(w / _w_sum for w in _raw_w)
+    swa_buf = SwaSnapshotBuffer(
+        max_snapshots=cfg.swa_buffer_size,
+        promotion_weights=_swa_weights,
+    )
     samples_since_last_snapshot = 0
     # Promotion is gated on *new* positions since the last promotion.
     # On a fresh trainer start we set this to 0 so that all existing
@@ -854,7 +871,9 @@ def run_trainer(cfg: AsyncConfig) -> None:
 
     def reload_buffer() -> tuple[ReplayBufferV2, DataLoader, int]:
         n_total = storage.count_positions(storage.SELFPLAY_PREFIX)
-        window = sublinear_window_size(n_total)
+        window = sublinear_window_size(
+            n_total, c=cfg.window_c, alpha=cfg.window_alpha, beta=cfg.window_beta,
+        )
         # Imitation mix is decayed against the *current* model version
         # (captured from the enclosing scope, which advances on promotion)
         # so the teacher signal fades as self-play matures — see
