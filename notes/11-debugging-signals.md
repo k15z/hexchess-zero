@@ -83,8 +83,7 @@ KataGo's policy surprise weighting uses a related quantity.
 
 ### Resignation calibration
 
-Of games that *would have been* resigned (had resignation been on), what fraction were actually
-losses by the resigner? Should be ≥95%.
+Removed. Self-play no longer resigns, so this signal is intentionally absent.
 
 ## Tier 3 — debugging signals to enable when something's wrong
 

@@ -71,20 +71,22 @@ except ImportError:
 # In-memory game record types
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class PositionSample:
     """One full-search position to be emitted as a training sample."""
-    board: np.ndarray            # (22, 11, 11) float32 from encode_board
-    policy: np.ndarray           # (num_moves,) float32 (PTP-pruned)
-    policy_aux_opp: np.ndarray   # (num_moves,) float32 opponent-reply visit dist
-    legal_mask: np.ndarray       # (num_moves,) bool — True on every legal move
-    root_q: float                # [-1, 1] from STM perspective
-    root_n: int                  # total visits at root
+
+    board: np.ndarray  # (22, 11, 11) float32 from encode_board
+    policy: np.ndarray  # (num_moves,) float32 (PTP-pruned)
+    policy_aux_opp: np.ndarray  # (num_moves,) float32 opponent-reply visit dist
+    legal_mask: np.ndarray  # (num_moves,) bool — True on every legal move
+    root_q: float  # [-1, 1] from STM perspective
+    root_n: int  # total visits at root
     root_entropy: float
     nn_value_at_position: float  # raw network value prior (currently = root_q fallback)
     legal_count: int
-    ply: int                     # half-move number when this position was reached
-    side: str                    # "white" | "black"
+    ply: int  # half-move number when this position was reached
+    side: str  # "white" | "black"
     was_full_search: bool = True
 
     # Per-ply trace entry (recorded at emit time; opaque dict).
@@ -94,14 +96,14 @@ class PositionSample:
 @dataclass
 class GameRecord:
     """A finished self-play game."""
+
     positions: list[PositionSample]
     game_id: int
     model_version: int
     started_at: str
     duration_s: float
-    result: str                  # "white_win" | "draw" | "black_win"
-    termination: str             # "checkmate" | "stalemate" | "threefold" | "50move" | ...
-    resigned_skipped: bool
+    result: str  # "white_win" | "draw" | "black_win"
+    termination: str  # "checkmate" | "stalemate" | "threefold" | "50move" | ...
     opening_hash: str
     rng_seed: int
     dirichlet_epsilon: float
@@ -109,26 +111,20 @@ class GameRecord:
     num_simulations: int
     worker: str
     git_sha: str
-    num_total_positions: int     # full + fast combined
+    num_total_positions: int  # full + fast combined
     wdl_terminal_white: list[float]  # [W, D, L] from WHITE perspective
     game_len_plies: int
-    # Resignation audit fields. ``resign_fired`` is True iff the game ended
-    # early via Python-side resignation. ``resign_would_fire_{ply,side}``
-    # record the first ply at which the tracker would have fired even
-    # when resignation was skipped for calibration (``resigned_skipped=True``).
-    # ``resign_calibration_correct`` is None if the tracker never fired;
-    # otherwise True iff the would-be-resigning side actually lost.
-    resign_fired: bool = False
-    resign_would_fire_ply: int | None = None
-    resign_would_fire_side: str | None = None
-    resign_calibration_correct: bool | None = None
 
 
 # ---------------------------------------------------------------------------
 # Pure helpers (testable without the Rust binding)
 # ---------------------------------------------------------------------------
 
+
 def _git_sha() -> str:
+    env_sha = os.environ.get("GIT_SHA")
+    if env_sha:
+        return env_sha.strip()[:12]
     try:
         return subprocess.check_output(
             ["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL, text=True
@@ -193,95 +189,6 @@ def _entropy(p: np.ndarray) -> float:
     return float(-(p[mask] * np.log(p[mask])).sum())
 
 
-# ---------------------------------------------------------------------------
-# Resignation (Python-side KataGo-style tracker)
-# ---------------------------------------------------------------------------
-#
-# The engine exposes ``record_and_check_resign`` / ``reset_resign_history``
-# on ``MctsSearch`` (engine/src/mcts.rs:1423) but does NOT call it from
-# inside ``run_pcr`` and the Python binding does not expose it either. The
-# worker previously toggled ``set_resign_enabled`` and did nothing else, so
-# every game played out to natural termination — a major throughput miss
-# for a variant with mean ~244-ply games and a long tail. This class is a
-# pure-Python reimplementation of the engine's sliding-window tracker that
-# runs in the worker after each ``run_pcr`` call, so ``_play_one_game_pcr``
-# can actually break the loop early. Kept side-by-side with the engine
-# version (rather than wiring it through the binding) so the logic is
-# testable from Python and doesn't require a binding rebuild.
-
-@dataclass
-class ResignTracker:
-    """Sliding-window STM-POV resignation tracker, per side.
-
-    Mirrors ``engine::mcts::record_and_check_resign``: at every move, push
-    the STM's win probability onto that side's history; keep at most ``k``
-    entries; fire when the window is full and every entry is below
-    ``v_resign``. A single above-threshold value anywhere in the window
-    prevents firing — equivalent to "last k consecutive moves all below".
-    """
-    v_resign: float
-    k: int
-    _white: list[float] = field(default_factory=list)
-    _black: list[float] = field(default_factory=list)
-
-    def record(self, side: str, p_win: float) -> bool:
-        """Record an observation for ``side``. Returns True iff fired."""
-        # Defensive guard: intentional divergence from the Rust reference
-        # (engine/src/mcts.rs:1423). Rust's impl with k=0 would fire on
-        # every call (``hist.len() == 0 && all([])`` is vacuously true),
-        # which is almost certainly not what anyone wants. Config
-        # validation at training/config.py:193 already rules this out
-        # (``resign_streak >= 1``, ``resign_threshold > 0``); the guard
-        # just keeps the tracker well-defined if a caller ever bypasses
-        # the validator.
-        if self.k <= 0 or self.v_resign <= 0.0:
-            return False
-        hist = self._white if side == "white" else self._black
-        hist.append(float(p_win))
-        while len(hist) > self.k:
-            hist.pop(0)
-        return len(hist) == self.k and all(p < self.v_resign for p in hist)
-
-
-def _value_to_p_win(value: float) -> float:
-    """Map root Q in [-1, 1] (STM POV) to a win probability in [0, 1]."""
-    q = max(-1.0, min(1.0, float(value)))
-    return (q + 1.0) * 0.5
-
-
-def _wdl_to_expected_score(wdl: list[float] | tuple[float, float, float]) -> float:
-    """Map STM-POV WDL to expected score in [0, 1]."""
-    win, draw, _loss = (float(x) for x in wdl)
-    return max(0.0, min(1.0, win + 0.5 * draw))
-
-
-def _resigned_outcome(resigning_side: str) -> tuple[str, str, list[float]]:
-    """Return ``(result, termination, wdl_white)`` when a side resigns."""
-    if resigning_side == "white":
-        return "black_win", "resignation", [0.0, 0.0, 1.0]
-    if resigning_side == "black":
-        return "white_win", "resignation", [1.0, 0.0, 0.0]
-    raise ValueError(f"unknown resigning side: {resigning_side!r}")
-
-
-def _resign_calibration_correct(
-    would_fire_side: str | None, result: str
-) -> bool | None:
-    """Was a would-resign decision correct?
-
-    The would-resigning side predicted it would lose; the decision is
-    correct iff the final result shows it losing. Returns None if the
-    tracker never fired.
-    """
-    if would_fire_side is None:
-        return None
-    if would_fire_side == "white":
-        return result == "black_win"
-    if would_fire_side == "black":
-        return result == "white_win"
-    raise ValueError(f"unknown would_fire_side: {would_fire_side!r}")
-
-
 def compute_opening_hash(move_strings: list[str]) -> str:
     """SHA1 of the concatenated first-6-ply move strings."""
     first_six = move_strings[:6]
@@ -332,6 +239,7 @@ def finalize_game_targets(record: GameRecord) -> None:
 # ---------------------------------------------------------------------------
 # NPZ + sidecar writers
 # ---------------------------------------------------------------------------
+
 
 def write_samples_to_npz(
     npz_path: str | Path,
@@ -424,11 +332,6 @@ def write_samples_to_npz(
         "num_total_positions": int(record.num_total_positions),
         "result": record.result,
         "termination": record.termination,
-        "resigned_skipped": bool(record.resigned_skipped),
-        "resign_fired": bool(record.resign_fired),
-        "resign_would_fire_ply": record.resign_would_fire_ply,
-        "resign_would_fire_side": record.resign_would_fire_side,
-        "resign_calibration_correct": record.resign_calibration_correct,
         "openings_hash": record.opening_hash,
         "git_sha": record.git_sha,
         "rng_seed": int(record.rng_seed),
@@ -458,22 +361,28 @@ def write_trace_json(path: str | Path, record: GameRecord) -> None:
         }
         entry.update(pos.trace)
         entries.append(entry)
-    path.write_text(json.dumps({
-        "game_id": int(record.game_id),
-        "model_version": int(record.model_version),
-        "result": record.result,
-        "termination": record.termination,
-        "rng_seed": int(record.rng_seed),
-        "dirichlet_epsilon": float(record.dirichlet_epsilon),
-        "dirichlet_alpha": float(record.dirichlet_alpha),
-        "num_simulations": int(record.num_simulations),
-        "entries": entries,
-    }, indent=2))
+    path.write_text(
+        json.dumps(
+            {
+                "game_id": int(record.game_id),
+                "model_version": int(record.model_version),
+                "result": record.result,
+                "termination": record.termination,
+                "rng_seed": int(record.rng_seed),
+                "dirichlet_epsilon": float(record.dirichlet_epsilon),
+                "dirichlet_alpha": float(record.dirichlet_alpha),
+                "num_simulations": int(record.num_simulations),
+                "entries": entries,
+            },
+            indent=2,
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
 # Self-play (uses hexchess binding)
 # ---------------------------------------------------------------------------
+
 
 def _move_to_str(mv) -> str:
     try:
@@ -496,9 +405,7 @@ def legal_mask_from_moves(game, legal_moves, num_move_indices: int) -> np.ndarra
     assert hexchess is not None
     mask = np.zeros(num_move_indices, dtype=bool)
     for mv in legal_moves:
-        idx = game.policy_index(
-            mv.from_q, mv.from_r, mv.to_q, mv.to_r, mv.promotion
-        )
+        idx = game.policy_index(mv.from_q, mv.from_r, mv.to_q, mv.to_r, mv.promotion)
         mask[idx] = True
     return mask
 
@@ -515,21 +422,9 @@ def _play_one_game_pcr(
     assert hexchess is not None
     num_moves = hexchess.num_move_indices()
 
-    # Per-game seed + resign-skip coin. The engine's
-    # ``record_and_check_resign`` now runs with real P(W) from the WDL
-    # head. We always leave resign.enabled = True so the engine tracks the
-    # sliding window for calibration even when the skip coin says "don't
-    # actually resign". The skip is enforced in the break guard below.
+    # Per-game seed for the search RNG (Dirichlet, PCR coin flips, etc.).
     seed = py_rng.getrandbits(64)
     search.set_rng_seed(seed)
-    resigned_skipped = py_rng.random() < cfg.resign_skip_prob
-    search.set_resign_threshold(cfg.resign_threshold)
-    search.set_resign_streak(cfg.resign_streak)
-    search.reset_resign_history()
-    resign_fired = False
-    resign_side: str | None = None
-    resign_would_fire_ply: int | None = None
-    resign_would_fire_side: str | None = None
 
     game = hexchess.Game()
     positions: list[PositionSample] = []
@@ -548,23 +443,10 @@ def _play_one_game_pcr(
         best_move = outcome["best_move"]
         was_full = bool(outcome["was_full_search"])
         value = float(outcome["value"])
-        root_wdl = outcome["wdl"]  # (W, D, L) tuple from STM perspective
         nn_wdl = outcome["nn_wdl"]  # Raw NN eval before MCTS backups
         temperature = float(outcome["temperature"])
         nodes = int(outcome["nodes"])
         policy_target = outcome["policy_target"]  # np.ndarray or None
-
-        # Feed expected score from the WDL head into the resign tracker.
-        # Raw P(win) over-resigns in draw-heavy self-play because a nearly
-        # forced draw can still have very low win probability.
-        expected_score = _wdl_to_expected_score(root_wdl)
-        would_fire = (
-            total_ply >= cfg.resign_min_plies
-            and search.record_and_check_resign(side, expected_score)
-        )
-        if would_fire and resign_would_fire_side is None:
-            resign_would_fire_side = side
-            resign_would_fire_ply = total_ply
 
         if was_full and policy_target is not None:
             policy_np = np.asarray(policy_target, dtype=np.float32)
@@ -600,7 +482,9 @@ def _play_one_game_pcr(
             # Raw NN value (W - L) before MCTS backups, for "NN vs MCTS" diagnostics.
             nn_value = float(nn_wdl[0]) - float(nn_wdl[2])
             # Selection method: temperature > 0 means sampled, otherwise max_visits.
-            selection_reason = "temperature_sampled" if temperature > 1e-4 else "max_visits"
+            selection_reason = (
+                "temperature_sampled" if temperature > 1e-4 else "max_visits"
+            )
 
             pos = PositionSample(
                 board=board_tensor.astype(np.float32),
@@ -624,11 +508,6 @@ def _play_one_game_pcr(
             )
             positions.append(pos)
 
-        if would_fire and not resigned_skipped:
-            resign_fired = True
-            resign_side = side
-            break
-
         if total_ply < 6:
             opening_moves.append(_move_to_str(best_move))
 
@@ -637,14 +516,9 @@ def _play_one_game_pcr(
 
     duration = time.time() - t0
 
-    if resign_fired:
-        assert resign_side is not None
-        result, termination, wdl_white = _resigned_outcome(resign_side)
-        game_len = total_ply + 1  # STM at the resign position loses this ply
-    else:
-        status = game.status()
-        result, termination, wdl_white = _status_to_result_termination(status)
-        game_len = total_ply
+    status = game.status()
+    result, termination, wdl_white = _status_to_result_termination(status)
+    game_len = total_ply
 
     record = GameRecord(
         positions=positions,
@@ -654,7 +528,6 @@ def _play_one_game_pcr(
         duration_s=duration,
         result=result,
         termination=termination,
-        resigned_skipped=resigned_skipped,
         opening_hash=compute_opening_hash(opening_moves),
         rng_seed=seed,
         dirichlet_epsilon=cfg.dirichlet_epsilon,
@@ -665,12 +538,6 @@ def _play_one_game_pcr(
         num_total_positions=game_len,
         wdl_terminal_white=wdl_white,
         game_len_plies=game_len,
-        resign_fired=resign_fired,
-        resign_would_fire_ply=resign_would_fire_ply,
-        resign_would_fire_side=resign_would_fire_side,
-        resign_calibration_correct=_resign_calibration_correct(
-            resign_would_fire_side, result
-        ),
     )
     finalize_game_targets(record)
     return record
@@ -679,6 +546,7 @@ def _play_one_game_pcr(
 # ---------------------------------------------------------------------------
 # Upload helpers
 # ---------------------------------------------------------------------------
+
 
 def flush_game_record(record: GameRecord, model_version: int) -> str | None:
     """Write and upload a single GameRecord's .npz + sidecars to S3.
@@ -694,7 +562,9 @@ def flush_game_record(record: GameRecord, model_version: int) -> str | None:
     basename = f"{ts}_{int(rand):08x}_n{n}"
     npz_key = f"{storage.SELFPLAY_PREFIX}v{model_version}/{basename}.npz"
     meta_key = f"{storage.SELFPLAY_PREFIX}v{model_version}/{basename}.meta.json"
-    trace_key = f"{storage.SELFPLAY_TRACES_PREFIX}v{model_version}/{record.game_id}.json"
+    trace_key = (
+        f"{storage.SELFPLAY_TRACES_PREFIX}v{model_version}/{record.game_id}.json"
+    )
 
     with tempfile.TemporaryDirectory() as td:
         npz_path = Path(td) / f"{basename}.npz"
@@ -710,6 +580,7 @@ def flush_game_record(record: GameRecord, model_version: int) -> str | None:
 # ---------------------------------------------------------------------------
 # Model refresh + heartbeat (unchanged)
 # ---------------------------------------------------------------------------
+
 
 def _read_model_version(cfg: AsyncConfig) -> tuple[int, str | None]:
     try:
@@ -731,9 +602,13 @@ def _read_model_version(cfg: AsyncConfig) -> tuple[int, str | None]:
     return version, str(local_path)
 
 
-def _write_heartbeat(cfg: AsyncConfig, version: int, total_games: int,
-                     total_positions: int,
-                     search_stats: dict | None = None) -> None:
+def _write_heartbeat(
+    cfg: AsyncConfig,
+    version: int,
+    total_games: int,
+    total_positions: int,
+    search_stats: dict | None = None,
+) -> None:
     d: dict = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "model_version": version,
@@ -748,6 +623,7 @@ def _write_heartbeat(cfg: AsyncConfig, version: int, total_games: int,
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
+
 
 def run_worker(cfg: AsyncConfig) -> None:
     """Run the continuous self-play worker loop."""
@@ -779,8 +655,12 @@ def run_worker(cfg: AsyncConfig) -> None:
     # --- Bootstrap: imitation data until the first model appears ---
     if model_path is None:
         num_workers = max(1, os.cpu_count() or 1)
-        logger.info("No model found — generating minimax imitation data "
-                    "(depth {}, {} parallel workers)", cfg.imitation_depth, num_workers)
+        logger.info(
+            "No model found — generating minimax imitation data "
+            "(depth {}, {} parallel workers)",
+            cfg.imitation_depth,
+            num_workers,
+        )
         imitation_games = 0
         imitation_positions = 0
         batch_size = cfg.worker_batch_size
@@ -788,7 +668,9 @@ def run_worker(cfg: AsyncConfig) -> None:
         pending_games = 0
 
         with ProcessPoolExecutor(max_workers=num_workers) as pool:
-            futures = {pool.submit(play_imitation_game, cfg) for _ in range(num_workers * 2)}
+            futures = {
+                pool.submit(play_imitation_game, cfg) for _ in range(num_workers * 2)
+            }
             while model_path is None:
                 done, futures = wait(futures, return_when=FIRST_COMPLETED)
                 for future in done:
@@ -797,23 +679,33 @@ def run_worker(cfg: AsyncConfig) -> None:
                     except Exception as exc:
                         logger.exception("Imitation worker task failed: {}", exc)
                         futures.add(pool.submit(play_imitation_game, cfg))
-                        _write_heartbeat(cfg, current_version, imitation_games, imitation_positions)
+                        _write_heartbeat(
+                            cfg, current_version, imitation_games, imitation_positions
+                        )
                         continue
                     pending_samples.extend(samples)
                     pending_games += 1
                     imitation_games += 1
                     imitation_positions += len(samples)
-                    logger.info("  game {} complete: {} positions",
-                                imitation_games, len(samples))
+                    logger.info(
+                        "  game {} complete: {} positions",
+                        imitation_games,
+                        len(samples),
+                    )
                     futures.add(pool.submit(play_imitation_game, cfg))
                     if pending_games >= batch_size:
                         key = storage.flush_samples(
-                            pending_samples, storage.IMITATION_PREFIX)
+                            pending_samples, storage.IMITATION_PREFIX
+                        )
                         logger.info(
                             "Imitation batch flushed: {} games, {} pos | {}",
-                            pending_games, len(pending_samples), key,
+                            pending_games,
+                            len(pending_samples),
+                            key,
                         )
-                        _write_heartbeat(cfg, current_version, imitation_games, imitation_positions)
+                        _write_heartbeat(
+                            cfg, current_version, imitation_games, imitation_positions
+                        )
                         pending_samples = []
                         pending_games = 0
                         current_version, model_path = _read_model_version(cfg)
@@ -854,7 +746,8 @@ def run_worker(cfg: AsyncConfig) -> None:
         game_id = game_id_base + total_games
         try:
             record = _play_one_game_pcr(
-                search, cfg,
+                search,
+                cfg,
                 game_id=game_id,
                 model_version=current_version,
                 py_rng=py_rng,
@@ -871,7 +764,9 @@ def run_worker(cfg: AsyncConfig) -> None:
         key = flush_game_record(record, current_version)
         # Tier-1 per-game structured event (plan §7.3).
         mcts_qs = [p.root_q for p in record.positions] if record.positions else []
-        mcts_entropies = [p.root_entropy for p in record.positions] if record.positions else []
+        mcts_entropies = (
+            [p.root_entropy for p in record.positions] if record.positions else []
+        )
         log_event(
             "selfplay.game",
             game_id=int(game_id),
@@ -882,15 +777,22 @@ def run_worker(cfg: AsyncConfig) -> None:
             num_total_positions=int(record.num_total_positions),
             duration_s=float(elapsed),
             mcts_mean_root_q=float(np.mean(mcts_qs)) if mcts_qs else 0.0,
-            mcts_mean_root_entropy=float(np.mean(mcts_entropies)) if mcts_entropies else 0.0,
+            mcts_mean_root_entropy=float(np.mean(mcts_entropies))
+            if mcts_entropies
+            else 0.0,
             pcr_full_position_count=len(record.positions),
-            pcr_fast_position_count=int(record.num_total_positions) - len(record.positions),
+            pcr_fast_position_count=int(record.num_total_positions)
+            - len(record.positions),
         )
         logger.info(
             "game {} ({}): {} full-search / {} total plies, {:.1f}s | v{} | {}",
-            total_games, record.result,
-            len(record.positions), record.num_total_positions,
-            elapsed, current_version, key,
+            total_games,
+            record.result,
+            len(record.positions),
+            record.num_total_positions,
+            elapsed,
+            current_version,
+            key,
         )
 
         # Update rolling search stats for heartbeat (plan §7.6 page 4).
@@ -907,13 +809,19 @@ def run_worker(cfg: AsyncConfig) -> None:
         if recent_game_qs:
             search_stats = {
                 "recent_mean_root_q": round(float(np.mean(recent_game_qs)), 4),
-                "recent_mean_root_entropy": round(float(np.mean(recent_game_entropies)), 4),
-                "recent_mean_game_length": round(float(np.mean(recent_game_lengths)), 1),
+                "recent_mean_root_entropy": round(
+                    float(np.mean(recent_game_entropies)), 4
+                ),
+                "recent_mean_game_length": round(
+                    float(np.mean(recent_game_lengths)), 1
+                ),
                 # Use Q window size (full-search games only) since Q/entropy stats
                 # are only appended when mcts_qs is non-empty.
                 "recent_games_window": len(recent_game_qs),
             }
-        _write_heartbeat(cfg, current_version, total_games, total_positions, search_stats)
+        _write_heartbeat(
+            cfg, current_version, total_games, total_positions, search_stats
+        )
 
         # Per-game model refresh (plan §5.2).
         new_version, new_model_path = _read_model_version(cfg)

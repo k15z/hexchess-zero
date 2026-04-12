@@ -107,10 +107,9 @@ where `Var(a)` is tracked online via Welford during backprop. Training games kee
 
 ### 1.10 Resignation
 
-Add:
-- Track `min_root_W − P(W)` over the last `k = 5` consecutive moves of one side.
-- If all 5 are below `v_resign = 0.05` (i.e. P(win) < 5% five moves running), resign that side.
-- **10% of games skip resignation entirely** (`should_skip_resign` rng flag) — these games' actual outcomes feed the false-positive resign metric (notes/04 §resignation, notes/06 §resignation). Target `false_positive_resign_rate < 5%`; if it climbs we automatically tighten the threshold.
+Removed after rollout. The skipped calibration sample showed an unacceptable
+false-positive rate, so resignation is no longer part of the worker or engine
+design.
 
 ### 1.11 Terminal handling
 
@@ -130,7 +129,6 @@ Add:
 | Policy target pruning | on | n/a |
 | Virtual loss | 1 | 1 |
 | Temperature | smooth decay (above) | 0 + LCB |
-| Resignation `(v, k)` | (0.05, 5), 10% skip | off in eval |
 
 ---
 
@@ -354,8 +352,7 @@ Per-game **metadata sidecar** `.json` (one per .npz):
   "num_full_search_positions": n_full,
   "num_total_positions": n_total,
   "result": "white_win" | "draw" | "black_win",
-  "termination": "checkmate" | "threefold" | "50move" | "stalemate" | "resignation" | "movelimit",
-  "resigned_skipped": false,
+  "termination": "checkmate" | "threefold" | "50move" | "stalemate" | "movelimit",
   "openings_hash": "abc123",
   "git_sha": "...",
   "rng_seed": 12345
@@ -514,7 +511,6 @@ A `training/health_checks.py` module runs after every reload and during every ba
 - Game length 95th percentile = move limit (shuffle loops, notes/10 §4).
 - Loss decreasing but anchor Elo not increasing for 10 promotions (notes/10 §5).
 - White win % differs from black win % by >15 percentage points (orientation bug, notes/10 §9).
-- False-positive resign rate > 5% (notes/04 §resign).
 - Distinct-openings-per-100-games drops below 20 (notes/11 §hex specific).
 - KL(old → new) per-promotion > 1.0 (overshooting, notes/11).
 
@@ -547,7 +543,6 @@ Extending `dashboard.py` / `dashboard.html`:
 - TT hit rate per worker.
 - Mean root visits, mean PV length.
 - LCB vs argmax-visit selection divergence rate.
-- Resign calibration: false-positive rate vs threshold.
 
 **Page 5 — Benchmark suite:**
 - Per-position move stability heatmap across versions.
@@ -615,7 +610,7 @@ Tool: `python -m training.audit_buffer` lists every file in the current window, 
 1. **Move-encoding freeze + CI guard.** Hash the move table; CI fails if the hash changes.
 2. **Engine: PUCT + FPU + Dirichlet + temp + LCB + 2-fold-as-draw.** Unit tests for each, including a regression test against current self-play behavior on 5 fixed positions.
 3. **Engine: PCR + forced playouts + PTP.** Unit test PTP correctness against a hand-computed example.
-4. **Engine: shaped Dirichlet, resignation, online variance.**
+4. **Engine: shaped Dirichlet, online variance.**
 5. **Network: rewrite `model.py` with new heads + 3 input planes.** Smoke test forward shape, parameter count, BN eval-mode test.
 6. **Loss module: separate file, all 6 losses, label smoothing on WDL, mask logic, fp32-softmax guarantee.** Unit-test on synthetic data.
 7. **Worker: new sample schema + trace sidecars + meta sidecars + PCR plumbing + game seeds.** Old `.npz` files become unreadable — that's fine, we're starting from scratch.
@@ -663,7 +658,6 @@ Tool: `python -m training.audit_buffer` lists every file in the current window, 
 10. **Concurrent self-play within a process.** Deferred leaf-batched evaluator. Will revisit after measuring GPU saturation on kevz-gpu under 12 processes × 1 game.
 11. **Replay window `c=25k`.** Locked. Empirical first-week tuning may bring it down to 15k if shorter Glinski games make 25k stale-prone.
 12. **Bootstrap purity.** Shipped with imitation bootstrap (`training/imitation.py`). Pure-zero training is not pursued.
-13. **Resignation threshold `0.05`.** Locked. `resign_skip_prob=0.10` means 10% of games run to natural termination so the false-positive rate is observable; auto-tighten within `[0.02, 0.10]` if FP rate climbs.
 14. **Endgame / drawn benchmark fixtures.** Auto-generation produced 4 tactical (capture-finding) and 3 quiet middlegame positions. Endgame and drawn fixtures still need hand-curation (`benchmarks/positions.json` TODO).
 15. **Dashboard pages 3-4.** Wired pages 1-2 against existing data; pages 3-4 wait on loss-snapshot and TT-stats pipelines that don't exist yet.
 16. **Engine-level RNG determinism for replay.** Seeded RNG plumbed through Dirichlet noise (chunk 2 + Rust TODO pass). Full bit-identical replay would also need to seed any other RNG-consuming code path (none currently exist).
@@ -675,7 +669,6 @@ Tool: `python -m training.audit_buffer` lists every file in the current window, 
 | Move-table hash guard | `engine/src/serialization.rs` | ✓ Pinned at 4206 / `0x84d424aff5f7c2fd` |
 | MCTS dynamic PUCT, FPU, shaped Dirichlet | `engine/src/mcts.rs` | ✓ |
 | PCR + forced playouts + PTP + LCB + 2-fold-as-draw | `engine/src/mcts.rs` | ✓ |
-| Resignation state machine | `engine/src/mcts.rs` | ✓ (10% skip in worker) |
 | Seeded RNG (Dirichlet) | `engine/src/mcts.rs` | ✓ |
 | Opponent-reply visit dist accessor | `engine/src/mcts.rs` + bindings | ✓ Used by worker |
 | Mirror move-index table + exhaustive verification | `engine/src/serialization.rs` | ✓ Central inversion |

@@ -262,7 +262,7 @@ impl PyMctsResult {
     }
 
     /// Root `[W, D, L]` distribution from STM perspective. Trainer and
-    /// worker use `wdl[0]` directly as `P(win)` for resignation.
+    /// callers that want the full WDL instead of just `W - L`.
     #[getter]
     fn wdl(&self) -> (f32, f32, f32) {
         (self.wdl[0], self.wdl[1], self.wdl[2])
@@ -664,8 +664,8 @@ impl PyMctsSearch {
     ///
     /// `eval_mode=True` swaps the underlying `SearchConfig` to
     /// `SearchConfig::eval()` (no forced playouts, LCB move selection,
-    /// greedy temperature, no Dirichlet, no policy-target pruning, resign
-    /// disabled). Use this for Elo, gauntlet, benchmark, and replay paths.
+    /// greedy temperature, no Dirichlet, no policy-target pruning).
+    /// Use this for Elo, gauntlet, benchmark, and replay paths.
     /// The default (`eval_mode=False`) uses `SearchConfig::training()`
     /// (c_puct=2.5, Dirichlet noise, PCR, temperature decay, etc.).
     ///
@@ -767,24 +767,6 @@ impl PyMctsSearch {
         self.search.set_rng_seed(seed);
     }
 
-    /// Enable/disable resignation for the next game. Used by the worker's
-    /// 10% resign-skip policy.
-    fn set_resign_enabled(&mut self, enabled: bool) {
-        self.search.config_mut().resign.enabled = enabled;
-    }
-
-    /// Set the P(win) threshold below which a side is considered
-    /// resigning. Default is 0.05 (5% win probability).
-    fn set_resign_threshold(&mut self, v_resign: f32) {
-        self.search.config_mut().resign.v_resign = v_resign;
-    }
-
-    /// Set how many consecutive below-threshold observations are needed
-    /// before resignation fires. Default is 5.
-    fn set_resign_streak(&mut self, k: usize) {
-        self.search.config_mut().resign.k = k;
-    }
-
     /// Run a Playout-Cap-Randomization search step. Returns a dict:
     ///   {best_move, value, wdl, nn_wdl, nodes, was_full_search, temperature,
     ///    policy_target (or None)}
@@ -851,30 +833,6 @@ impl PyMctsSearch {
         self.search.set_draw_utility(draw_utility);
     }
 
-    /// Record the STM's root `P(win)` and return True if resignation
-    /// should fire. The engine tracks a rolling window per side and returns
-    /// True only once `k` consecutive observations are below `v_resign`.
-    /// Must be called with the side that just searched; passing the wrong
-    /// side silently corrupts the rolling window.
-    fn record_and_check_resign(&mut self, side: &str, p_win: f32) -> PyResult<bool> {
-        let color = match side {
-            "white" => Color::White,
-            "black" => Color::Black,
-            other => {
-                return Err(PyValueError::new_err(format!(
-                    "side must be 'white' or 'black', got {other}"
-                )));
-            }
-        };
-        Ok(self.search.record_and_check_resign(color, p_win))
-    }
-
-    /// Reset the per-side rolling P(win) histories used for resignation.
-    /// Call at the start of every new game.
-    fn reset_resign_history(&mut self) {
-        self.search.reset_resign_history();
-    }
-
     /// Return the opponent-reply visit distribution from the previous
     /// search as a numpy float32 array of length `num_move_indices()`, or
     /// `None` if unavailable (no search yet, or the best child is
@@ -913,9 +871,6 @@ impl PyMctsSearch {
         dict.set_item("policy_target_pruning", cfg.policy_target_pruning)?;
         dict.set_item("use_lcb", cfg.use_lcb)?;
         dict.set_item("draw_utility", cfg.draw_utility)?;
-        dict.set_item("resign_enabled", cfg.resign.enabled)?;
-        dict.set_item("resign_v", cfg.resign.v_resign)?;
-        dict.set_item("resign_k", cfg.resign.k)?;
         match &cfg.dirichlet {
             Some(d) => {
                 let dnode = pyo3::types::PyDict::new(py);

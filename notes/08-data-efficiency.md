@@ -35,8 +35,10 @@ In rough order of importance:
    run that would otherwise have worked.
 5. **WDL value head** (vs scalar): hard to attribute exactly but Lc0 reports it as a "major"
    improvement.
-6. **Resignation calibration**: ~5–20% throughput gain depending on game length distribution.
-7. **Tuned MCTS exploration** (cpuct, FPU, Dirichlet α): another 10–30%.
+6. **Tuned MCTS exploration** (cpuct, FPU, Dirichlet α): another 10–30%.
+
+Resignation was removed from this project after an S3 audit showed that the
+calibration sample produced too many false positives to trust the value labels.
 
 Multiplicatively, these stack to easily an order of magnitude on top of vanilla AZ.
 

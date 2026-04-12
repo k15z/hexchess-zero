@@ -86,7 +86,7 @@ The original "~80–120 plies" guess was wrong by 2-3×. **Plan for self-play mo
 
 Implications:
 - MLH is critical to break shuffles (already in chunk 3). Without MLH, expect even more timeouts/draws.
-- Resignation is genuinely useful — at heuristic strength, ~half of games drift into 200+ ply shuffle zones that resign should clip.
+- We originally expected resignation to be useful here, but removed it after offline audit showed too many false positives to trust self-play value targets.
 - A trained NN should produce sharper games and shorter average length (Lc0/KataGo evidence) but baseline starting from heuristic is what bootstrap will do, so prepare for the long-game regime.
 - Per-game move-limit cap should be ≥ 500 plies in self-play config (we currently default to 200 in some places — needs audit).
 
