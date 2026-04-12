@@ -30,6 +30,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # Stage 2: Runtime
 FROM python:3.13-slim
 
+# TORCH_VARIANT: "cpu" for CPU-only (smaller image), "cu121" for CUDA 12.1
+ARG TORCH_VARIANT=cpu
+
 WORKDIR /app
 
 COPY pyproject.toml ./
@@ -37,7 +40,7 @@ COPY training/ training/
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install . \
-    --index-url https://download.pytorch.org/whl/cpu \
+    --index-url https://download.pytorch.org/whl/${TORCH_VARIANT} \
     --extra-index-url https://pypi.org/simple
 
 COPY --from=builder /build/wheels/*.whl /tmp/
