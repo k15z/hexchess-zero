@@ -22,12 +22,12 @@ spec:
             - secretRef:
                 name: hexchess-env
           resources:
-            # Trainer is data-starved (training is 40x faster than self-play
-            # data production), so CPU is not the bottleneck. Observed actual
-            # usage: ~30m CPU / ~300Mi memory. 1 CPU / 1Gi gives ample headroom.
+            # Idle usage is ~30m CPU / ~300Mi, but training with batch_size=256
+            # spikes significantly. 4 CPU enables PyTorch parallelism; 4Gi avoids
+            # OOMKill during bootstrap training (previously OOMed at 1Gi).
             requests:
-              cpu: "1"
-              memory: "1Gi"
+              cpu: "4"
+              memory: "4Gi"
             limits:
-              cpu: "1"
-              memory: "1Gi"
+              cpu: "4"
+              memory: "4Gi"
