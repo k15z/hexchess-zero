@@ -37,12 +37,10 @@ lint: ## Run clippy + format check + ruff
 # --- Documentation ---
 
 docs-dev: ## Start documentation dev server (builds WASM first)
-	wasm-pack build --target web bindings/wasm
-	cd docs && npm ci && npm run copy-wasm && npm run dev
+	cd docs && npm ci && npm run prepare-wasm:build && npm run dev
 
 docs-build: ## Build documentation site (builds WASM first)
-	wasm-pack build --target web bindings/wasm
-	cd docs && npm ci && npm run build
+	cd docs && npm ci && npm run prepare-wasm:build && npm run build
 
 # --- Docker ---
 

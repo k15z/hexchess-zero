@@ -3,9 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "copy-wasm": "mkdir -p public/wasm && cp ../bindings/wasm/pkg/hexchess_wasm.js ../bindings/wasm/pkg/hexchess_wasm_bg.wasm public/wasm/",
-    "dev": "next dev",
-    "build": "npm run copy-wasm && next build",
+    "prepare-wasm": "node ./scripts/prepare-wasm.mjs",
+    "prepare-wasm:build": "node ./scripts/prepare-wasm.mjs --build",
+    "copy-wasm": "npm run prepare-wasm",
+    "dev": "npm run prepare-wasm && next dev",
+    "build": "npm run prepare-wasm && next build",
     "start": "next start"
   },
   "dependencies": {
