@@ -1,4 +1,4 @@
-"""Continuous self-play worker for async distributed training (v2 schema).
+"""Continuous self-play worker for async distributed training.
 
 Runs an infinite loop: fetch the latest model from S3, play self-play games
 using the Rust MCTS engine's Playout-Cap-Randomization (PCR) API, buffer the
@@ -336,7 +336,7 @@ def write_samples_to_npz(
     """Materialize a GameRecord to disk as .npz + .meta.json sidecar.
 
     Writes two files:
-      - `{npz_path}`                — compressed NPZ with the v2 schema.
+      - `{npz_path}`                — compressed NPZ with the training schema.
       - `{npz_path with .meta.json}` — per-game metadata sidecar.
 
     Returns the metadata dict.
@@ -742,7 +742,7 @@ def _write_heartbeat(cfg: AsyncConfig, version: int, total_games: int,
 # ---------------------------------------------------------------------------
 
 def run_worker(cfg: AsyncConfig) -> None:
-    """Run the continuous self-play worker loop (v2 schema)."""
+    """Run the continuous self-play worker loop."""
     if hexchess is None:
         raise ImportError("hexchess bindings not available")
 

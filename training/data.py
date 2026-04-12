@@ -1,4 +1,4 @@
-"""v2 .npz loader and target builder for the chunk 6 trainer.
+"""Training-data loaders and target builders.
 
 The worker (chunk 5) writes rich per-position arrays:
 
@@ -13,7 +13,7 @@ The worker (chunk 5) writes rich per-position arrays:
     root_q, root_n, root_entropy, nn_value_at_position, legal_count, ply, game_id
 
 This module provides pure functions to:
-  - load one v2 .npz into numpy arrays (filtered to was_full_search=True),
+  - load one self-play .npz into numpy arrays (filtered to was_full_search=True),
   - build the per-batch ``targets`` dict expected by ``compute_losses``.
 
 ``legal_mask`` is read directly from the .npz and represents **legality**,
@@ -45,8 +45,8 @@ import numpy as np
 
 
 @dataclass
-class V2Batch:
-    """A slice of v2 training samples as plain numpy arrays (fp32 / bool)."""
+class TrainingBatch:
+    """A slice of training samples as plain numpy arrays (fp32 / bool)."""
 
     boards: np.ndarray          # (B, 22, 11, 11) float32
     policy: np.ndarray          # (B, num_moves)  float32
@@ -72,7 +72,7 @@ def _decode_boards(boards: np.ndarray) -> np.ndarray:
 
 
 _IMITATION_REQUIRED_KEYS = ("boards", "policies", "legal_masks", "outcomes")
-_V2_REQUIRED_KEYS = (
+_SELFPLAY_REQUIRED_KEYS = (
     "boards",
     "policy",
     "policy_aux_opp",
@@ -104,8 +104,8 @@ def _check_required_keys(
         )
 
 
-def load_imitation_npz(path: str | Path) -> V2Batch:
-    """Load an imitation .npz (boards/policies/legal_masks/outcomes) as a V2Batch.
+def load_imitation_npz(path: str | Path) -> TrainingBatch:
+    """Load an imitation .npz as a TrainingBatch.
 
     Missing fields are filled with sensible defaults:
     - aux_policy = uniform over legal moves (no opponent data in imitation)
@@ -115,7 +115,8 @@ def load_imitation_npz(path: str | Path) -> V2Batch:
     This lets the trainer mix imitation data into the self-play replay buffer
     to anchor the policy to the minimax teacher signal during early training.
     Without this, weak self-play can dilute the bootstrap and the model
-    regresses (observed: v2 was WORSE than heuristic despite v1 being strong).
+    regresses; early runs underperformed the heuristic baseline without this
+    anchor despite a strong bootstrap.
     """
     path = Path(path)
     data = np.load(str(path))
@@ -131,7 +132,7 @@ def load_imitation_npz(path: str | Path) -> V2Batch:
     legal_counts = legal_mask.astype(np.float32).sum(axis=1, keepdims=True).clip(min=1)
     aux_policy = (legal_mask.astype(np.float32) / legal_counts).astype(np.float32)
 
-    return V2Batch(
+    return TrainingBatch(
         boards=boards,
         policy=policy,
         aux_policy=aux_policy,
@@ -143,15 +144,15 @@ def load_imitation_npz(path: str | Path) -> V2Batch:
     )
 
 
-def load_v2_npz(path: str | Path) -> V2Batch:
-    """Load a chunk-5 v2 .npz file and return an fp32 V2Batch.
+def load_selfplay_npz(path: str | Path) -> TrainingBatch:
+    """Load a self-play .npz file and return an fp32 TrainingBatch.
 
     Only rows with ``was_full_search == True`` are kept. The loader uses
     ``np.load`` (not mmap) because we copy every array to fp32 anyway.
     """
     path = Path(path)
     data = np.load(str(path))
-    _check_required_keys(data, _V2_REQUIRED_KEYS, path)
+    _check_required_keys(data, _SELFPLAY_REQUIRED_KEYS, path)
 
     was_full = np.asarray(data["was_full_search"]).astype(bool)
     idx = np.nonzero(was_full)[0]
@@ -167,7 +168,7 @@ def load_v2_npz(path: str | Path) -> V2Batch:
     mlh = np.asarray(data["mlh"])[idx].astype(np.float32)
     ply = np.asarray(data["ply"])[idx].astype(np.int32)
 
-    return V2Batch(
+    return TrainingBatch(
         boards=boards,
         policy=policy,
         aux_policy=aux_policy,
@@ -179,7 +180,7 @@ def load_v2_npz(path: str | Path) -> V2Batch:
     )
 
 
-def build_targets_dict(batch: V2Batch) -> dict:
+def build_targets_dict(batch: TrainingBatch) -> dict:
     """Build the ``targets`` dict argument for :func:`training.losses.compute_losses`.
 
     The returned dict contains only the target arrays (still numpy); the

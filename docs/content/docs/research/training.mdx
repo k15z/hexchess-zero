@@ -44,7 +44,7 @@ Workers can run anywhere — local machines, cloud VMs, Docker containers, Kuber
 
 A single trainer process:
 
-1. Downloads recent `.npz` files from S3 (sliding window of `replay_buffer_size` positions)
+1. Downloads recent `.npz` files from S3 (KataGo-style sublinear replay window)
 2. Trains the network for `steps_per_cycle` steps, sampling uniformly from the buffer
 3. Exports the updated model to ONNX
 4. Uploads the new model version to S3
@@ -86,7 +86,7 @@ graph TD
 <Mermaid chart={`
 graph TD
     SP["Self-play workers"] -->|".npz files"| SD["S3: data/selfplay/v{N}/"]
-    SD -->|sliding window| TB["Replay buffer<br/>(1M positions)"]
+    SD -->|sublinear window| TB["Replay buffer<br/>(KataGo formula)"]
     TB -->|sample batches| TL["Trainer loop"]
     TL -->|export ONNX| SM["S3: models/latest.onnx"]
     SM -->|poll| SP
@@ -104,20 +104,25 @@ Position count is encoded in each `.npz` filename (`_n{count}`) so the trainer c
 ```
 models/
   latest.onnx              # current model for inference
-  latest.meta.json         # {"version": N, "timestamp": "..."}
+  latest.meta.json         # {"version": N, "timestamp": "...", "positions_at_promote": M}
   checkpoint.pt            # PyTorch training checkpoint
   versions/{N}.onnx        # immutable version snapshots
 
 data/
   selfplay/v{N}/{ts}_{rand}_n{count}.npz
+  selfplay_traces/v{N}/{game_id}.json
   imitation/{ts}_{rand}_n{count}.npz
 
 state/
   elo.json                 # derived Elo projection (rebuilt from elo_games/)
   elo_games/{ts}_{rand}.json  # one immutable object per played game
+  trainer_metrics.json     # latest trainer telemetry for the dashboard
 
 heartbeats/
   {hostname}.json           # worker liveness + stats
+
+benchmarks/
+  results/{version}.json    # benchmark snapshots for the dashboard
 ```
 
 ## Training rate control
@@ -136,7 +141,7 @@ If the trainer is outpacing data production, it sleeps rather than overfitting o
 
 | Parameter | Default | Effect |
 |-----------|---------|--------|
-| `num_simulations` | 500 | MCTS sims per move — strength vs throughput |
+| `num_simulations` | 800 | MCTS sims per move — strength vs throughput |
 | `temperature_threshold` | 60 | Move after which $\tau$ drops |
 | `temperature_high` / `low` | 1.0 / 0.35 | Exploration vs clean endgame signals (Lc0-style floor) |
 | `dirichlet_alpha` / `epsilon` | 0.3 / 0.25 | Root noise for exploration |
@@ -146,15 +151,15 @@ If the trainer is outpacing data production, it sleeps rather than overfitting o
 | Parameter | Default | Effect |
 |-----------|---------|--------|
 | `batch_size` | 256 | Training batch size |
-| `learning_rate` | 0.001 | Adam learning rate |
-| `l2_regularization` | $10^{-4}$ | Weight decay |
-| `replay_buffer_size` | 1,000,000 | Max positions in sliding window |
-| `steps_per_cycle` | 1,000 | Steps between model promotions |
+| `learning_rate` | 5e-4 | SGD learning rate after warmup |
+| `l2_regularization` | $3 \times 10^{-5}$ | Weight decay |
+| `window_c` / `window_alpha` / `window_beta` | 25,000 / 0.75 / 0.4 | Sublinear replay-window parameters |
+| `steps_per_cycle` | 3,000 | Steps between model promotions |
 
 ## Key dynamics
 
 **Worker throughput vs training speed**: Workers produce positions proportional to `num_simulations` and available CPUs. The trainer consumes them based on `steps_per_cycle` and GPU speed. The token bucket keeps them balanced.
 
-**Buffer size vs cycle length**: With a 1M buffer and 1,000 steps at batch size 256, each cycle trains on ~256K samples — about 25% of the buffer. Positions near the edge of the window get fewer passes before aging out.
+**Replay window vs cycle length**: The replay window grows sublinearly with total self-play volume, so early versions train mostly on fresh data while later versions retain more historical diversity without a hard linear-growth cost.
 
 **Model version turnover**: Every `steps_per_cycle` steps, a new version is promoted. Workers poll for updates after each batch of games. The lag between promotion and adoption is a few minutes at most.

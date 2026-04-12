@@ -28,8 +28,8 @@ from torch.utils.data import DataLoader, IterableDataset
 
 from . import storage
 from .config import AsyncConfig
+from .data import TrainingBatch, load_imitation_npz, load_selfplay_npz
 from .logging_setup import log_event, setup_json_logging
-from .data_v2 import V2Batch, load_imitation_npz, load_v2_npz
 from .export import export_to_onnx
 from .health_checks import (
     HealthCheckError,
@@ -63,40 +63,10 @@ from .swa import SwaSnapshotBuffer, update_bn_stats
 # and validate() ranges.
 
 
-def _build_imitation_targets(
-    policies: torch.Tensor,
-    outcomes: torch.Tensor,
-) -> dict[str, torch.Tensor]:
-    """Bootstrap targets dict from the imitation .npz schema.
-
-    Imitation data has ``boards``, ``policies``, ``legal_masks``, and
-    ``outcomes``. This helper produces the target dict alone — the legal
-    mask is loaded separately and threaded directly to
-    :func:`compute_losses`. Neutral placeholders fill the MLH/STV/aux heads
-    so they still produce gradients (weighted small per
-    :class:`LossWeights`) without biasing the trunk.
-    """
-    batch = policies.shape[0]
-    num_moves = policies.shape[1]
-    device = policies.device
-    mlh_placeholder = torch.zeros(batch, device=device)
-    stv_placeholder = outcomes.detach().clone()  # terminal ≈ horizon-8 fallback
-    aux_policy_placeholder = torch.full(
-        (batch, num_moves), 1.0 / num_moves, device=device
-    )
-    return {
-        "policy": policies,
-        "wdl": outcomes,
-        "mlh": mlh_placeholder,
-        "stv": stv_placeholder,
-        "aux_policy": aux_policy_placeholder,
-    }
-
-
-def _v2_batch_to_torch(
+def _batch_to_torch(
     batch_np: dict[str, np.ndarray], device: torch.device,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor], torch.Tensor]:
-    """Collate a dict of numpy arrays from the v2 loader into torch tensors."""
+    """Collate a dict of numpy arrays into torch tensors."""
     boards = torch.from_numpy(batch_np["boards"]).to(device)
     targets = {
         "policy": torch.from_numpy(batch_np["policy"]).to(device),
@@ -120,25 +90,15 @@ def _read_model_version() -> int:
 def _read_positions_at_last_promote() -> int:
     """Read the positions watermark from S3.
 
-    Returns 0 if no metadata exists (bootstrap case).
-
-    Migration: if the field is missing but a model exists (old deployment),
-    use the current position count as a conservative estimate. This prevents
-    immediate re-promotion on stale data after the first restart post-rollout.
+    Returns 0 if no metadata exists (bootstrap case). If metadata exists, the
+    promotion watermark must be present explicitly.
     """
     try:
         meta = storage.get_json(storage.LATEST_META)
     except KeyError:
         # No metadata at all — bootstrap case
         return 0
-
-    if "positions_at_promote" in meta:
-        return meta["positions_at_promote"]
-
-    # Migration: old meta.json without the field. Use current count to avoid
-    # treating all historical data as "new" and triggering stale re-promotion.
-    logger.info("Migrating positions watermark: field missing, using current count")
-    return storage.count_positions(storage.SELFPLAY_PREFIX)
+    return meta["positions_at_promote"]
 
 
 # ---------------------------------------------------------------------------
@@ -221,49 +181,71 @@ class TrainBucket:
 # Replay buffer
 # ---------------------------------------------------------------------------
 
-class ReplayBuffer(IterableDataset):
-    """Streams training data from S3 with uniform sampling.
+def _yield_samples_from_batch(
+    batch: TrainingBatch, sample_per_file: int,
+):
+    n = len(batch)
+    k = min(n, sample_per_file)
+    idx = np.random.choice(n, size=k, replace=False)
+    for i in idx:
+        yield {
+            "boards": batch.boards[i],
+            "policy": batch.policy[i],
+            "aux_policy": batch.aux_policy[i],
+            "wdl_terminal": batch.wdl_terminal[i],
+            "wdl_short": batch.wdl_short[i],
+            "mlh": batch.mlh[i],
+            "legal_mask": batch.legal_mask[i],
+        }
+
+
+def _download_selected_files(
+    cache_dir: Path, selected: list[dict],
+) -> tuple[list[Path], list[int], int]:
+    if not selected:
+        return [], [], 0
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    needed: set[str] = set()
+    local_files: list[Path] = []
+    weights: list[int] = []
+    total = 0
+    for entry in selected:
+        if entry["positions"] <= 0:
+            continue
+        safe_name = entry["key"].replace("/", "_")
+        local_path = cache_dir / safe_name
+        needed.add(safe_name)
+        if not local_path.exists():
+            storage.get_file(entry["key"], local_path)
+        local_files.append(local_path)
+        weights.append(entry["positions"])
+        total += entry["positions"]
+    for f in cache_dir.iterdir():
+        if f.name not in needed and f.suffix == ".npz":
+            f.unlink()
+    return local_files, weights, total
+
+
+class ImitationBuffer(IterableDataset):
+    """Streams imitation data from S3 using the current sample schema.
 
     Selects the most recent files up to max_positions (by parsing
     timestamps from S3 keys), downloads them to a local cache,
     and samples from them with a shuffle buffer.
     """
 
-    SHUFFLE_BUFFER_SIZE = 100_000
+    SHUFFLE_BUFFER_SIZE = 20_000
     SAMPLE_PER_FILE = 2048
 
-    def __init__(self, cache_dir: Path, max_positions: int = 5_000_000,
-                 s3_prefix: str = storage.SELFPLAY_PREFIX):
+    def __init__(self, cache_dir: Path, max_positions: int):
         self.cache_dir = cache_dir
         self.max_positions = max_positions
-        self.s3_prefix = s3_prefix
-        self.files, self.total_positions = self._select_and_download()
-
-    def _select_and_download(self) -> tuple[list[Path], int]:
-        """Select recent files from S3 and download to local cache."""
-        selected = storage.select_recent_files(self.s3_prefix, self.max_positions)
-        if not selected:
-            return [], 0
-
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        needed = set()
-        local_files = []
-        total = 0
-        for entry in selected:
-            safe_name = entry["key"].replace("/", "_")
-            local_path = self.cache_dir / safe_name
-            needed.add(safe_name)
-            if not local_path.exists():
-                storage.get_file(entry["key"], local_path)
-            local_files.append(local_path)
-            total += entry["positions"]
-
-        # Prune cached files no longer in the selection
-        for f in self.cache_dir.iterdir():
-            if f.name not in needed and f.suffix == ".npz":
-                f.unlink()
-
-        return local_files, total
+        selected = storage.select_recent_files(
+            storage.IMITATION_PREFIX, self.max_positions
+        )
+        self.files, self.file_weights, self.total_positions = _download_selected_files(
+            self.cache_dir, selected
+        )
 
     def stats(self) -> dict:
         if not self.files:
@@ -273,80 +255,38 @@ class ReplayBuffer(IterableDataset):
             "positions": self.total_positions,
         }
 
-    _REQUIRED_KEYS = ("boards", "policies", "legal_masks", "outcomes")
-
     def __iter__(self):
         if not self.files:
             return
 
-        buf_b, buf_p, buf_m, buf_o = [], [], [], []
+        shuffle_buf: list[dict] = []
 
         while True:
-            [chosen] = random.choices(self.files, k=1)
+            [chosen] = random.choices(self.files, weights=self.file_weights, k=1)
             try:
-                data = np.load(chosen, mmap_mode="r")
+                batch = load_imitation_npz(chosen)
             except (OSError, ValueError):
-                # Corrupt/unreadable file — skip and resample. These errors
-                # do NOT indicate a schema mismatch; schema mismatches fall
-                # through to the explicit check below and raise loudly so
-                # stale pre-legal_mask data cannot silently hang the trainer.
                 continue
-
-            missing = [k for k in self._REQUIRED_KEYS if k not in data.files]
-            if missing:
-                raise RuntimeError(
-                    f"Imitation .npz {chosen} is missing required field(s) "
-                    f"{missing}. Regenerate imitation data after the "
-                    "legal_mask schema change."
-                )
-            boards = data["boards"]
-            policies = data["policies"]
-            legal_masks = data["legal_masks"]
-            outcomes = data["outcomes"]
-
-            n = len(outcomes)
-            k = min(n, self.SAMPLE_PER_FILE)
-            idx = np.random.choice(n, size=k, replace=False)
-            idx.sort()
-            buf_b.append(np.array(boards[idx]))
-            buf_p.append(np.array(policies[idx]))
-            buf_m.append(np.array(legal_masks[idx]))
-            buf_o.append(np.array(outcomes[idx]))
-
-            total = sum(len(b) for b in buf_b)
-
-            if total >= self.SHUFFLE_BUFFER_SIZE:
-                merged_b = np.concatenate(buf_b)
-                merged_p = np.concatenate(buf_p)
-                merged_m = np.concatenate(buf_m)
-                merged_o = np.concatenate(buf_o)
-                perm = np.random.permutation(len(merged_b))
-                drain = len(perm) // 2
-                for j in perm[:drain]:
-                    yield (torch.from_numpy(merged_b[j].copy()),
-                           torch.from_numpy(merged_p[j].copy()),
-                           torch.from_numpy(merged_m[j].copy()),
-                           torch.tensor(merged_o[j], dtype=torch.float32))
-                keep = perm[drain:]
-                buf_b = [merged_b[keep]]
-                buf_p = [merged_p[keep]]
-                buf_m = [merged_m[keep]]
-                buf_o = [merged_o[keep]]
+            for sample in _yield_samples_from_batch(batch, self.SAMPLE_PER_FILE):
+                shuffle_buf.append(sample)
+            if len(shuffle_buf) >= self.SHUFFLE_BUFFER_SIZE:
+                random.shuffle(shuffle_buf)
+                drain = len(shuffle_buf) // 2
+                for sample in shuffle_buf[:drain]:
+                    yield sample
+                shuffle_buf = shuffle_buf[drain:]
 
 
 # ---------------------------------------------------------------------------
-# v2 self-play replay buffer (chunk 6)
+# Replay buffer
 # ---------------------------------------------------------------------------
 
-class ReplayBufferV2(IterableDataset):
-    """Streams v2 self-play samples from S3 with a sublinear KataGo window.
+class ReplayBuffer(IterableDataset):
+    """Streams self-play samples from S3 with a sublinear KataGo window.
 
-    Differences from the legacy ``ReplayBuffer``:
-      - loads the v2 schema via :func:`training.data_v2.load_v2_npz`,
-      - window size is computed dynamically from the KataGo sublinear
-        formula rather than a fixed ``replay_buffer_size``,
-      - yields a dict per sample (converted to torch tensors at collate
-        time) including the per-sample legal mask.
+    Yields a dict per sample (converted to torch tensors at collate time)
+    including the per-sample legal mask. Optionally mixes imitation files
+    during early versions to stabilize training.
     """
 
     SHUFFLE_BUFFER_SIZE = 20_000
@@ -364,59 +304,23 @@ class ReplayBufferV2(IterableDataset):
         self.window_size = window_size
         self.s3_prefix = s3_prefix
         self.imitation_mix = imitation_mix
-        self.files, self.file_weights, self.total_positions = self._select_and_download()
+        selected = storage.select_recent_files(self.s3_prefix, self.window_size)
+        self.files, self.file_weights, self.total_positions = _download_selected_files(
+            self.cache_dir, selected
+        )
         # Also load imitation files if mixing is enabled.
         self.imitation_files: list[Path] = []
         self.imitation_weights: list[int] = []
         if imitation_mix > 0:
             self.imitation_files, self.imitation_weights = self._download_imitation()
 
-    def _select_and_download(self) -> tuple[list[Path], list[int], int]:
-        selected = storage.select_recent_files(self.s3_prefix, self.window_size)
-        if not selected:
-            return [], [], 0
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        needed = set()
-        local_files: list[Path] = []
-        weights: list[int] = []
-        total = 0
-        for entry in selected:
-            # Skip files with zero positions (avoids ValueError in weighted sampling).
-            if entry["positions"] <= 0:
-                continue
-            safe_name = entry["key"].replace("/", "_")
-            local_path = self.cache_dir / safe_name
-            needed.add(safe_name)
-            if not local_path.exists():
-                storage.get_file(entry["key"], local_path)
-            local_files.append(local_path)
-            weights.append(entry["positions"])
-            total += entry["positions"]
-        # Prune stale cache entries
-        for f in self.cache_dir.iterdir():
-            if f.name not in needed and f.suffix == ".npz":
-                f.unlink()
-        return local_files, weights, total
-
     def _download_imitation(self) -> tuple[list[Path], list[int]]:
         """Download imitation files to a separate cache."""
         imit_cache = self.cache_dir.parent / "imitation"
-        imit_cache.mkdir(parents=True, exist_ok=True)
         selected = storage.select_recent_files(
             storage.IMITATION_PREFIX, 500_000  # all imitation data
         )
-        local_files: list[Path] = []
-        weights: list[int] = []
-        for entry in selected:
-            # Skip files with zero positions.
-            if entry["positions"] <= 0:
-                continue
-            safe = entry["key"].replace("/", "_")
-            lp = imit_cache / safe
-            if not lp.exists():
-                storage.get_file(entry["key"], lp)
-            local_files.append(lp)
-            weights.append(entry["positions"])
+        local_files, weights, _total = _download_selected_files(imit_cache, selected)
         return local_files, weights
 
     def stats(self) -> dict:
@@ -427,21 +331,6 @@ class ReplayBufferV2(IterableDataset):
     def __iter__(self):
         if not self.files:
             return
-
-        def _yield_from_batch(b: V2Batch):
-            n = len(b)
-            k = min(n, self.SAMPLE_PER_FILE)
-            idx = np.random.choice(n, size=k, replace=False)
-            for i in idx:
-                yield {
-                    "boards": b.boards[i],
-                    "policy": b.policy[i],
-                    "aux_policy": b.aux_policy[i],
-                    "wdl_terminal": b.wdl_terminal[i],
-                    "wdl_short": b.wdl_short[i],
-                    "mlh": b.mlh[i],
-                    "legal_mask": b.legal_mask[i],
-                }
 
         shuffle_buf: list[dict] = []
         while True:
@@ -472,7 +361,7 @@ class ReplayBufferV2(IterableDataset):
                 # equal probability of being sampled (position-uniform).
                 [chosen] = random.choices(self.files, weights=self.file_weights, k=1)
                 try:
-                    b = load_v2_npz(chosen)
+                    b = load_selfplay_npz(chosen)
                 except (OSError, ValueError):
                     continue
             # NOTE: no mirror augmentation. The encoder now produces STM-frame
@@ -480,7 +369,7 @@ class ReplayBufferV2(IterableDataset):
             # the color symmetry into the representation by construction —
             # mirror aug would be a no-op and the old absolute-frame
             # implementation was silently corrupting pawn targets.
-            for sample in _yield_from_batch(b):
+            for sample in _yield_samples_from_batch(b, self.SAMPLE_PER_FILE):
                 shuffle_buf.append(sample)
             if len(shuffle_buf) >= self.SHUFFLE_BUFFER_SIZE:
                 random.shuffle(shuffle_buf)
@@ -490,7 +379,7 @@ class ReplayBufferV2(IterableDataset):
                 shuffle_buf = shuffle_buf[drain:]
 
 
-def _v2_collate(samples: list[dict]) -> dict[str, np.ndarray]:
+def _collate_samples(samples: list[dict]) -> dict[str, np.ndarray]:
     """Stack a list of per-sample dicts into a batch dict of numpy arrays."""
     out: dict[str, np.ndarray] = {}
     for k in samples[0].keys():
@@ -525,10 +414,14 @@ def _run_bootstrap(cfg: AsyncConfig, model: torch.nn.Module,
     logger.info("=" * 60)
 
     def reload_buffer():
-        ds = ReplayBuffer(cfg.data_cache_dir / "imitation",
-                          max_positions=cfg.min_positions_to_start,
-                          s3_prefix=storage.IMITATION_PREFIX)
-        dl = DataLoader(ds, batch_size=cfg.batch_size, num_workers=0)
+        ds = ImitationBuffer(
+            cfg.data_cache_dir / "imitation",
+            max_positions=cfg.min_positions_to_start,
+        )
+        dl = DataLoader(
+            ds, batch_size=cfg.batch_size, num_workers=0,
+            collate_fn=_collate_samples,
+        )
         return ds, dl
 
     dataset, dataloader = reload_buffer()
@@ -547,17 +440,14 @@ def _run_bootstrap(cfg: AsyncConfig, model: torch.nn.Module,
     t0 = time.time()
 
     while total_steps < total_steps_target:
-        for boards, policies, legal_mask, outcomes in dataloader:
+        for batch_np in dataloader:
             if total_steps >= total_steps_target:
                 break
 
-            boards = boards.to(device)
-            policies = policies.to(device)
-            legal_mask = legal_mask.to(device).bool()
-            outcomes = outcomes.to(device)
+            boards, targets, legal_mask = _batch_to_torch(batch_np, device)
+            legal_mask = legal_mask.bool()
 
             preds = model(boards)
-            targets = _build_imitation_targets(policies, outcomes)
             breakdown: LossBreakdown = compute_losses(
                 preds, targets, legal_mask=legal_mask,
                 weights=loss_weights, debug=(total_steps == 0),
@@ -917,7 +807,7 @@ def run_trainer(cfg: AsyncConfig) -> None:
 
     ac_dtype = _autocast_dtype(device)
 
-    def reload_buffer() -> tuple[ReplayBufferV2, DataLoader, int]:
+    def reload_buffer() -> tuple[ReplayBuffer, DataLoader, int]:
         n_total = storage.count_positions(storage.SELFPLAY_PREFIX)
         window = sublinear_window_size(
             n_total, c=cfg.window_c, alpha=cfg.window_alpha, beta=cfg.window_beta,
@@ -927,7 +817,7 @@ def run_trainer(cfg: AsyncConfig) -> None:
         # so the teacher signal fades as self-play matures — see
         # AsyncConfig.imitation_mix_for_version.
         mix = cfg.imitation_mix_for_version(current_version)
-        ds = ReplayBufferV2(
+        ds = ReplayBuffer(
             cfg.data_cache_dir / "selfplay",
             window_size=window,
             s3_prefix=storage.SELFPLAY_PREFIX,
@@ -935,7 +825,7 @@ def run_trainer(cfg: AsyncConfig) -> None:
         )
         dl = DataLoader(
             ds, batch_size=cfg.batch_size, num_workers=0,
-            collate_fn=_v2_collate,
+            collate_fn=_collate_samples,
         )
         return ds, dl, n_total
 
@@ -1010,7 +900,7 @@ def run_trainer(cfg: AsyncConfig) -> None:
                     torch.from_numpy(batch_np["boards"]).clone()
                 )
 
-                boards, targets, legal_mask = _v2_batch_to_torch(batch_np, device)
+                boards, targets, legal_mask = _batch_to_torch(batch_np, device)
 
                 # LR warmup.
                 lr = _lr_for_step(

@@ -2,6 +2,7 @@
 
 import pytest
 
+from training import trainer_loop
 from training.trainer_loop import TrainBucket
 
 BATCH_SIZE = 256
@@ -216,3 +217,19 @@ def test_production_config():
     # Workers produce 3000 new positions -> 12000 tokens
     bucket.update(2_003_000)
     assert bucket.tokens == max_tokens - 1000 * 256 + 3000 * 4.0
+
+
+def test_positions_watermark_defaults_to_zero_when_meta_missing(monkeypatch):
+    def _missing(_key):
+        raise KeyError("missing")
+
+    monkeypatch.setattr(trainer_loop.storage, "get_json", _missing)
+    assert trainer_loop._read_positions_at_last_promote() == 0
+
+
+def test_positions_watermark_requires_explicit_field(monkeypatch):
+    monkeypatch.setattr(
+        trainer_loop.storage, "get_json", lambda _key: {"version": 7}
+    )
+    with pytest.raises(KeyError, match="positions_at_promote"):
+        trainer_loop._read_positions_at_last_promote()

@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv
 load_dotenv()
 
+import numpy as np  # noqa: E402
 import torch  # noqa: E402
 import torch.optim as optim  # noqa: E402
 from torch.utils.data import DataLoader  # noqa: E402
@@ -27,33 +28,36 @@ from loguru import logger  # noqa: E402
 from training import storage  # noqa: E402
 from training.config import AsyncConfig  # noqa: E402
 from training.imitation import play_imitation_game  # noqa: E402
+from training.losses import LossWeights, compute_losses  # noqa: E402
 from training.model import build_model  # noqa: E402
 from training.export import export_to_onnx  # noqa: E402
-from training.trainer_loop import ReplayBuffer  # noqa: E402
+from training.trainer_loop import ImitationBuffer  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
 # Config overrides for quick local validation
 # ---------------------------------------------------------------------------
 
-TARGET_POSITIONS = 1_000_000   # full production threshold
-TRAIN_STEPS = 50_000           # full production bootstrap steps
 NUM_WORKERS = max(1, os.cpu_count() or 1)
-BATCH_SIZE = 256
 GAMES_PER_FLUSH = 5
+
+
+def _collate_samples(samples: list[dict]) -> dict[str, np.ndarray]:
+    return {k: np.stack([s[k] for s in samples]) for k in samples[0]}
 
 
 def generate_imitation_data(cfg: AsyncConfig) -> int:
     """Generate imitation data and upload to S3. Returns total positions."""
+    target_positions = cfg.min_positions_to_start
     existing = storage.count_positions(storage.IMITATION_PREFIX)
-    if existing >= TARGET_POSITIONS:
+    if existing >= target_positions:
         logger.info("Already have {:,} positions (target {:,}), skipping generation",
-                    existing, TARGET_POSITIONS)
+                    existing, target_positions)
         return existing
 
-    needed = TARGET_POSITIONS - existing
+    needed = target_positions - existing
     logger.info("Have {:,} positions, need {:,} more (target {:,}, {} workers)",
-                existing, needed, TARGET_POSITIONS, NUM_WORKERS)
+                existing, needed, target_positions, NUM_WORKERS)
 
     total_games = 0
     total_positions = 0
@@ -98,6 +102,7 @@ def generate_imitation_data(cfg: AsyncConfig) -> int:
 
 def train_model(cfg: AsyncConfig) -> str:
     """Train a model on imitation data. Returns path to ONNX model."""
+    train_steps = cfg.bootstrap_steps
     if torch.cuda.is_available():
         device = torch.device("cuda")
     elif torch.backends.mps.is_available():
@@ -105,7 +110,7 @@ def train_model(cfg: AsyncConfig) -> str:
     else:
         device = torch.device("cpu")
 
-    logger.info("Training on device: {} for {:,} steps...", device, TRAIN_STEPS)
+    logger.info("Training on device: {} for {:,} steps...", device, train_steps)
 
     model = build_model(cfg).to(device)
     optimizer = optim.SGD(
@@ -114,13 +119,15 @@ def train_model(cfg: AsyncConfig) -> str:
         momentum=cfg.momentum,
         weight_decay=cfg.l2_regularization,
     )
+    loss_weights = LossWeights()
 
-    dataset = ReplayBuffer(
+    dataset = ImitationBuffer(
         cfg.data_cache_dir / "imitation",
-        max_positions=cfg.replay_buffer_size,
-        s3_prefix=storage.IMITATION_PREFIX,
+        max_positions=cfg.min_positions_to_start,
     )
-    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, num_workers=0)
+    dataloader = DataLoader(
+        dataset, batch_size=cfg.batch_size, num_workers=0, collate_fn=_collate_samples
+    )
 
     logger.info("Replay buffer: {} files, {:,} positions",
                 len(dataset.files), dataset.total_positions)
@@ -131,46 +138,42 @@ def train_model(cfg: AsyncConfig) -> str:
     cum_value_loss = 0.0
     t0 = time.time()
 
-    while step < TRAIN_STEPS:
-        for boards, policies, legal_mask, outcomes in dataloader:
-            if step >= TRAIN_STEPS:
+    while step < train_steps:
+        for batch_np in dataloader:
+            if step >= train_steps:
                 break
 
-            boards = boards.to(device)
-            policies = policies.to(device)
-            legal_mask = legal_mask.to(device).bool()
-            outcomes = outcomes.to(device)
+            boards = torch.from_numpy(batch_np["boards"]).to(device)
+            legal_mask = torch.from_numpy(batch_np["legal_mask"]).to(device).bool()
+            targets = {
+                "policy": torch.from_numpy(batch_np["policy"]).to(device),
+                "wdl": torch.from_numpy(batch_np["wdl_terminal"]).to(device),
+                "mlh": torch.from_numpy(batch_np["mlh"]).to(device),
+                "stv": torch.from_numpy(batch_np["wdl_short"]).to(device),
+                "aux_policy": torch.from_numpy(batch_np["aux_policy"]).to(device),
+            }
 
             preds = model(boards)
-            pred_policy, pred_wdl = preds["policy"], preds["wdl"]
-
-            # Mask illegal moves before the softmax so the denominator
-            # spans legal moves only (including legal-but-unvisited).
-            masked_logits = pred_policy.float().masked_fill(~legal_mask, -1e9)
-            log_probs = torch.log_softmax(masked_logits, dim=1)
-            policy_loss = -torch.sum(policies * log_probs, dim=1).mean()
-
-            log_probs_v = torch.log_softmax(pred_wdl, dim=1)
-            value_loss = -torch.sum(outcomes * log_probs_v, dim=1).mean()
-
-            total_loss = policy_loss + value_loss
+            breakdown = compute_losses(
+                preds, targets, legal_mask=legal_mask, weights=loss_weights
+            )
 
             optimizer.zero_grad()
-            total_loss.backward()
+            breakdown.total.backward()
             optimizer.step()
 
-            cum_policy_loss += policy_loss.item()
-            cum_value_loss += value_loss.item()
+            cum_policy_loss += breakdown.policy.item()
+            cum_value_loss += breakdown.value.item()
             step += 1
 
-            if step % 500 == 0 or step == TRAIN_STEPS:
+            if step % 500 == 0 or step == train_steps:
                 elapsed = time.time() - t0
                 avg_p = cum_policy_loss / step
                 avg_v = cum_value_loss / step
                 logger.info(
                     "  step {:>5}/{:,} | loss: policy={:.4f} value={:.4f} "
                     "total={:.4f} | {:.1f} steps/s",
-                    step, TRAIN_STEPS, avg_p, avg_v, avg_p + avg_v,
+                    step, train_steps, avg_p, avg_v, avg_p + avg_v,
                     step / elapsed,
                 )
 

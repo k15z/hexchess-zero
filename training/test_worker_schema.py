@@ -1,4 +1,4 @@
-"""Tests for the chunk-5 self-play worker v2 schema.
+"""Tests for the self-play worker training schema.
 
 These tests are hermetic: they bypass the Rust binding by constructing
 `GameRecord` objects from fake numpy arrays and exercise the pure
