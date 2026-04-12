@@ -140,14 +140,13 @@ cells in all other planes. Pad the hex grid into the smallest enclosing rectangl
 
 ## A reasonable starter for a 91-cell hex chess engine
 
-- 10 residual blocks × 192 filters
+- 8 residual blocks × 144 filters
 - SE in every block (reduction 8)
-- Global-pool-bias branch in blocks 3 and 6
-- Input: ~19 planes, embedded in 11×11 with validity mask
-- Policy head: 1×1 conv → FC → ~4000 outputs (move-index bijection)
-- Value head: 1×1 conv → FC → 3 logits (WDL)
-- (Optional) Moves-left head: scalar regression
-- ~3M params, fits comfortably on a single consumer GPU
+- Global-pool-bias branch in blocks 2 and 5
+- Input: 22 STM-framed planes, embedded in 11×11 with a validity mask
+- Main policy head: 1×1 conv → FC → ~4000 outputs (move-index bijection)
+- Terminal value head: 1×1 conv → GAP → MLP → 3 logits (WDL)
+- Auxiliary heads: moves-left, short-term value, and opponent-policy targets
+- ~15M params with all heads included, still practical for the current training setup
 
-This is roughly what KataGo started its progressive run with, and matches the current
-hex-chess project's net.
+This stays in the same design family as KataGo/Lc0-style small-board starters and matches Hexchess Zero's architecture: SE throughout, explicit global context, and richer auxiliary supervision.

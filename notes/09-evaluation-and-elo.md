@@ -33,7 +33,7 @@ For Go: GnuGo, Pachi, frozen Leela versions.
   better numerical stability.
 - **OpenSkill / Plackett-Luce / Weng-Lin** — Bayesian rating with explicit uncertainty.
   Better than Elo for sparse round-robins; rescale to look Elo-like by `μ = 1500 + 173.7178 · θ`.
-  This is what the hex-chess project uses.
+  This is what Hexchess Zero uses.
 - **TrueSkill** — Microsoft's rating system, similar uncertainty handling.
 
 For training pipelines where new models constantly enter and old ones don't play many games,
@@ -69,7 +69,7 @@ unnecessary for continuous rating tracking.
 
 For an Elo service that has limited compute per cycle: pick pairings that maximize *expected
 information* — i.e. games most likely to be informative because the rating difference is small
-or uncertain. KataGo's distributed training and the hex-chess project both use this.
+or uncertain. KataGo's distributed training and Hexchess Zero both use this.
 
 ## Game count and noise
 

@@ -207,34 +207,48 @@ weights = hexchess.EvalWeights.material_only()
 Convert game states to tensors for neural network training:
 
 ```python
-# Single position → numpy array of shape (19, 11, 11)
+# Single position → numpy array of shape (22, 11, 11)
 tensor = hexchess.encode_board(game)
 
-# Batch encoding → numpy array of shape (N, 19, 11, 11)
+# Batch encoding → numpy array of shape (N, 22, 11, 11)
 tensors = hexchess.encode_batch([game1, game2, game3])
 
 # Shape + policy-size constants
-hexchess.TENSOR_SHAPE       # (19, 11, 11)
+hexchess.TENSOR_SHAPE       # (22, 11, 11)
 hexchess.NUM_MOVE_INDICES   # ~4206
 ```
 
-The 19 channels encode:
-- Channels 0-11: piece planes (6 piece types x 2 colors)
-- Channel 12: side to move
+The encoder is **side-to-move framed**: when Black is to move, the board is mirrored and piece colors are swapped so the network always sees "my" pieces and "my" pawn direction.
+
+The 22 channels encode:
+- Channels 0-5: side-to-move piece planes
+- Channels 6-11: opponent piece planes
+- Channel 12: absolute side to move
 - Channel 13: fullmove number
 - Channel 14: halfmove clock
 - Channel 15: en passant
 - Channel 16: repetition count
 - Channel 17: validity mask (which cells are valid hex cells)
 - Channel 18: in-check flag
+- Channel 19: last-move from square
+- Channel 20: last-move to square
+- Channel 21: plies since pawn move
 
 ## Move indexing
 
 Convert between moves and policy vector indices:
 
 ```python
-# Move → index
+# Absolute-frame move → index
 idx = hexchess.move_to_index(0, -4, 0, -3)
+
+# Preferred for training targets paired with encode_board():
+mv = game.legal_moves()[0]
+stm_idx = game.policy_index(
+    mv.from_q, mv.from_r,
+    mv.to_q, mv.to_r,
+    mv.promotion,
+)
 
 # Index → move
 move = hexchess.index_to_move(idx)  # hexchess.Move(b1-b2)
@@ -242,6 +256,8 @@ move = hexchess.index_to_move(idx)  # hexchess.Move(b1-b2)
 # Total policy vector size
 hexchess.num_move_indices()  # ~4206
 ```
+
+`move_to_index()` is an absolute-frame mapping. `Game.policy_index()` applies the Black-to-move mirror remap so the target matches the STM-framed tensor emitted by `encode_board()`.
 
 The move index table is deterministic — any change would break compatibility with existing training data and models.
 

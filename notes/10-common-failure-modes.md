@@ -86,7 +86,7 @@ Sometimes Elo *regresses*.
 - Use a sublinear-growing window (KataGo formula, see `06-training-loop.md`).
 - Cap sample reuse at ~4–8.
 - Throttle the trainer with a token bucket so it can only consume new data as fast as
-  self-play produces it. KataGo and the hex-chess project both do this.
+  self-play produces it. KataGo and Hexchess Zero both do this.
 
 ## 6. NaN losses
 
@@ -197,7 +197,7 @@ training cross-entropy returns NaN.
 
 **Causes:** Confusing position-count with repetition-count.
 
-**Fixes:** Test against known repetition sequences. The hex-chess project encodes repetition
+**Fixes:** Test against known repetition sequences. Hexchess Zero encodes repetition
 count in an input plane — make sure this matches what your training data expects.
 
 ## 15. Trainer / selfplay LR mismatch

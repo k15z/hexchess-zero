@@ -90,9 +90,9 @@ The `batch_size` parameter controls how many positions are collected before call
 
 | Parameter | Default | Effect |
 |-----------|---------|--------|
-| `simulations` | 500 | Number of MCTS iterations per move. More = stronger but slower |
+| `simulations` | 800 for training/eval, 500 for lightweight UI demos | Number of MCTS iterations per move. More = stronger but slower |
 | $c_{\text{puct}}$ | 1.5 | Exploration vs exploitation tradeoff |
 | `batch_size` | 32 | Positions per inference batch |
 | `tt_capacity` | 500,000 | Max transposition table entries |
 
-**Important**: evaluations and tournaments should use at least 500 simulations. Lower counts (e.g. 200) produce misleading results because the neural network's learned policy advantage only compounds with sufficient search depth.
+**Important**: serious evaluations and tournaments should use about 800 simulations to match the production training regime. Lower counts (for example 200) produce misleading results because the neural network's learned policy advantage only compounds with sufficient search depth.

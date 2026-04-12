@@ -45,9 +45,9 @@ Workers can run anywhere — local machines, cloud VMs, Docker containers, Kuber
 A single trainer process:
 
 1. Downloads recent `.npz` files from S3 (KataGo-style sublinear replay window)
-2. Trains the network for `steps_per_cycle` steps, sampling uniformly from the buffer
+2. Trains the network for `steps_per_cycle` steps, mixing recent self-play with a decaying amount of imitation data in early versions
 3. Exports the updated model to ONNX
-4. Uploads the new model version to S3
+4. Promotes a new version only after enough fresh self-play data has accumulated, with an early-version gate against the incumbent
 5. Repeats
 
 The trainer periodically re-scans S3 (every `reload_interval` steps) to pick up fresh data within a cycle.
@@ -68,12 +68,12 @@ On first run (no model exists), the pipeline can't do self-play — a random net
 
 <Mermaid chart={`
 graph TD
-    R["Random openings<br/>(softmax sampled)"] --> MM["Minimax search<br/>(depth 5)"]
+    R["Random openings<br/>(softmax sampled)"] --> MM["Minimax search<br/>(depth 3)"]
     MM --> Policy["Soft policy targets<br/>(softmax τ=200)"]
     MM --> Value["Value targets<br/>(sigmoid + outcome blend)"]
     Policy --> Train["Train network"]
     Value --> Train
-    Train -->|50k steps| Gate{"≥1M positions?"}
+    Train -->|50k steps| Gate{"≥200k positions?"}
     Gate -->|No| R
     Gate -->|Yes| SP["Switch to self-play"]
 
@@ -154,12 +154,15 @@ If the trainer is outpacing data production, it sleeps rather than overfitting o
 | `learning_rate` | 5e-4 | SGD learning rate after warmup |
 | `l2_regularization` | $3 \times 10^{-5}$ | Weight decay |
 | `window_c` / `window_alpha` / `window_beta` | 25,000 / 0.75 / 0.4 | Sublinear replay-window parameters |
-| `steps_per_cycle` | 3,000 | Steps between model promotions |
+| `steps_per_cycle` | 3,000 | Steps per trainer cycle |
+| `promote_every_new_positions` | 300,000 | Minimum fresh self-play positions required between promotions |
+| `imitation_mix_start` / `imitation_mix_end` / `imitation_mix_decay_end_version` | 0.3 / 0.0 / 5 | Early-version imitation mixing schedule |
+| `gating_enabled_first_n_versions` | 5 | Number of early versions that can still be gated vs the incumbent |
 
 ## Key dynamics
 
-**Worker throughput vs training speed**: Workers produce positions proportional to `num_simulations` and available CPUs. The trainer consumes them based on `steps_per_cycle` and GPU speed. The token bucket keeps them balanced.
+**Worker throughput vs training speed**: Workers produce positions proportional to `num_simulations` and available CPUs. The trainer consumes them based on `steps_per_cycle`, GPU speed, and the early imitation mix. The token bucket keeps them balanced.
 
 **Replay window vs cycle length**: The replay window grows sublinearly with total self-play volume, so early versions train mostly on fresh data while later versions retain more historical diversity without a hard linear-growth cost.
 
-**Model version turnover**: Every `steps_per_cycle` steps, a new version is promoted. Workers poll for updates after each batch of games. The lag between promotion and adoption is a few minutes at most.
+**Model version turnover**: Finishing a cycle is necessary but not sufficient for promotion. The trainer also requires `promote_every_new_positions` fresh self-play positions since the last promotion, and early versions may be gated against the incumbent. Workers poll for updates after each batch of games, so rollout lag is usually minutes rather than hours.

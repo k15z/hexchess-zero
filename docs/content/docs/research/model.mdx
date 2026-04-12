@@ -1,44 +1,39 @@
 ---
 title: Model
-description: The SE residual network with KataGo-style global pooling
+description: The current global_pool_se network and its training heads
 ---
 
-The neural network is defined in `training/model.py`. It's a convolutional residual network inspired by Leela Chess Zero and KataGo.
+The production network is defined in `training/model.py`. The current architecture is the `global_pool_se` variant chosen from the experiments in `training/experiments/RESULTS.md`: an SE residual tower with KataGo-style global pooling plus auxiliary heads that help training stay grounded on game length and short-horizon outcomes.
 
 ## Architecture overview
 
 <Mermaid chart={`
 graph TD
-    Input["Input (19, 11, 11)"] --> Conv["Conv2d 3×3 → BN → ReLU<br/>19 → 192 channels"]
-    Conv --> RB1["SE Residual Block ×3"]
-    RB1 --> GP1["SE Residual Block + Global Pooling"]
-    GP1 --> RB2["SE Residual Block ×2"]
-    RB2 --> GP2["SE Residual Block + Global Pooling"]
-    GP2 --> RB3["SE Residual Block ×3"]
-    RB3 --> PolicyHead["Policy Head"]
-    RB3 --> ValueHead["Value Head"]
+    Input["Input (22, 11, 11)"] --> Conv["Conv2d 3×3 → BN → ReLU<br/>22 → 144 channels"]
+    Conv --> RB1["Residual blocks 0-1<br/>(SE)"]
+    RB1 --> GP1["Residual block 2<br/>(SE + global pooling)"]
+    GP1 --> RB2["Residual blocks 3-4<br/>(SE)"]
+    RB2 --> GP2["Residual block 5<br/>(SE + global pooling)"]
+    GP2 --> RB3["Residual blocks 6-7<br/>(SE)"]
+    RB3 --> PolicyHead["Main policy head"]
+    RB3 --> ValueHead["Terminal value head"]
+    RB3 --> MlhHead["MLH head"]
+    RB3 --> StvHead["STV head"]
+    RB3 --> AuxHead["Aux policy head"]
     PolicyHead --> PolicyOut["~4206 move logits"]
-    ValueHead --> ValueOut["WDL (3 logits)"]
+    ValueHead --> ValueOut["WDL logits"]
+    MlhHead --> MlhOut["Moves-left scalar"]
+    StvHead --> StvOut["Short-term WDL logits"]
+    AuxHead --> AuxOut["Opponent-policy logits"]
 
     style Input fill:#e8f4f8,stroke:#2980b9
     style PolicyOut fill:#e8f8e8,stroke:#27ae60
     style ValueOut fill:#fdf2e9,stroke:#e67e22
-`} caption="HexChessNet architecture: SE residual tower with global pooling at blocks 3 and 6, splitting into policy and value heads" />
+`} caption="HexChessNet architecture: 8-block SE tower with global pooling at blocks 2 and 5, feeding the main and auxiliary heads" />
 
 ## Input tensor
 
-The input is a $(19, 11, 11)$ tensor — the 91-cell hex board embedded in an 11×11 grid with zero-padding for invalid cells:
-
-| Channels | Content |
-|----------|---------|
-| 0–11 | Piece planes (6 types $\times$ 2 colors) |
-| 12 | Side to move |
-| 13 | Fullmove number |
-| 14 | Halfmove clock |
-| 15 | En passant |
-| 16 | Repetition count |
-| 17 | Validity mask |
-| 18 | In-check flag |
+The input is a **side-to-move framed** $(22, 11, 11)$ tensor: the 91-cell hex board embedded in an 11×11 grid with zero-padding for invalid cells, plus metadata planes for repetition, check state, and recent-move context. See [Board](/docs/engine/board#tensor-encoding) for the full channel breakdown.
 
 ## SE residual blocks
 
@@ -59,48 +54,49 @@ This gives each channel a learned, input-dependent scaling — the network can d
 
 ## KataGo-style global pooling
 
-At blocks 3 and 6, an additional **global pooling branch** injects board-wide context:
+At blocks 2 and 5, an additional **global pooling branch** injects board-wide context:
 
-1. A parallel 1×1 conv computes `pool_channels` features
+1. A parallel 3×3 conv computes `pool_channels` features
 2. Three pooling operations: mean, scaled mean, max
 3. The pooled features are projected to a per-channel bias added before the second convolution
 
 This lets the network reason about global properties (material balance, king safety, piece counts) while still operating with local 3×3 convolutions.
 
-## Policy head
+## Heads
 
-$$
-\text{Conv}_{1\times1}(192 \to 8) \to \text{BN} \to \text{ReLU} \to \text{Flatten} \to \text{Linear} \to 4206 \text{ logits}
-$$
+- **Main policy**: `1x1 conv (144 -> 4) -> BN -> ReLU -> flatten -> linear -> ~4206 logits`
+- **Terminal value**: `1x1 conv (144 -> 32) -> BN -> ReLU -> global average pool -> MLP -> 3 WDL logits`
+- **MLH**: `1x1 conv (144 -> 16) -> BN -> ReLU -> global average pool -> MLP -> 1 scalar`
+- **STV**: `1x1 conv (144 -> 32) -> BN -> ReLU -> global average pool -> MLP -> 3 WDL logits`
+- **Auxiliary policy**: `1x1 conv (144 -> 2) -> BN -> ReLU -> flatten -> linear -> ~4206 logits`
 
-Outputs logits over the deterministic move index table. During training, the target is the MCTS visit count distribution (after temperature). During inference, legal moves are masked and softmax is applied.
-
-## Value head
-
-$$
-\text{Conv}_{1\times1}(192 \to 32) \to \text{BN} \to \text{ReLU} \to \text{GAP} \to \text{Linear} \to 3 \text{ WDL logits}
-$$
-
-Outputs **Win/Draw/Loss** logits rather than a single scalar. This provides richer training signal (the network learns to distinguish wins from draws) and converts to a scalar via $v = W - L$ for MCTS backup.
+The two policy heads use the same deterministic move table as the engine. During training, the main policy target comes from the root visit-count distribution, while the auxiliary policy predicts the opponent's reply distribution. The value heads predict both terminal WDL and a short-horizon WDL target; MLH predicts remaining plies to game end.
 
 ## Training loss
 
-The combined loss function:
+The trainer uses a weighted multi-head objective:
 
 $$
-\mathcal{L} = \underbrace{\text{CE}(\pi_\theta, \pi_{\text{MCTS}})}_{\text{policy loss}} + \underbrace{\text{CE}(v_\theta, z)}_{\text{value loss}} + \underbrace{c \|\theta\|^2}_{\text{L2 regularization}}
+\mathcal{L} =
+1.5 \cdot L_{\text{wdl}} +
+1.0 \cdot L_{\text{policy}} +
+0.3 \cdot L_{\text{mlh}} +
+0.15 \cdot L_{\text{stv}} +
+0.15 \cdot L_{\text{aux-policy}}
 $$
 
-where $\pi_{\text{MCTS}}$ is the search policy target, $z$ is the game outcome (WDL), and $c = 10^{-4}$.
+with optimizer-applied weight decay (`l2_regularization = 3e-5`) outside the loss module. The terminal WDL target also uses light label smoothing (`0.05`).
 
 ## Architecture parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `num_residual_blocks` | 10 | Depth of the residual tower |
-| `num_filters` | 192 | Width of convolutional layers |
-| `se_channels` | 48 | SE bottleneck width |
+| `num_residual_blocks` | 8 | Depth of the residual tower |
+| `num_filters` | 144 | Width of convolutional layers |
+| `se_channels` | 32 | SE bottleneck width |
 | `global_pool_channels` | 32 | Global pooling feature width |
-| `global_pool_blocks` | (3, 6) | Which blocks get global pooling |
-| `policy_channels` | 8 | Conv channels in policy head |
-| `value_channels` | 32 | Conv channels in value head |
+| `global_pool_blocks` | (2, 5) | Which blocks get global pooling |
+| `policy_channels` | 4 | Conv channels in the main policy head |
+| `aux_policy_channels` | 2 | Conv channels in the auxiliary policy head |
+| `value_channels` | 32 | Conv channels in the terminal value head |
+| `board_channels` | 22 | Input tensor channels |

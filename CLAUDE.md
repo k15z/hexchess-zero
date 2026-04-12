@@ -63,7 +63,7 @@ AlphaZero-style self-play training loop. All shared state lives in S3 (DigitalOc
 - **storage.py** — S3 abstraction layer. Key constants, upload/download helpers, position counting from filenames. All shared I/O goes through this module.
 - **worker.py** — Continuous self-play loop. Polls S3 for model updates, plays games using MCTS, flushes `.npz` batches to S3. During bootstrap (no model), generates minimax imitation data with process-pool parallelism.
 - **trainer_loop.py** — Continuous trainer. Samples from a sliding-window replay buffer (downloads from S3), trains for N steps per cycle, exports ONNX, promotes to S3. KataGo-style token bucket throttles training to match data production rate.
-- **model.py** — `HexChessNet`: 10 SE residual blocks (192 filters) with KataGo-style global pooling at blocks 3 and 6 → policy head + WDL value head. Input `(19, 11, 11)`, policy output size = `num_move_indices()`, WDL output = 3 logits.
+- **model.py** — `HexChessNet`: 8 SE residual blocks (144 filters) with KataGo-style global pooling at blocks 2 and 5. Input `(22, 11, 11)` in STM frame. Heads: main policy, terminal WDL value, moves-left (MLH), short-term value (STV), and auxiliary opponent policy.
 - **export.py** — PyTorch → ONNX export.
 - **elo.py** — Shared Elo types: `Player` protocol, `MinimaxPlayer`, `MctsPlayer`, game play with per-player timing, OpenSkill (Plackett-Luce / Weng-Lin) rating math rescaled to look Elo-like, `predict_draw`, table formatting.
 - **elo_service.py** — Continuous Elo rating service. `predict_draw`-driven matchmaking with placement matches for new models. Scales horizontally: each replica plays one game at a time and writes per-game immutable objects under `state/elo_games/`; the `state/elo.json` projection is rebuilt from the game log (last-writer-wins, idempotent). LRU-caches loaded ONNX sessions to bound memory.
@@ -89,17 +89,22 @@ All training artifacts are stored in S3 (configured via `.env`):
 ```
 models/
   latest.onnx              # current model for inference
-  latest.meta.json         # {"version": N, "timestamp": "..."}
+  latest.meta.json         # {"version": N, "timestamp": "...", "positions_at_promote": M}
   checkpoint.pt            # PyTorch training checkpoint
   versions/{N}.onnx        # immutable version snapshots
 
 data/
   selfplay/v{N}/{ts}_{rand}_n{count}.npz
+  selfplay_traces/v{N}/{game_id}.json
   imitation/{ts}_{rand}_n{count}.npz
 
 state/
   elo.json                 # derived Elo projection (rebuilt from elo_games/)
   elo_games/{ts}_{rand}.json  # one immutable object per played game
+  trainer_metrics.json     # latest trainer telemetry for the dashboard
+
+benchmarks/
+  results/{version}.json   # benchmark snapshots consumed by the dashboard
 
 heartbeats/
   {hostname}.json          # worker liveness + stats

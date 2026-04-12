@@ -101,9 +101,11 @@ For browser-side ML, you can also pull out the raw tensor:
 ```ts
 import { tensorShape } from "hexchess-zero";
 
-const flat = game.encodeBoard();  // Float32Array, length = 19 * 11 * 11
-const [c, h, w] = tensorShape();   // [19, 11, 11]
+const flat = game.encodeBoard();  // Float32Array, length = 22 * 11 * 11
+const [c, h, w] = tensorShape();  // [22, 11, 11]
 ```
+
+Like the Python bindings, this tensor is encoded in **side-to-move frame** so the network always sees the current player as "my side". The extra metadata planes include repetition, in-check, last-move from/to, and plies-since-pawn-move.
 
 ## AiPlayer class
 
