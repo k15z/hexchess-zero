@@ -25,9 +25,9 @@ def _make(**kwargs):
 def test_training_mode_defaults_match_search_config_training():
     search = _make()
     cfg = search.config_summary()
-    # Python training mode preserves the historical binding override.
-    assert cfg["c_puct"] == pytest.approx(1.5)
-    assert cfg["c_puct_root"] == pytest.approx(2.5)
+    # Training mode uses engine's SearchConfig::training() defaults.
+    assert cfg["c_puct"] == pytest.approx(2.5)
+    assert cfg["c_puct_root"] == pytest.approx(3.5)
     # Training defaults from engine/src/mcts.rs SearchConfig::training().
     assert cfg["forced_playout_k"] == pytest.approx(2.0)
     assert cfg["policy_target_pruning"] is True

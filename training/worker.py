@@ -561,22 +561,31 @@ def _play_one_game_pcr(
             legal_mask_np = legal_mask_from_moves(game, legal, num_moves)
 
             # Opponent-reply visit distribution from the MCTS tree. Falls
-            # back to uniform-over-legal if the best child is unexpanded
-            # (e.g. terminal position or very small search). Indexed in the
-            # game's current STM frame via `game.policy_index` to match the
-            # NN's output frame (see engine::serialization::encode_board).
+            # back to uniform over the opponent's legal replies after the
+            # selected move if the best child is unexpanded (e.g. terminal
+            # position or very small search). The fallback applies the
+            # selected move to discover the opponent's legal moves, then
+            # undoes it so game state is unchanged.
             aux_opp_raw = search.aux_opponent_policy()
             if aux_opp_raw is not None:
                 aux_opp = np.asarray(aux_opp_raw, dtype=np.float32)
             else:
                 aux_opp = np.zeros(num_moves, dtype=np.float32)
-                if legal_count > 0:
-                    inv = 1.0 / legal_count
-                    for mv in legal:
-                        idx = game.policy_index(
-                            mv.from_q, mv.from_r, mv.to_q, mv.to_r, mv.promotion
-                        )
-                        aux_opp[idx] = inv
+                # Apply the selected move to get the opponent's legal replies.
+                game.apply(best_move)
+                try:
+                    if not game.is_game_over():
+                        opp_legal = game.legal_moves()
+                        opp_count = len(opp_legal)
+                        if opp_count > 0:
+                            inv = 1.0 / opp_count
+                            for mv in opp_legal:
+                                idx = game.policy_index(
+                                    mv.from_q, mv.from_r, mv.to_q, mv.to_r, mv.promotion
+                                )
+                                aux_opp[idx] = inv
+                finally:
+                    game.undo_move()
 
             pos = PositionSample(
                 board=board_tensor.astype(np.float32),
@@ -807,6 +816,12 @@ def run_worker(cfg: AsyncConfig) -> None:
         model_path=model_path,
         dirichlet_epsilon=cfg.dirichlet_epsilon,
         dirichlet_alpha=cfg.dirichlet_alpha,
+        pcr_p_full=cfg.pcr_p_full,
+        pcr_n_full=cfg.pcr_n_full,
+        pcr_n_fast=cfg.pcr_n_fast,
+        temperature_high=cfg.temperature_high,
+        temperature_low=cfg.temperature_low,
+        temperature_threshold=cfg.temperature_threshold,
     )
     py_rng = random.Random()
     total_games = 0
@@ -896,4 +911,10 @@ def run_worker(cfg: AsyncConfig) -> None:
                 model_path=model_path,
                 dirichlet_epsilon=cfg.dirichlet_epsilon,
                 dirichlet_alpha=cfg.dirichlet_alpha,
+                pcr_p_full=cfg.pcr_p_full,
+                pcr_n_full=cfg.pcr_n_full,
+                pcr_n_fast=cfg.pcr_n_fast,
+                temperature_high=cfg.temperature_high,
+                temperature_low=cfg.temperature_low,
+                temperature_threshold=cfg.temperature_threshold,
             )

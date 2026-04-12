@@ -659,22 +659,26 @@ impl PyMctsSearch {
     /// `SearchConfig::eval()` (no forced playouts, LCB move selection,
     /// greedy temperature, no Dirichlet, no policy-target pruning, resign
     /// disabled). Use this for Elo, gauntlet, benchmark, and replay paths.
-    /// The default (`eval_mode=False`) keeps the historical Python
-    /// training-mode `c_puct=1.5` override used by self-play workers.
+    /// The default (`eval_mode=False`) uses `SearchConfig::training()`
+    /// (c_puct=2.5, Dirichlet noise, PCR, temperature decay, etc.).
     ///
-    /// If `c_puct` is omitted, training mode preserves that historical
-    /// `1.5` override, while eval mode keeps the engine's `SearchConfig::eval()`
-    /// default (`2.5`).
+    /// If `c_puct` is provided it overrides the config's default for both
+    /// training and eval modes.
     ///
     /// `dirichlet_epsilon` / `dirichlet_alpha` enable root-move Dirichlet
     /// noise on top of whichever config was selected; set
     /// `dirichlet_epsilon=0` (the default) to use the config's built-in
     /// value (training: 0.25 epsilon / 0.25 alpha; eval: none).
+    ///
+    /// PCR and temperature parameters override `SearchConfig::training()`
+    /// defaults when provided; eval mode ignores them.
     #[new]
     #[pyo3(signature = (
         simulations=800, c_puct=None, model_path=None, batch_size=32,
         tt_capacity=500_000, intra_threads=0, use_weighted_eval=false,
-        dirichlet_epsilon=0.0, dirichlet_alpha=0.3, eval_mode=false
+        dirichlet_epsilon=0.0, dirichlet_alpha=0.3, eval_mode=false,
+        pcr_p_full=None, pcr_n_full=None, pcr_n_fast=None,
+        temperature_high=None, temperature_low=None, temperature_threshold=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -688,6 +692,12 @@ impl PyMctsSearch {
         dirichlet_epsilon: f32,
         dirichlet_alpha: f64,
         eval_mode: bool,
+        pcr_p_full: Option<f32>,
+        pcr_n_full: Option<u32>,
+        pcr_n_fast: Option<u32>,
+        temperature_high: Option<f32>,
+        temperature_low: Option<f32>,
+        temperature_threshold: Option<u32>,
     ) -> PyResult<Self> {
         let evaluator: Box<dyn Evaluator> = match model_path {
             Some(path) => {
@@ -711,9 +721,28 @@ impl PyMctsSearch {
         }
         if let Some(c_puct) = c_puct {
             search.set_c_puct(c_puct);
-        } else if !eval_mode {
-            // Preserve the historical Python binding default for self-play.
-            search.set_c_puct(1.5);
+        }
+        // Apply PCR overrides (training mode only — eval uses p_full=1.0).
+        if !eval_mode {
+            let cfg = search.config_mut();
+            if let Some(v) = pcr_p_full {
+                cfg.pcr.p_full = v;
+            }
+            if let Some(v) = pcr_n_full {
+                cfg.pcr.n_full = v;
+            }
+            if let Some(v) = pcr_n_fast {
+                cfg.pcr.n_fast = v;
+            }
+            if let Some(v) = temperature_high {
+                cfg.temperature.tau_max = v;
+            }
+            if let Some(v) = temperature_low {
+                cfg.temperature.tau_min = v;
+            }
+            if let Some(v) = temperature_threshold {
+                cfg.temperature.hard_greedy_ply = v;
+            }
         }
         search.set_batch_size(batch_size);
         search.set_tt_capacity(tt_capacity);
