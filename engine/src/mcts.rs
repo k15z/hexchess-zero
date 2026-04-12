@@ -248,22 +248,68 @@ pub fn dynamic_c_puct(base: f32, c2: f32, parent_visits: u32) -> f32 {
 // Evaluator trait
 // ---------------------------------------------------------------------------
 
-/// Trait for position evaluation, returning a policy vector and a WDL
-/// probability distribution.
+/// Neural network evaluation result.
+///
+/// Contains all outputs from the network: the main policy and WDL heads used
+/// by MCTS, plus auxiliary heads (MLH, STV, aux_policy) that provide
+/// additional signals for search and diagnostics.
+#[derive(Clone, Debug)]
+pub struct EvalResult {
+    /// Policy distribution (softmaxed) over move indices.
+    /// Length: `serialization::num_move_indices()`.
+    pub policy: Vec<f32>,
+
+    /// Win/Draw/Loss probabilities from the terminal WDL head.
+    /// Sums to 1.0. Index 0 = Win, 1 = Draw, 2 = Loss.
+    pub wdl: [f32; 3],
+
+    /// Estimated plies remaining until game end (normalized by mlh_scale=100).
+    /// Raw value from network; multiply by 100 to get plies.
+    /// Used for progress detection and preferring shorter wins.
+    pub mlh: f32,
+
+    /// Short-term (horizon ~8 plies) WDL probabilities.
+    /// Useful for detecting tactical instability (stv ≠ wdl suggests sharp position).
+    pub stv: [f32; 3],
+
+    /// Opponent's expected reply distribution.
+    /// Used for move ordering and forcing-sequence detection.
+    pub aux_policy: Vec<f32>,
+}
+
+impl EvalResult {
+    /// Create an EvalResult with default auxiliary outputs.
+    ///
+    /// Used by heuristic evaluators that don't have real predictions for
+    /// MLH/STV/aux_policy.
+    pub fn from_policy_wdl(policy: Vec<f32>, wdl: [f32; 3]) -> Self {
+        let num_moves = policy.len();
+        Self {
+            policy,
+            wdl,
+            mlh: 0.5, // 50 plies normalized
+            stv: wdl, // short-term same as long-term for heuristics
+            aux_policy: vec![0.0; num_moves], // no opponent prediction
+        }
+    }
+}
+
+/// Trait for position evaluation, returning policy, WDL, and auxiliary heads.
 ///
 /// The policy vector is a probability distribution over move indices (length
-/// `serialization::num_move_indices()`). The value is `[W, D, L]` — win,
+/// `serialization::num_move_indices()`). The WDL is `[W, D, L]` — win,
 /// draw, and loss probabilities from the side-to-move's perspective, summing
-/// to 1. Historically this was a single scalar `W - L`; carrying the full
-/// distribution lets MCTS drive resignation off real `P(W)` and lets an
-/// optional draw-contempt knob reshape PUCT Q.
+/// to 1. Auxiliary heads (MLH, STV, aux_policy) provide additional signals:
+/// - MLH: estimated plies to game end (for progress/shuffle detection)
+/// - STV: short-term WDL (for tactical instability detection)
+/// - aux_policy: opponent's expected reply (for move ordering)
 pub trait Evaluator: Send + Sync {
-    fn evaluate(&self, state: &GameState) -> (Vec<f32>, [f32; 3]);
+    fn evaluate(&self, state: &GameState) -> EvalResult;
 
     /// Evaluate multiple positions in a single batch. The default implementation
     /// calls `evaluate` sequentially; backends that support batched inference
     /// (e.g. ONNX Runtime) should override this for better throughput.
-    fn evaluate_batch(&self, states: &[&GameState]) -> Vec<(Vec<f32>, [f32; 3])> {
+    fn evaluate_batch(&self, states: &[&GameState]) -> Vec<EvalResult> {
         states.iter().map(|s| self.evaluate(s)).collect()
     }
 }
@@ -284,7 +330,7 @@ pub fn scalar_to_wdl(v: f32) -> [f32; 3] {
 pub struct HeuristicEvaluator;
 
 impl Evaluator for HeuristicEvaluator {
-    fn evaluate(&self, state: &GameState) -> (Vec<f32>, [f32; 3]) {
+    fn evaluate(&self, state: &GameState) -> EvalResult {
         let moves = state.legal_moves();
         let num_indices = serialization::num_move_indices();
         let mut policy = vec![0.0f32; num_indices];
@@ -302,7 +348,7 @@ impl Evaluator for HeuristicEvaluator {
         let cp = eval::evaluate(state) as f32;
         let value = (cp / eval::CP_TANH_SCALE).tanh();
 
-        (policy, scalar_to_wdl(value))
+        EvalResult::from_policy_wdl(policy, scalar_to_wdl(value))
     }
 }
 
@@ -331,7 +377,7 @@ impl WeightedHeuristicEvaluator {
 }
 
 impl Evaluator for WeightedHeuristicEvaluator {
-    fn evaluate(&self, state: &GameState) -> (Vec<f32>, [f32; 3]) {
+    fn evaluate(&self, state: &GameState) -> EvalResult {
         let moves = state.legal_moves();
         let num_indices = serialization::num_move_indices();
         let mut policy = vec![0.0f32; num_indices];
@@ -373,7 +419,7 @@ impl Evaluator for WeightedHeuristicEvaluator {
         let cp = eval::evaluate_weighted(state, &self.weights) as f32;
         let value = (cp / eval::CP_TANH_SCALE).tanh();
 
-        (policy, scalar_to_wdl(value))
+        EvalResult::from_policy_wdl(policy, scalar_to_wdl(value))
     }
 }
 
@@ -805,17 +851,17 @@ impl MctsSearch {
                         ]
                     } else {
                         self.tt_misses += 1;
-                        let (policy, wdl) = self.evaluator.evaluate(state);
+                        let result = self.evaluator.evaluate(state);
                         Self::expand_nodes(
                             &mut self.nodes,
                             &self.config,
                             self.rng.as_mut(),
                             node_idx,
                             state,
-                            &policy,
+                            &result.policy,
                         );
-                        self.tt_insert(key, (policy, wdl));
-                        [wdl[0] as f64, wdl[1] as f64, wdl[2] as f64]
+                        self.tt_insert(key, (result.policy, result.wdl));
+                        [result.wdl[0] as f64, result.wdl[1] as f64, result.wdl[2] as f64]
                     }
                 }
             }
@@ -923,7 +969,7 @@ impl MctsSearch {
                 }
             }
 
-            let eval_results: Vec<(Vec<f32>, [f32; 3])> = if eval_indices.is_empty() {
+            let eval_results: Vec<EvalResult> = if eval_indices.is_empty() {
                 Vec::new()
             } else {
                 let states_for_eval: Vec<&GameState> = eval_indices
@@ -938,7 +984,7 @@ impl MctsSearch {
 
                 let wdl = if let Some(ref leaf_state) = leaf.leaf_state {
                     let result_idx = seen_keys[&leaf.key];
-                    let (policy, wdl) = &eval_results[result_idx];
+                    let result = &eval_results[result_idx];
                     let node_idx = *leaf.path.last().unwrap();
 
                     if !self.nodes[node_idx].is_expanded {
@@ -948,11 +994,11 @@ impl MctsSearch {
                             self.rng.as_mut(),
                             node_idx,
                             leaf_state,
-                            policy,
+                            &result.policy,
                         );
-                        self.tt_insert(leaf.key, (policy.clone(), *wdl));
+                        self.tt_insert(leaf.key, (result.policy.clone(), result.wdl));
                     }
-                    [wdl[0] as f64, wdl[1] as f64, wdl[2] as f64]
+                    [result.wdl[0] as f64, result.wdl[1] as f64, result.wdl[2] as f64]
                 } else {
                     leaf.terminal_wdl
                 };
@@ -1719,24 +1765,24 @@ mod tests {
     fn heuristic_evaluator_returns_valid_policy() {
         let evaluator = HeuristicEvaluator;
         let state = GameState::new();
-        let (policy, wdl) = evaluator.evaluate(&state);
+        let result = evaluator.evaluate(&state);
 
         // Starting position is symmetric — scalar W−L should be near zero
         // and the WDL distribution should sum to 1.
-        let value = wdl[0] - wdl[2];
+        let value = result.wdl[0] - result.wdl[2];
         assert!(
             value.abs() < 1e-4,
             "value should be ~0.0 for starting pos, got {}",
             value
         );
-        let wdl_sum = wdl[0] + wdl[1] + wdl[2];
+        let wdl_sum = result.wdl[0] + result.wdl[1] + result.wdl[2];
         assert!(
             (wdl_sum - 1.0).abs() < 1e-4,
             "wdl should sum to 1, got {wdl_sum}"
         );
 
         // Policy should sum to ~1 over legal moves.
-        let sum: f32 = policy.iter().sum();
+        let sum: f32 = result.policy.iter().sum();
         let legal_count = state.legal_moves().len();
         if legal_count > 0 {
             assert!(
@@ -1746,7 +1792,7 @@ mod tests {
             );
 
             // All legal moves should have nonzero probability.
-            let nonzero: Vec<f32> = policy.iter().copied().filter(|&p| p > 0.0).collect();
+            let nonzero: Vec<f32> = result.policy.iter().copied().filter(|&p| p > 0.0).collect();
             assert_eq!(nonzero.len(), legal_count);
         }
     }
@@ -1870,13 +1916,13 @@ mod tests {
     }
 
     impl Evaluator for CountingEvaluator {
-        fn evaluate(&self, state: &GameState) -> (Vec<f32>, [f32; 3]) {
+        fn evaluate(&self, state: &GameState) -> EvalResult {
             self.single_calls
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             HeuristicEvaluator.evaluate(state)
         }
 
-        fn evaluate_batch(&self, states: &[&GameState]) -> Vec<(Vec<f32>, [f32; 3])> {
+        fn evaluate_batch(&self, states: &[&GameState]) -> Vec<EvalResult> {
             self.batch_calls
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             states
@@ -1889,10 +1935,10 @@ mod tests {
     /// Wrapper to share a CountingEvaluator via Arc while implementing Evaluator.
     struct ArcEval(std::sync::Arc<CountingEvaluator>);
     impl Evaluator for ArcEval {
-        fn evaluate(&self, state: &GameState) -> (Vec<f32>, [f32; 3]) {
+        fn evaluate(&self, state: &GameState) -> EvalResult {
             self.0.evaluate(state)
         }
-        fn evaluate_batch(&self, states: &[&GameState]) -> Vec<(Vec<f32>, [f32; 3])> {
+        fn evaluate_batch(&self, states: &[&GameState]) -> Vec<EvalResult> {
             self.0.evaluate_batch(states)
         }
     }

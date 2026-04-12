@@ -12,20 +12,26 @@ from .model import build_model
 
 
 class _OnnxExportWrapper(torch.nn.Module):
-    """Wraps HexChessNet to return only (policy, wdl) as a tuple.
+    """Wraps HexChessNet to return all heads as a tuple for ONNX export.
 
-    The Rust engine's OnnxEvaluator only reads the 'policy' and 'value'
-    outputs, so we drop MLH/STV/aux_policy at export time to keep the
-    inference contract stable.
+    Exports: (policy, wdl, mlh, stv, aux_policy).
+
+    - policy: main policy logits over move indices
+    - wdl (exported as "value"): terminal Win/Draw/Loss logits
+    - mlh: moves-left head (normalized plies estimate)
+    - stv: short-term value WDL logits
+    - aux_policy: opponent-reply policy logits
     """
 
     def __init__(self, model: torch.nn.Module):
         super().__init__()
         self.model = model
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self, x: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         out = self.model(x)
-        return out["policy"], out["wdl"]
+        return out["policy"], out["wdl"], out["mlh"], out["stv"], out["aux_policy"]
 
 
 def export_to_onnx(
@@ -70,11 +76,14 @@ def export_to_onnx(
         dummy_input,
         str(output_path),
         input_names=["board"],
-        output_names=["policy", "value"],
+        output_names=["policy", "value", "mlh", "stv", "aux_policy"],
         dynamic_axes={
             "board": {0: "batch_size"},
             "policy": {0: "batch_size"},
             "value": {0: "batch_size"},
+            "mlh": {0: "batch_size"},
+            "stv": {0: "batch_size"},
+            "aux_policy": {0: "batch_size"},
         },
         opset_version=17,
     )
@@ -112,8 +121,12 @@ def verify_onnx(onnx_path: Path) -> None:
         cfg = _BaseConfig()
         dummy = np.random.randn(1, cfg.board_channels, cfg.board_height, cfg.board_width).astype(np.float32)
         outputs = session.run(None, {"board": dummy})
-        policy, value = outputs
-        print(f"  Inference test: policy shape={policy.shape}, WDL shape={value.shape}")
-        print(f"  WDL logits: {value[0]}")
+        policy, value, mlh, stv, aux_policy = outputs
+        print(f"  Inference test:")
+        print(f"    policy shape={policy.shape}, WDL shape={value.shape}")
+        print(f"    mlh shape={mlh.shape}, stv shape={stv.shape}, aux_policy shape={aux_policy.shape}")
+        print(f"    WDL logits: {value[0]}")
+        print(f"    MLH (normalized plies): {mlh[0][0]:.3f}")
+        print(f"    STV logits: {stv[0]}")
     except ImportError:
         print("  (onnxruntime not installed, skipping inference test)")

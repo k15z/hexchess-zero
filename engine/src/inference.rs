@@ -38,7 +38,7 @@ mod onnx_impl {
     use ort::session::Session;
 
     use crate::game::GameState;
-    use crate::mcts::Evaluator;
+    use crate::mcts::{EvalResult, Evaluator};
     use crate::serialization;
 
     /// Neural network evaluator backed by ONNX Runtime.
@@ -71,11 +71,11 @@ mod onnx_impl {
     }
 
     impl Evaluator for OnnxEvaluator {
-        fn evaluate(&self, state: &GameState) -> (Vec<f32>, [f32; 3]) {
+        fn evaluate(&self, state: &GameState) -> EvalResult {
             self.evaluate_batch(&[state]).into_iter().next().unwrap()
         }
 
-        fn evaluate_batch(&self, states: &[&GameState]) -> Vec<(Vec<f32>, [f32; 3])> {
+        fn evaluate_batch(&self, states: &[&GameState]) -> Vec<EvalResult> {
             let n = states.len();
             assert!(n > 0, "evaluate_batch called with empty slice");
 
@@ -110,9 +110,30 @@ mod onnx_impl {
                 .try_extract_array::<f32>()
                 .expect("failed to extract value");
 
+            // Extract MLH (moves-left head): shape [N, 1]
+            let mlh_value = outputs.remove("mlh").expect("no 'mlh' output");
+            let mlh_array = mlh_value
+                .try_extract_array::<f32>()
+                .expect("failed to extract mlh");
+
+            // Extract STV (short-term value) logits: shape [N, 3]
+            let stv_value = outputs.remove("stv").expect("no 'stv' output");
+            let stv_array = stv_value
+                .try_extract_array::<f32>()
+                .expect("failed to extract stv");
+
+            // Extract aux_policy logits: shape [N, num_move_indices]
+            let aux_policy_value = outputs.remove("aux_policy").expect("no 'aux_policy' output");
+            let aux_policy_array = aux_policy_value
+                .try_extract_array::<f32>()
+                .expect("failed to extract aux_policy");
+
             let policy_size = serialization::num_move_indices();
             let policy_flat = policy_array.as_slice().expect("non-contiguous policy");
             let value_flat = value_array.as_slice().expect("non-contiguous value");
+            let mlh_flat = mlh_array.as_slice().expect("non-contiguous mlh");
+            let stv_flat = stv_array.as_slice().expect("non-contiguous stv");
+            let aux_policy_flat = aux_policy_array.as_slice().expect("non-contiguous aux_policy");
 
             let mut results = Vec::with_capacity(n);
             for i in 0..n {
@@ -131,7 +152,32 @@ mod onnx_impl {
                 // Full WDL distribution is carried through MCTS; the scalar
                 // collapse happens lazily via `q_value()` when contempt is 0.
                 let wdl = super::softmax_wdl(&value_flat[i * 3..(i + 1) * 3]);
-                results.push((policy, wdl));
+
+                // MLH: raw normalized value from network (multiply by mlh_scale=100 to get plies)
+                let mlh = mlh_flat[i];
+
+                // STV: short-term WDL softmaxed
+                let stv = super::softmax_wdl(&stv_flat[i * 3..(i + 1) * 3]);
+
+                // Aux policy: softmax over opponent's expected reply distribution
+                let aux_logits = &aux_policy_flat[i * policy_size..(i + 1) * policy_size];
+                let aux_max = aux_logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                let mut aux_policy: Vec<f32> =
+                    aux_logits.iter().map(|&x| (x - aux_max).exp()).collect();
+                let aux_sum: f32 = aux_policy.iter().sum();
+                if aux_sum > 0.0 {
+                    for p in &mut aux_policy {
+                        *p /= aux_sum;
+                    }
+                }
+
+                results.push(EvalResult {
+                    policy,
+                    wdl,
+                    mlh,
+                    stv,
+                    aux_policy,
+                });
             }
 
             results
@@ -150,7 +196,7 @@ mod tract_impl {
     use tract_onnx::prelude::*;
 
     use crate::game::GameState;
-    use crate::mcts::Evaluator;
+    use crate::mcts::{EvalResult, Evaluator};
     use crate::serialization;
 
     type TractModel = SimplePlan<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>;
@@ -168,6 +214,9 @@ mod tract_impl {
         model: Mutex<TractModel>,
         policy_idx: usize,
         value_idx: usize,
+        mlh_idx: usize,
+        stv_idx: usize,
+        aux_policy_idx: usize,
     }
 
     fn find_output_index(graph: &TypedModel, name: &str) -> Option<usize> {
@@ -184,11 +233,20 @@ mod tract_impl {
                 .expect("model has no output named 'policy'");
             let value_idx =
                 find_output_index(&optimized, "value").expect("model has no output named 'value'");
+            let mlh_idx =
+                find_output_index(&optimized, "mlh").expect("model has no output named 'mlh'");
+            let stv_idx =
+                find_output_index(&optimized, "stv").expect("model has no output named 'stv'");
+            let aux_policy_idx = find_output_index(&optimized, "aux_policy")
+                .expect("model has no output named 'aux_policy'");
             let model = optimized.into_runnable()?;
             Ok(Self {
                 model: Mutex::new(model),
                 policy_idx,
                 value_idx,
+                mlh_idx,
+                stv_idx,
+                aux_policy_idx,
             })
         }
 
@@ -207,7 +265,7 @@ mod tract_impl {
             Self::from_typed_model(optimized)
         }
 
-        fn run_inference(&self, state: &GameState) -> (Vec<f32>, [f32; 3]) {
+        fn run_inference(&self, state: &GameState) -> EvalResult {
             let c = serialization::NUM_CHANNELS;
             let d = serialization::BOARD_DIM;
 
@@ -229,6 +287,15 @@ mod tract_impl {
             let value_tensor = outputs[self.value_idx]
                 .to_array_view::<f32>()
                 .expect("failed to extract value");
+            let mlh_tensor = outputs[self.mlh_idx]
+                .to_array_view::<f32>()
+                .expect("failed to extract mlh");
+            let stv_tensor = outputs[self.stv_idx]
+                .to_array_view::<f32>()
+                .expect("failed to extract stv");
+            let aux_policy_tensor = outputs[self.aux_policy_idx]
+                .to_array_view::<f32>()
+                .expect("failed to extract aux_policy");
 
             let logits: &[f32] = policy_tensor.as_slice().unwrap();
 
@@ -243,12 +310,33 @@ mod tract_impl {
             }
 
             let wdl = crate::inference::softmax_wdl(value_tensor.as_slice().unwrap());
-            (policy, wdl)
+            let mlh = mlh_tensor.as_slice().unwrap()[0];
+            let stv = crate::inference::softmax_wdl(stv_tensor.as_slice().unwrap());
+
+            // Softmax over aux_policy logits
+            let aux_logits: &[f32] = aux_policy_tensor.as_slice().unwrap();
+            let aux_max = aux_logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let mut aux_policy: Vec<f32> =
+                aux_logits.iter().map(|&x| (x - aux_max).exp()).collect();
+            let aux_sum: f32 = aux_policy.iter().sum();
+            if aux_sum > 0.0 {
+                for p in &mut aux_policy {
+                    *p /= aux_sum;
+                }
+            }
+
+            EvalResult {
+                policy,
+                wdl,
+                mlh,
+                stv,
+                aux_policy,
+            }
         }
     }
 
     impl Evaluator for TractEvaluator {
-        fn evaluate(&self, state: &GameState) -> (Vec<f32>, [f32; 3]) {
+        fn evaluate(&self, state: &GameState) -> EvalResult {
             self.run_inference(state)
         }
     }
@@ -309,15 +397,15 @@ mod tests {
         let model_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../.data/gen1/model/best.onnx");
         let eval = super::TractEvaluator::from_path(model_path).expect("load failed");
         let state = GameState::new();
-        let (policy, wdl) = eval.evaluate(&state);
+        let result = eval.evaluate(&state);
 
-        assert_eq!(policy.len(), serialization::num_move_indices());
-        let wdl_sum = wdl[0] + wdl[1] + wdl[2];
+        assert_eq!(result.policy.len(), serialization::num_move_indices());
+        let wdl_sum = result.wdl[0] + result.wdl[1] + result.wdl[2];
         assert!((wdl_sum - 1.0).abs() < 1e-4, "wdl sum {wdl_sum} != 1.0");
-        for &p in &wdl {
+        for &p in &result.wdl {
             assert!((0.0..=1.0).contains(&p), "wdl probability {p} out of range");
         }
-        let sum: f32 = policy.iter().sum();
+        let sum: f32 = result.policy.iter().sum();
         assert!((sum - 1.0).abs() < 0.01, "policy sum {sum} != 1.0");
     }
 
@@ -331,25 +419,25 @@ mod tests {
         let onnx = super::OnnxEvaluator::from_path(model_path).expect("onnx load failed");
         let state = GameState::new();
 
-        let (tract_policy, tract_wdl) = tract.evaluate(&state);
-        let (onnx_policy, onnx_wdl) = onnx.evaluate(&state);
+        let tract_result = tract.evaluate(&state);
+        let onnx_result = onnx.evaluate(&state);
 
         for i in 0..3 {
             assert!(
-                (tract_wdl[i] - onnx_wdl[i]).abs() < 0.01,
+                (tract_result.wdl[i] - onnx_result.wdl[i]).abs() < 0.01,
                 "wdl[{i}] mismatch: tract={}, onnx={}",
-                tract_wdl[i],
-                onnx_wdl[i],
+                tract_result.wdl[i],
+                onnx_result.wdl[i],
             );
         }
 
-        let tract_top = tract_policy
+        let tract_top = tract_result.policy
             .iter()
             .enumerate()
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
             .unwrap()
             .0;
-        let onnx_top = onnx_policy
+        let onnx_top = onnx_result.policy
             .iter()
             .enumerate()
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
