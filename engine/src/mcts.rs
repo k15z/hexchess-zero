@@ -1458,9 +1458,13 @@ impl MctsSearch {
         // Use the child that extract_result actually selected (which may have
         // been temperature-sampled). Falls back to LCB/visit-max if no prior
         // search recorded a selection (e.g. direct aux_opponent_policy call
-        // without going through extract_result).
+        // without going through extract_result), or if the stored index is
+        // stale (not a member of the current root's children).
         let root_children = self.nodes[0].children.clone();
-        let best_child_idx = if let Some(idx) = self.last_selected_child_idx {
+        let stored_idx_valid = self
+            .last_selected_child_idx
+            .is_some_and(|idx| root_children.contains(&idx));
+        let best_child_idx = if let Some(idx) = self.last_selected_child_idx.filter(|_| stored_idx_valid) {
             idx
         } else if self.config.use_lcb {
             self.lcb_best_child_idx(&root_children).or_else(|| {
@@ -2328,6 +2332,128 @@ mod tests {
         assert!(
             full_count > 0 && fast_count > 0,
             "both branches should fire"
+        );
+    }
+
+    /// Regression test: fast PCR moves must use greedy selection (temp=0),
+    /// not the temperature schedule. With greedy selection, the same position
+    /// should always produce the same move regardless of RNG seed.
+    #[test]
+    fn fast_pcr_uses_greedy_selection() {
+        use rand::SeedableRng;
+        use rand::rngs::StdRng;
+
+        let state = GameState::new();
+
+        // Force PCR to always take the fast branch (p_full = 0).
+        let mut search_a = MctsSearch::new(Box::new(HeuristicEvaluator));
+        search_a.config_mut().pcr = PcrConfig {
+            p_full: 0.0,
+            n_full: 100,
+            n_fast: 50,
+        };
+        search_a.config_mut().dirichlet = None;
+        // High temperature schedule that would cause variance if used.
+        search_a.config_mut().temperature = TemperatureSchedule {
+            tau_max: 1.5,
+            tau_min: 1.0,
+            halflife: 10.0,
+            hard_greedy_ply: 100,
+        };
+
+        let mut search_b = MctsSearch::new(Box::new(HeuristicEvaluator));
+        search_b.config_mut().pcr = search_a.config().pcr.clone();
+        search_b.config_mut().dirichlet = None;
+        search_b.config_mut().temperature = search_a.config().temperature.clone();
+
+        // Different RNG seeds — if temperature were applied, moves could differ.
+        let mut rng_a = StdRng::seed_from_u64(111);
+        let mut rng_b = StdRng::seed_from_u64(999);
+
+        let outcome_a = search_a.run_pcr(&state, 0, &mut rng_a);
+        let outcome_b = search_b.run_pcr(&state, 0, &mut rng_b);
+
+        assert!(!outcome_a.was_full_search);
+        assert!(!outcome_b.was_full_search);
+        // Compare moves field by field since Move doesn't derive PartialEq.
+        assert_eq!(
+            outcome_a.best_move.from, outcome_b.best_move.from,
+            "fast PCR should be greedy (deterministic), not temperature-sampled"
+        );
+        assert_eq!(
+            outcome_a.best_move.to, outcome_b.best_move.to,
+            "fast PCR should be greedy (deterministic), not temperature-sampled"
+        );
+        assert_eq!(
+            outcome_a.best_move.promotion, outcome_b.best_move.promotion,
+            "fast PCR should be greedy (deterministic), not temperature-sampled"
+        );
+    }
+
+    /// Regression test: aux_opponent_policy must report grandchildren of the
+    /// child actually selected by extract_result (which may be temperature-
+    /// sampled), not an independent visit-max recomputation.
+    #[test]
+    fn aux_opponent_policy_follows_temperature_sampled_child() {
+        let state = GameState::new();
+        let legal = state.legal_moves();
+        assert!(legal.len() >= 2);
+
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        search.config_mut().use_lcb = false;
+
+        // Build a synthetic tree: root with two children, each with disjoint
+        // grandchildren. We'll manually set last_selected_child_idx to the
+        // lower-visit child (simulating temperature sampling) and verify
+        // aux_opponent_policy reports that child's grandchildren.
+        let mut root = MctsNode::new(None, None, 1.0);
+        root.is_expanded = true;
+        search.nodes.push(root);
+
+        // c_a: high visits (visit-max would pick this)
+        let mut c_a = MctsNode::new(Some(legal[0]), Some(0), 0.5);
+        c_a.visit_count = 200;
+        c_a.is_expanded = true;
+        search.nodes.push(c_a);
+        search.nodes[0].children.push(1);
+
+        // c_b: lower visits (temperature sampling picked this)
+        let mut c_b = MctsNode::new(Some(legal[1]), Some(1), 0.5);
+        c_b.visit_count = 50;
+        c_b.is_expanded = true;
+        search.nodes.push(c_b);
+        search.nodes[0].children.push(2);
+
+        // Grandchildren with disjoint action indices so we can tell them apart.
+        let idx_gc_a = 100usize;
+        let idx_gc_b = 200usize;
+        let root_idx_gc_a = serialization::mirror_move_index(idx_gc_a);
+        let root_idx_gc_b = serialization::mirror_move_index(idx_gc_b);
+        assert_ne!(root_idx_gc_a, root_idx_gc_b);
+
+        let mut gc_a = MctsNode::new(Some(legal[0]), Some(idx_gc_a), 1.0);
+        gc_a.visit_count = 80;
+        search.nodes.push(gc_a);
+        search.nodes[1].children.push(3); // gc_a under c_a
+
+        let mut gc_b = MctsNode::new(Some(legal[1]), Some(idx_gc_b), 1.0);
+        gc_b.visit_count = 30;
+        search.nodes.push(gc_b);
+        search.nodes[2].children.push(4); // gc_b under c_b
+
+        // Simulate temperature sampling having picked c_b (index 2).
+        search.last_selected_child_idx = Some(2);
+
+        let aux = search.aux_opponent_policy().expect("should have aux");
+
+        // Aux should report c_b's grandchildren, not c_a's.
+        assert!(
+            aux[root_idx_gc_b] > 0.0,
+            "aux should report grandchildren of the temperature-sampled child (c_b)"
+        );
+        assert!(
+            aux[root_idx_gc_a] == 0.0,
+            "aux should NOT report grandchildren of the visit-max child (c_a)"
         );
     }
 
