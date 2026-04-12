@@ -101,7 +101,7 @@ def test_npz_schema_dtypes_and_shapes(tmp_path: Path) -> None:
     data = np.load(npz_path)
     n = 5
     expected = {
-        "boards": ((n, 22, 11, 11), np.int8),
+        "boards": ((n, 22, 11, 11), np.float16),
         "policy": ((n, NUM_MOVES), np.float16),
         "policy_aux_opp": ((n, NUM_MOVES), np.float16),
         "legal_mask": ((n, NUM_MOVES), np.bool_),
@@ -311,5 +311,4 @@ def test_legal_mask_from_moves_is_stm_framed_black() -> None:
         "black-to-move legal mask equals the absolute-frame mask on an "
         "asymmetric position — the STM remap silently reverted to identity"
     )
-
 
