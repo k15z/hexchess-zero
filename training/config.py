@@ -106,8 +106,12 @@ class _BaseConfig:
     pcr_n_fast: int = 160
 
     # --- Resignation (plan §1.10) ---
+    # Use expected score (W + 0.5*D) rather than raw P(win). In this
+    # draw-heavy regime, raw P(win) treats "nearly certain draw" as
+    # "nearly certain loss" and over-resigns badly.
     resign_threshold: float = 0.05
     resign_streak: int = 5
+    resign_min_plies: int = 40
     resign_skip_prob: float = 0.10
 
     # --- Gating (plan §4.6) ---
@@ -227,6 +231,7 @@ class AsyncConfig(_BaseConfig):
         _check(0.0 < self.resign_threshold < 1.0,
                "resign_threshold must be in (0, 1)")
         _check(self.resign_streak >= 1, "resign_streak must be >= 1")
+        _check(self.resign_min_plies >= 0, "resign_min_plies must be >= 0")
         _check(0.0 <= self.resign_skip_prob <= 1.0,
                "resign_skip_prob must be in [0, 1]")
 
