@@ -744,6 +744,18 @@ impl PyMctsSearch {
         self.search.config_mut().resign.enabled = enabled;
     }
 
+    /// Set the P(win) threshold below which a side is considered
+    /// resigning. Default is 0.05 (5% win probability).
+    fn set_resign_threshold(&mut self, v_resign: f32) {
+        self.search.config_mut().resign.v_resign = v_resign;
+    }
+
+    /// Set how many consecutive below-threshold observations are needed
+    /// before resignation fires. Default is 5.
+    fn set_resign_streak(&mut self, k: usize) {
+        self.search.config_mut().resign.k = k;
+    }
+
     /// Run a Playout-Cap-Randomization search step. Returns a dict:
     ///   {best_move, value, wdl, nodes, was_full_search, policy_target (or None)}
     /// where `wdl` is a `(W, D, L)` tuple from the STM's perspective. Only

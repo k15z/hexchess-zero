@@ -429,7 +429,9 @@ impl MctsNode {
 
     /// Scalar `W - L` projection of the node's average WDL. This is the
     /// canonical AlphaZero Q and is what PUCT compares when `draw_utility`
-    /// is 0.
+    /// is 0. Currently only used in tests; the search itself goes through
+    /// [`Self::q_value_contempt`] which reduces to this when contempt is 0.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn q_value(&self) -> f64 {
         if self.visit_count == 0 {
             0.0
@@ -1491,7 +1493,8 @@ impl MctsSearch {
         if c.visit_count == 0 {
             return None;
         }
-        let q = -c.q_value();
+        let draw_utility = self.config.draw_utility as f64;
+        let q = -c.q_value_contempt(draw_utility);
         if c.visit_count < 2 {
             return Some(q);
         }
