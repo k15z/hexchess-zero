@@ -1,13 +1,13 @@
-//! Integration tests for MCTS playing strength.
+//! MCTS tactical tests: unit-level tests that verify MCTS finds obvious
+//! tactical moves (captures, mates) and that value estimates have correct
+//! sign/perspective.
 //!
-//! The game-playing tests (mcts_beats_random, more_sims_beats_fewer_sims)
-//! are marked #[ignore] because they take ~60s. Run with:
-//!   cargo test --test mcts_strength -- --ignored
+//! Strength tests (mcts-vs-random, more-sims-vs-fewer) have been removed
+//! in favor of the paired-opening arena in Tier 2.
 
 use hexchess_engine::board::{Board, Color, HexCoord, Piece, PieceKind};
 use hexchess_engine::game::GameState;
 use hexchess_engine::mcts::{HeuristicEvaluator, MctsSearch};
-use rand::prelude::IndexedRandom;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -26,61 +26,6 @@ fn make_board_with_pieces(pieces: &[(i8, i8, PieceKind, Color)]) -> Board {
         }
     }
     board
-}
-
-/// Play a game: MCTS (with given sims) vs random. Returns the winner color or None for draw.
-fn play_mcts_vs_random(mcts_color: Color, mcts_sims: u32) -> Option<Color> {
-    let mut game = GameState::new();
-    let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
-    let mut rng = rand::rng();
-
-    for _ in 0..300 {
-        if game.is_game_over() {
-            break;
-        }
-
-        if game.side_to_move() == mcts_color {
-            let result = search.search(&game, mcts_sims);
-            game.apply_move(result.best_move);
-        } else {
-            let moves = game.legal_moves();
-            if moves.is_empty() {
-                break;
-            }
-            let mv = *moves.choose(&mut rng).unwrap();
-            game.apply_move(mv);
-        }
-    }
-
-    match game.status() {
-        hexchess_engine::game::GameStatus::Checkmate(winner) => Some(winner),
-        _ => None,
-    }
-}
-
-/// Play MCTS vs MCTS and return the winner (None = draw).
-fn play_mcts_vs_mcts(white_sims: u32, black_sims: u32) -> Option<Color> {
-    let mut game = GameState::new();
-    let mut white_search = MctsSearch::new(Box::new(HeuristicEvaluator));
-    let mut black_search = MctsSearch::new(Box::new(HeuristicEvaluator));
-
-    for _ in 0..300 {
-        if game.is_game_over() {
-            break;
-        }
-
-        let result = if game.side_to_move() == Color::White {
-            white_search.search(&game, white_sims)
-        } else {
-            black_search.search(&game, black_sims)
-        };
-        game.apply_move(result.best_move);
-    }
-
-    match game.status() {
-        hexchess_engine::game::GameStatus::Checkmate(winner) => Some(winner),
-        _ => None,
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -164,69 +109,6 @@ fn mcts_finds_checkmate_in_1() {
         "MCTS should find checkmate in 1! Mate moves: {:?}, MCTS chose: {:?}",
         checkmate_moves,
         result.best_move,
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Test: MCTS (200 sims) beats random player
-// ---------------------------------------------------------------------------
-
-#[test]
-#[ignore] // slow (~50s): run with `cargo test -- --ignored`
-fn mcts_beats_random() {
-    let num_games = 20;
-    let mut mcts_wins = 0;
-    let mut random_wins = 0;
-    let mut draws = 0;
-
-    for i in 0..num_games {
-        let mcts_color = if i % 2 == 0 {
-            Color::White
-        } else {
-            Color::Black
-        };
-        match play_mcts_vs_random(mcts_color, 200) {
-            Some(winner) if winner == mcts_color => mcts_wins += 1,
-            Some(_) => random_wins += 1,
-            None => draws += 1,
-        }
-    }
-
-    let decided = mcts_wins + random_wins;
-    assert!(
-        decided > 0 && mcts_wins as f64 / decided as f64 >= 0.7,
-        "MCTS should beat random >= 70% of decided games, got {mcts_wins} wins, {random_wins} losses, {draws} draws",
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Test: More simulations beats fewer simulations
-// ---------------------------------------------------------------------------
-
-#[test]
-#[ignore] // slow (~60s): run with `cargo test -- --ignored`
-fn more_sims_beats_fewer_sims() {
-    let num_games = 10;
-    let mut high_wins = 0;
-    let mut low_wins = 0;
-    let mut draws = 0;
-
-    for i in 0..num_games {
-        let (white_sims, black_sims) = if i % 2 == 0 { (500, 50) } else { (50, 500) };
-        let high_is_white = white_sims > black_sims;
-
-        match play_mcts_vs_mcts(white_sims, black_sims) {
-            Some(Color::White) if high_is_white => high_wins += 1,
-            Some(Color::Black) if !high_is_white => high_wins += 1,
-            Some(_) => low_wins += 1,
-            None => draws += 1,
-        }
-    }
-
-    let decided = high_wins + low_wins;
-    assert!(
-        decided == 0 || high_wins as f64 / decided as f64 >= 0.5,
-        "500 sims should beat 50 sims >= 50% of decided games, got {high_wins} wins, {low_wins} losses, {draws} draws",
     );
 }
 
