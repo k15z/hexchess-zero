@@ -337,7 +337,9 @@ fn search_all_top_move_matches_search_move() {
 
 #[test]
 fn depth3_does_not_lose_to_depth2() {
-    let games = 4;
+    // Smoke test: 2 games (one per color). Full paired-opening strength
+    // testing lives in the Tier 2 arena.
+    let games = 2;
     let mut d3_losses = 0;
 
     for game_idx in 0..games {
