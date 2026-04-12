@@ -4,7 +4,7 @@ use pyo3::prelude::*;
 use numpy::ndarray::{Array3, Array4};
 use numpy::{IntoPyArray, PyArray3, PyArray4};
 
-use hexchess_engine::board::{self, Color, HexCoord, PieceKind};
+use hexchess_engine::board::{self, HexCoord, PieceKind};
 use hexchess_engine::eval::EvalWeights;
 use hexchess_engine::game::GameState;
 use hexchess_engine::inference::OnnxEvaluator;
