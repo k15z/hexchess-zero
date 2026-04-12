@@ -560,17 +560,19 @@ def _play_one_game_pcr(
                 aux_opp = np.zeros(num_moves, dtype=np.float32)
                 # Apply the selected move to get the opponent's legal replies.
                 game.apply(best_move)
-                if not game.is_game_over():
-                    opp_legal = game.legal_moves()
-                    opp_count = len(opp_legal)
-                    if opp_count > 0:
-                        inv = 1.0 / opp_count
-                        for mv in opp_legal:
-                            idx = game.policy_index(
-                                mv.from_q, mv.from_r, mv.to_q, mv.to_r, mv.promotion
-                            )
-                            aux_opp[idx] = inv
-                game.undo_move()
+                try:
+                    if not game.is_game_over():
+                        opp_legal = game.legal_moves()
+                        opp_count = len(opp_legal)
+                        if opp_count > 0:
+                            inv = 1.0 / opp_count
+                            for mv in opp_legal:
+                                idx = game.policy_index(
+                                    mv.from_q, mv.from_r, mv.to_q, mv.to_r, mv.promotion
+                                )
+                                aux_opp[idx] = inv
+                finally:
+                    game.undo_move()
 
             pos = PositionSample(
                 board=board_tensor.astype(np.float32),
@@ -905,4 +907,10 @@ def run_worker(cfg: AsyncConfig) -> None:
                 model_path=model_path,
                 dirichlet_epsilon=cfg.dirichlet_epsilon,
                 dirichlet_alpha=cfg.dirichlet_alpha,
+                pcr_p_full=cfg.pcr_p_full,
+                pcr_n_full=cfg.pcr_n_full,
+                pcr_n_fast=cfg.pcr_n_fast,
+                temperature_high=cfg.temperature_high,
+                temperature_low=cfg.temperature_low,
+                temperature_threshold=cfg.temperature_threshold,
             )
