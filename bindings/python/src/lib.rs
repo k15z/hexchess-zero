@@ -10,7 +10,6 @@ use hexchess_engine::game::GameState;
 use hexchess_engine::inference::OnnxEvaluator;
 use hexchess_engine::mcts::{
     DirichletConfig, Evaluator, HeuristicEvaluator, MctsSearch as EngineSearch, SearchConfig,
-    WeightedHeuristicEvaluator,
 };
 use hexchess_engine::minimax;
 use hexchess_engine::movegen::{self, Move as EngineMove};
@@ -683,7 +682,7 @@ impl PyMctsSearch {
     #[new]
     #[pyo3(signature = (
         simulations=800, c_puct=None, model_path=None, batch_size=32,
-        tt_capacity=500_000, intra_threads=0, use_weighted_eval=false,
+        tt_capacity=500_000, intra_threads=0,
         dirichlet_epsilon=0.0, dirichlet_alpha=0.3, eval_mode=false,
         pcr_p_full=None, pcr_n_full=None, pcr_n_fast=None,
         temperature_high=None, temperature_low=None, temperature_threshold=None,
@@ -696,7 +695,6 @@ impl PyMctsSearch {
         batch_size: usize,
         tt_capacity: usize,
         intra_threads: usize,
-        use_weighted_eval: bool,
         dirichlet_epsilon: f32,
         dirichlet_alpha: f64,
         eval_mode: bool,
@@ -715,13 +713,7 @@ impl PyMctsSearch {
                     })?;
                 Box::new(eval)
             }
-            None => {
-                if use_weighted_eval {
-                    Box::new(WeightedHeuristicEvaluator::new(EvalWeights::default()))
-                } else {
-                    Box::new(HeuristicEvaluator)
-                }
-            }
+            None => Box::new(HeuristicEvaluator::default()),
         };
         let mut search = EngineSearch::new(evaluator);
         if eval_mode {

@@ -326,43 +326,17 @@ pub fn scalar_to_wdl(v: f32) -> [f32; 3] {
 // HeuristicEvaluator
 // ---------------------------------------------------------------------------
 
-/// Uniform policy over legal moves with material-aware value estimate.
-pub struct HeuristicEvaluator;
-
-impl Evaluator for HeuristicEvaluator {
-    fn evaluate(&self, state: &GameState) -> EvalResult {
-        let moves = state.legal_moves();
-        let num_indices = serialization::num_move_indices();
-        let mut policy = vec![0.0f32; num_indices];
-        let stm = state.board.side_to_move;
-
-        if !moves.is_empty() {
-            let prob = 1.0 / moves.len() as f32;
-            for mv in &moves {
-                if let Some(idx) = serialization::stm_policy_index(mv, stm) {
-                    policy[idx] = prob;
-                }
-            }
-        }
-
-        let cp = eval::evaluate(state) as f32;
-        let value = (cp / eval::CP_TANH_SCALE).tanh();
-
-        EvalResult::from_policy_wdl(policy, scalar_to_wdl(value))
-    }
-}
-
-// ---------------------------------------------------------------------------
-// WeightedHeuristicEvaluator
-// ---------------------------------------------------------------------------
-
 /// One-ply lookahead policy with full positional evaluation.
-pub struct WeightedHeuristicEvaluator {
+///
+/// Uses the same `EvalWeights` scoring as minimax (material, mobility, pawn
+/// structure, king safety, etc.) to generate move probabilities via softmax.
+/// The value output is also derived from the weighted evaluation.
+pub struct HeuristicEvaluator {
     weights: eval::EvalWeights,
     policy_temperature: f32,
 }
 
-impl WeightedHeuristicEvaluator {
+impl HeuristicEvaluator {
     pub fn new(weights: eval::EvalWeights) -> Self {
         Self {
             weights,
@@ -376,7 +350,13 @@ impl WeightedHeuristicEvaluator {
     }
 }
 
-impl Evaluator for WeightedHeuristicEvaluator {
+impl Default for HeuristicEvaluator {
+    fn default() -> Self {
+        Self::new(eval::EvalWeights::default())
+    }
+}
+
+impl Evaluator for HeuristicEvaluator {
     fn evaluate(&self, state: &GameState) -> EvalResult {
         let moves = state.legal_moves();
         let num_indices = serialization::num_move_indices();
@@ -1814,12 +1794,12 @@ mod tests {
 
     /// Helper: build an evaluator that returns uniform policy and zero value.
     fn random_evaluator() -> Box<dyn Evaluator> {
-        Box::new(HeuristicEvaluator)
+        Box::new(HeuristicEvaluator::default())
     }
 
     #[test]
     fn heuristic_evaluator_returns_valid_policy() {
-        let evaluator = HeuristicEvaluator;
+        let evaluator = HeuristicEvaluator::default();
         let state = GameState::new();
         let result = evaluator.evaluate(&state);
 
@@ -1960,6 +1940,7 @@ mod tests {
     struct CountingEvaluator {
         single_calls: std::sync::atomic::AtomicU32,
         batch_calls: std::sync::atomic::AtomicU32,
+        inner: HeuristicEvaluator,
     }
 
     impl CountingEvaluator {
@@ -1967,6 +1948,7 @@ mod tests {
             Self {
                 single_calls: std::sync::atomic::AtomicU32::new(0),
                 batch_calls: std::sync::atomic::AtomicU32::new(0),
+                inner: HeuristicEvaluator::default(),
             }
         }
     }
@@ -1975,16 +1957,13 @@ mod tests {
         fn evaluate(&self, state: &GameState) -> EvalResult {
             self.single_calls
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            HeuristicEvaluator.evaluate(state)
+            self.inner.evaluate(state)
         }
 
         fn evaluate_batch(&self, states: &[&GameState]) -> Vec<EvalResult> {
             self.batch_calls
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            states
-                .iter()
-                .map(|s| HeuristicEvaluator.evaluate(s))
-                .collect()
+            states.iter().map(|s| self.inner.evaluate(s)).collect()
         }
     }
 
@@ -2344,7 +2323,7 @@ mod tests {
 
     #[test]
     fn set_config_without_seed_clears_internal_rng() {
-        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
         search.set_rng_seed(123);
         assert!(search.rng.is_some(), "set_rng_seed should initialize rng");
 
@@ -2406,7 +2385,7 @@ mod tests {
         use rand::rngs::StdRng;
 
         let state = GameState::new();
-        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
         search.config_mut().pcr = PcrConfig {
             p_full: 0.5,
             n_full: 40,
@@ -2444,7 +2423,7 @@ mod tests {
         let state = GameState::new();
 
         // Force PCR to always take the fast branch (p_full = 0).
-        let mut search_a = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut search_a = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
         search_a.config_mut().pcr = PcrConfig {
             p_full: 0.0,
             n_full: 100,
@@ -2459,7 +2438,7 @@ mod tests {
             hard_greedy_ply: 100,
         };
 
-        let mut search_b = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut search_b = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
         search_b.config_mut().pcr = search_a.config().pcr.clone();
         search_b.config_mut().dirichlet = None;
         search_b.config_mut().temperature = search_a.config().temperature.clone();
@@ -2497,7 +2476,7 @@ mod tests {
         let legal = state.legal_moves();
         assert!(legal.len() >= 2);
 
-        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
         search.config_mut().use_lcb = false;
 
         // Build a synthetic tree: root with two children, each with disjoint
@@ -2558,8 +2537,8 @@ mod tests {
     #[test]
     fn seeded_temperature_search_is_reproducible() {
         let state = GameState::new();
-        let mut a = MctsSearch::new(Box::new(HeuristicEvaluator));
-        let mut b = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut a = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
+        let mut b = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
         a.set_rng_seed(7);
         b.set_rng_seed(7);
 
@@ -2577,7 +2556,7 @@ mod tests {
 
     #[test]
     fn ptp_hand_computed_example() {
-        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
         search.config_mut().forced_playout_k = 2.0;
 
         let mut root = MctsNode::new(None, None, 1.0);
@@ -2622,7 +2601,7 @@ mod tests {
 
     #[test]
     fn lcb_picks_lower_variance_child() {
-        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
         let legal = GameState::new().legal_moves();
         assert!(legal.len() >= 2);
 
@@ -2658,7 +2637,7 @@ mod tests {
     /// it — and that the policy target still tracks visit counts.
     #[test]
     fn extract_result_honors_lcb_when_enabled() {
-        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
         search.set_config(SearchConfig::eval());
         assert!(search.config().use_lcb);
 
@@ -2716,7 +2695,7 @@ mod tests {
     /// unchanged — LCB is strictly an eval-path selection rule.
     #[test]
     fn extract_result_uses_visit_max_when_lcb_disabled() {
-        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
         assert!(!search.config().use_lcb);
 
         let state = GameState::new();
@@ -2766,7 +2745,7 @@ mod tests {
 
     #[test]
     fn two_fold_as_draw_runs_without_hang() {
-        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
         search.config_mut().two_fold_as_draw = true;
         search.config_mut().batch_size = 1;
         let state = GameState::new();
@@ -2776,7 +2755,7 @@ mod tests {
 
     #[test]
     fn resignation_triggers_after_k_low_values() {
-        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
         search.config_mut().resign = ResignConfig {
             enabled: true,
             v_resign: 0.05,
@@ -2790,7 +2769,7 @@ mod tests {
 
     #[test]
     fn resignation_resets_on_high_value() {
-        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
         search.config_mut().resign = ResignConfig {
             enabled: true,
             v_resign: 0.05,
@@ -2810,7 +2789,7 @@ mod tests {
         let state = GameState::new();
 
         let mut run_one = || {
-            let mut s = MctsSearch::new(Box::new(HeuristicEvaluator));
+            let mut s = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
             s.config_mut().batch_size = 1;
             s.set_rng_seed(42);
             let _ = s.search(&state, 64);
@@ -2829,7 +2808,7 @@ mod tests {
     #[test]
     fn aux_opponent_policy_sums_to_one() {
         let state = GameState::new();
-        let mut s = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut s = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
         s.config_mut().batch_size = 1;
         s.set_rng_seed(7);
         let _ = s.search(&state, 128);
@@ -2844,7 +2823,7 @@ mod tests {
     /// guard for the divergence Codex flagged on PR #106.
     #[test]
     fn aux_opponent_policy_matches_lcb_played_child_in_eval_mode() {
-        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
         search.set_config(SearchConfig::eval());
 
         let state = GameState::new();
@@ -2921,7 +2900,7 @@ mod tests {
     /// fix doesn't accidentally change the self-play auxiliary-head target.
     #[test]
     fn aux_opponent_policy_uses_visit_max_when_lcb_disabled() {
-        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
         assert!(!search.config().use_lcb);
 
         let state = GameState::new();
@@ -2991,7 +2970,7 @@ mod tests {
         let state = GameState::new();
         let root_stm = state.board.side_to_move;
 
-        let mut s = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut s = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
         s.config_mut().batch_size = 1;
         s.set_rng_seed(13);
         let _ = s.search(&state, 256);
@@ -3064,7 +3043,7 @@ mod tests {
         let root_stm = state.board.side_to_move;
         assert_eq!(root_stm, Color::Black);
 
-        let mut s = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut s = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
         s.config_mut().batch_size = 1;
         s.set_rng_seed(21);
         let result = s.search_with_temperature(&state, 128, 0.0);
@@ -3160,7 +3139,7 @@ mod tests {
 
     #[test]
     fn resignation_disabled_never_fires() {
-        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
         search.config_mut().resign.enabled = false;
         for _ in 0..20 {
             assert!(!search.record_and_check_resign(Color::White, 0.0));
