@@ -313,7 +313,8 @@ fn run_value_function_tests() {
 
     // Test 3: HeuristicEvaluator value for same position
     let eval = HeuristicEvaluator;
-    let (_, value) = eval.evaluate(&state2);
+    let (_, wdl) = eval.evaluate(&state2);
+    let value = wdl[0] - wdl[2];
     println!(
         "  Heuristic value for +900cp position: {:.3} (should be positive)",
         value
@@ -343,7 +344,8 @@ fn run_value_function_tests() {
     );
     assert_eq!(score3, -900);
 
-    let (_, value3) = eval.evaluate(&state3);
+    let (_, wdl3) = eval.evaluate(&state3);
+    let value3 = wdl3[0] - wdl3[2];
     println!(
         "  Heuristic value for -900cp position: {:.3} (should be negative)",
         value3
