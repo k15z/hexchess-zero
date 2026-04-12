@@ -152,3 +152,9 @@ S3 credentials live in `.env` (gitignored): `BUCKET_NAME`, `ACCESS_KEY`, `SECRET
 ## Documentation
 
 Full docs (engine internals, training details, bindings reference, deployment, interactive playground) live in `docs/` and are published from the Fumadocs site. Run `make docs-dev` to view locally.
+
+## Agent Workflow
+
+Repository-level agent instructions now live in `AGENTS.md`. Use `codex review --uncommitted` for local changes or `codex review --base <branch>` before merging a PR.
+
+The training-health workflow now lives in the repo at `ai/training-health.md` so Codex can follow the same process directly from the workspace.

@@ -404,7 +404,7 @@ Anchors live in S3 as `anchors/{name}.json` config. The Elo service treats them 
 Keep the existing `elo_service.py` design (immutable per-game records under `state/elo_games/`, projection rebuilt). Changes:
 
 - **Pairing policy:** OpenSkill-uncertainty-driven matchmaking (already done) plus a hard rule: every new model plays at minimum 30 games against each anchor before its rating is "released" to the dashboard. Prevents premature regression alarms.
-- **Use ≥800 sims** as already mandated by CLAUDE.md.
+- **Use ≥800 sims** as already mandated by AGENTS.md.
 - **SPRT** option for "is candidate stronger than current": API endpoint that sets up a pairing campaign with stop conditions `(elo0=0, elo1=10, α=β=0.05)`. Used during gating in phase-1 only.
 
 ### 6.3 Fixed benchmark suite

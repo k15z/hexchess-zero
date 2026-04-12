@@ -107,7 +107,7 @@ A reasonable Elo service for an AlphaZero-style training run:
 1. **Anchor**: a frozen `model_v0`, plus a fixed minimax baseline at depth 3 and depth 6.
 2. **Pool**: last ~20 model versions.
 3. **Matchmaker**: pick pairings by max-uncertainty / predict-draw.
-4. **Engine**: ≥800 MCTS sims per move (lower numbers give misleading results — see CLAUDE.md).
+4. **Engine**: ≥800 MCTS sims per move (lower numbers give misleading results — see AGENTS.md).
 5. **Time**: ~30–60 seconds per game on whatever hardware you have.
 6. **Storage**: persist each game outcome immutably (timestamp, both models, result, opening).
    Recompute the rating projection from the log on demand.

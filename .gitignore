@@ -30,11 +30,6 @@ target/wheels/
 node_modules/
 *.wasm
 
-# Claude Code (keep settings.json and CLAUDE.md committed)
-.claude/settings.local.json
-.claude/memory/
-.claude/worktrees/
-
 # K8s secrets
 k8s/secrets.yaml
 
