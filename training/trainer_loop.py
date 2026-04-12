@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import random
 import time
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -839,8 +840,15 @@ def run_trainer(cfg: AsyncConfig) -> None:
     # promoting) would treat the accumulated backlog as already-promoted
     # and wait another full cycle to promote anything.
     positions_at_last_promote = 0
-    # Gauntlet held-out batch for BN-stat update after SWA average.
-    held_out_batch: torch.Tensor | None = None
+    # Rolling buffer of recent training batches for re-estimating BN
+    # running stats after SWA averaging. update_bn_stats uses cumulative
+    # averaging (momentum=None), so forwarding a single batch leaves the
+    # averaged model with running mean/var equal to that batch's stats —
+    # a noisy, stale estimate that silently degrades every promoted model.
+    # We keep the buffer on CPU to avoid pinning GPU memory across cycles.
+    bn_refresh_batches: deque[torch.Tensor] = deque(
+        maxlen=cfg.swa_bn_refresh_batches
+    )
 
     ac_dtype = _autocast_dtype(device)
 
@@ -920,11 +928,15 @@ def run_trainer(cfg: AsyncConfig) -> None:
                 if step >= cfg.steps_per_cycle or not bucket.has_budget():
                     break
 
-                boards, targets, legal_mask = _v2_batch_to_torch(batch_np, device)
+                # Snapshot the CPU numpy boards into the BN refresh buffer
+                # *before* the device transfer — sourcing from the GPU copy
+                # would add a D2H sync every training step. .clone()
+                # decouples from numpy memory that the dataloader may reuse.
+                bn_refresh_batches.append(
+                    torch.from_numpy(batch_np["boards"]).clone()
+                )
 
-                # Keep one batch aside for post-SWA BN-stat update.
-                if held_out_batch is None:
-                    held_out_batch = boards.detach().clone()
+                boards, targets, legal_mask = _v2_batch_to_torch(batch_np, device)
 
                 # LR warmup.
                 lr = _lr_for_step(
@@ -1064,10 +1076,17 @@ def run_trainer(cfg: AsyncConfig) -> None:
             # Re-estimate BN stats on averaged weights using a scratch model copy.
             scratch = build_model(cfg).to(device)
             scratch.load_state_dict({k: v.to(device) for k, v in averaged_sd.items()})
-            if held_out_batch is not None:
-                update_bn_stats(scratch, [(held_out_batch,)], device=device)
+            if bn_refresh_batches:
+                update_bn_stats(
+                    scratch,
+                    ((b,) for b in bn_refresh_batches),
+                    device=device,
+                )
                 averaged_sd = {k: v.detach().cpu().clone()
                                for k, v in scratch.state_dict().items()}
+                logger.info(
+                    "  Re-estimated BN stats on {} batches", len(bn_refresh_batches)
+                )
             del scratch
 
         new_version = current_version + 1

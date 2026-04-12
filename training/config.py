@@ -71,6 +71,13 @@ class _BaseConfig:
     swa_snapshot_every_samples: int = 250_000
     swa_buffer_size: int = 4
     swa_ema_decay: float = 0.75
+    # Rolling number of recent training batches kept for re-estimating BN
+    # running stats after SWA averaging. update_bn_stats uses cumulative
+    # averaging (momentum=None), so a single batch produces very noisy
+    # running mean/var and stale running stats silently degrade every
+    # promoted model. 32 batches * batch_size=256 = ~8k samples, which is
+    # enough for a stable BN reset on a 192-filter ResNet.
+    swa_bn_refresh_batches: int = 32
 
     # --- Playout Cap Randomization (plan §1.4/§5.4) ---
     # Plan targets 800/160 for production. Observed on kevz-infra at kickoff:
@@ -205,6 +212,8 @@ class AsyncConfig(_BaseConfig):
                "swa_ema_decay must be in (0, 1]")
         _check(self.swa_snapshot_every_samples > 0,
                "swa_snapshot_every_samples must be > 0")
+        _check(self.swa_bn_refresh_batches >= 1,
+               "swa_bn_refresh_batches must be >= 1")
 
         _check(self.max_train_steps_per_new_data > 0,
                "max_train_steps_per_new_data must be > 0")
