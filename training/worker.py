@@ -543,6 +543,8 @@ def _play_one_game_pcr(
         was_full = bool(outcome["was_full_search"])
         value = float(outcome["value"])
         root_wdl = outcome["wdl"]  # (W, D, L) tuple from STM perspective
+        nn_wdl = outcome["nn_wdl"]  # Raw NN eval before MCTS backups
+        temperature = float(outcome["temperature"])
         nodes = int(outcome["nodes"])
         policy_target = outcome["policy_target"]  # np.ndarray or None
 
@@ -587,6 +589,11 @@ def _play_one_game_pcr(
                 finally:
                     game.undo_move()
 
+            # Raw NN value (W - L) before MCTS backups, for "NN vs MCTS" diagnostics.
+            nn_value = float(nn_wdl[0]) - float(nn_wdl[2])
+            # Selection method: temperature > 0 means sampled, otherwise max_visits.
+            selection_reason = "temperature_sampled" if temperature > 1e-4 else "max_visits"
+
             pos = PositionSample(
                 board=board_tensor.astype(np.float32),
                 policy=policy_np,
@@ -595,14 +602,14 @@ def _play_one_game_pcr(
                 root_q=value,
                 root_n=nodes,
                 root_entropy=_entropy(policy_np),
-                nn_value_at_position=value,  # TODO(chunk 13): expose raw NN prior separately
+                nn_value_at_position=nn_value,
                 legal_count=legal_count,
                 ply=total_ply,
                 side=side,
                 was_full_search=True,
                 trace={
                     "selected_move": _move_to_str(best_move),
-                    "selection_reason": "max_visits",
+                    "selection_reason": selection_reason,
                     "noise_used": True,
                     "search_ms": None,
                 },

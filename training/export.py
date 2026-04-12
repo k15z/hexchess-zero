@@ -122,7 +122,7 @@ def verify_onnx(onnx_path: Path) -> None:
         dummy = np.random.randn(1, cfg.board_channels, cfg.board_height, cfg.board_width).astype(np.float32)
         outputs = session.run(None, {"board": dummy})
         policy, value, mlh, stv, aux_policy = outputs
-        print(f"  Inference test:")
+        print("  Inference test:")
         print(f"    policy shape={policy.shape}, WDL shape={value.shape}")
         print(f"    mlh shape={mlh.shape}, stv shape={stv.shape}, aux_policy shape={aux_policy.shape}")
         print(f"    WDL logits: {value[0]}")

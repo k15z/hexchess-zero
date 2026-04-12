@@ -287,8 +287,8 @@ impl EvalResult {
         Self {
             policy,
             wdl,
-            mlh: 0.5, // 50 plies normalized
-            stv: wdl, // short-term same as long-term for heuristics
+            mlh: 0.5,                         // 50 plies normalized
+            stv: wdl,                         // short-term same as long-term for heuristics
             aux_policy: vec![0.0; num_moves], // no opponent prediction
         }
     }
@@ -546,6 +546,10 @@ pub struct SearchResult {
     /// side-to-move perspective. Preserves the draw mass that callers need
     /// for resignation (`P(W) < threshold`) and calibration.
     pub wdl: [f32; 3],
+    /// Raw NN evaluation WDL `[W, D, L]` of the root position *before* any
+    /// MCTS backups. Useful for "NN vs MCTS" diagnostics to see how much
+    /// search changed the value estimate.
+    pub nn_wdl: [f32; 3],
     /// Visit count at the root node (= number of simulations whose
     /// backups reached the root). For a search with no early-terminal
     /// hits, this equals the requested simulation count.
@@ -626,6 +630,9 @@ pub struct MctsSearch {
     /// Used by `aux_opponent_policy` to report grandchildren of the actually
     /// played child, not just the visit-max child.
     last_selected_child_idx: Option<usize>,
+    /// Raw NN evaluation of the root position (WDL before any MCTS backups).
+    /// Captured after the first simulation to enable "NN vs MCTS" diagnostics.
+    root_nn_wdl: Option<[f32; 3]>,
 }
 
 impl MctsSearch {
@@ -645,6 +652,7 @@ impl MctsSearch {
             leaves_scratch: Vec::new(),
             rng,
             last_selected_child_idx: None,
+            root_nn_wdl: None,
         }
     }
 
@@ -702,6 +710,23 @@ impl MctsSearch {
     pub fn reset(&mut self) {
         self.nodes.clear();
         self.last_selected_child_idx = None;
+        self.root_nn_wdl = None;
+    }
+
+    /// Capture the raw NN evaluation of the root position from the first
+    /// simulation's value_sum. Call this immediately after the first sim.
+    fn capture_root_nn_wdl(&mut self) {
+        if self.root_nn_wdl.is_none() && !self.nodes.is_empty() {
+            let root = &self.nodes[0];
+            if root.visit_count > 0 {
+                let n = root.visit_count as f64;
+                self.root_nn_wdl = Some([
+                    (root.value_sum[0] / n) as f32,
+                    (root.value_sum[1] / n) as f32,
+                    (root.value_sum[2] / n) as f32,
+                ]);
+            }
+        }
     }
 
     fn tt_insert(&mut self, key: TtKey, entry: (Vec<f32>, [f32; 3])) {
@@ -727,6 +752,7 @@ impl MctsSearch {
         self.nodes.clear();
         self.tt.clear();
         self.last_selected_child_idx = None;
+        self.root_nn_wdl = None;
     }
 
     /// Run MCTS for `num_simulations` iterations (greedy, temperature = 0).
@@ -774,10 +800,15 @@ impl MctsSearch {
         // Scope guard via a local helper struct would be nicer, but we
         // explicitly restore below — `expand` never panics in practice.
         if self.config.batch_size <= 1 {
-            for _ in 0..num_simulations {
+            for i in 0..num_simulations {
                 self.simulate(0, &mut working_state);
+                // Capture raw NN WDL after first simulation (before further backups).
+                if i == 0 {
+                    self.capture_root_nn_wdl();
+                }
             }
         } else {
+            // simulate_batched captures root_nn_wdl internally after first batch.
             self.simulate_batched(0, &mut working_state, num_simulations);
         }
 
@@ -861,7 +892,11 @@ impl MctsSearch {
                             &result.policy,
                         );
                         self.tt_insert(key, (result.policy, result.wdl));
-                        [result.wdl[0] as f64, result.wdl[1] as f64, result.wdl[2] as f64]
+                        [
+                            result.wdl[0] as f64,
+                            result.wdl[1] as f64,
+                            result.wdl[2] as f64,
+                        ]
                     }
                 }
             }
@@ -998,12 +1033,22 @@ impl MctsSearch {
                         );
                         self.tt_insert(leaf.key, (result.policy.clone(), result.wdl));
                     }
-                    [result.wdl[0] as f64, result.wdl[1] as f64, result.wdl[2] as f64]
+                    [
+                        result.wdl[0] as f64,
+                        result.wdl[1] as f64,
+                        result.wdl[2] as f64,
+                    ]
                 } else {
                     leaf.terminal_wdl
                 };
 
                 self.backpropagate(&leaf.path, wdl);
+            }
+
+            // Capture raw NN WDL after first batch, before subsequent batches
+            // pollute root's value with child evaluations.
+            if done == 0 {
+                self.capture_root_nn_wdl();
             }
 
             done += batch_count as u32;
@@ -1301,11 +1346,15 @@ impl MctsSearch {
         let wdl = [root_wdl[0] as f32, root_wdl[1] as f32, root_wdl[2] as f32];
         let value = wdl[0] - wdl[2];
 
+        // Fall back to search WDL if raw NN value wasn't captured (shouldn't happen).
+        let nn_wdl = self.root_nn_wdl.unwrap_or(wdl);
+
         SearchResult {
             best_move,
             policy,
             value,
             wdl,
+            nn_wdl,
             // Root visit count, not arena size: this is what the Python
             // consumer records as `root_n` on each training sample.
             nodes_searched: self.nodes[0].visit_count,
@@ -1396,8 +1445,10 @@ impl MctsSearch {
             best_move: result.best_move,
             value: result.value,
             wdl: result.wdl,
+            nn_wdl: result.nn_wdl,
             nodes_searched: result.nodes_searched,
             was_full_search: was_full,
+            temperature,
             policy_target,
         }
     }
@@ -1631,6 +1682,9 @@ pub struct PcrOutcome {
     /// Root WDL distribution `[W, D, L]` from STM perspective. The worker
     /// uses `wdl[0]` as the resignation signal `P(W)`.
     pub wdl: [f32; 3],
+    /// Raw NN evaluation WDL `[W, D, L]` of the root position *before* any
+    /// MCTS backups. For "NN vs MCTS" diagnostics.
+    pub nn_wdl: [f32; 3],
     /// Root visit count after the search (= simulations whose backups
     /// reached the root). Equals the requested sim count absent early
     /// terminal hits. This is what the trainer stores as `root_n`.
@@ -1638,6 +1692,8 @@ pub struct PcrOutcome {
     /// True iff this call ran a full (high-sim, noisy) search; only full
     /// searches should be recorded as training positions.
     pub was_full_search: bool,
+    /// Temperature used for move selection (0.0 = greedy/max_visits).
+    pub temperature: f32,
     /// PTP-pruned visit-count policy target. `None` for fast searches.
     pub policy_target: Option<Vec<f32>>,
 }

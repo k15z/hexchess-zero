@@ -6,14 +6,14 @@
 
 mod helpers;
 
-use hexchess_engine::board::{Color, Piece, ALL_COORDS};
+use hexchess_engine::board::{ALL_COORDS, Color, Piece};
 use hexchess_engine::game::GameState;
 use hexchess_engine::movegen;
 use hexchess_engine::serialization::{
-    encode_board, mirror_coord, stm_policy_index, BOARD_DIM, TENSOR_SIZE,
+    BOARD_DIM, TENSOR_SIZE, encode_board, mirror_coord, stm_policy_index,
 };
 
-use helpers::positions::{generate_positions, PlyBucket};
+use helpers::positions::{PlyBucket, generate_positions};
 
 // =========================================================================
 // Helpers
@@ -33,10 +33,7 @@ fn mirror_game_state(state: &GameState) -> GameState {
     for &coord in ALL_COORDS.iter() {
         if let Some(piece) = board.get(coord) {
             let mc = mirror_coord(coord);
-            mirrored.set(
-                mc,
-                Some(Piece::new(piece.kind, piece.color.opponent())),
-            );
+            mirrored.set(mc, Some(Piece::new(piece.kind, piece.color.opponent())));
             if piece.kind == hexchess_engine::board::PieceKind::King {
                 if piece.color == Color::White {
                     // White king becomes black king in the mirrored board
@@ -57,7 +54,6 @@ fn plane(tensor: &[f32; TENSOR_SIZE], ch: usize) -> Vec<f32> {
     let start = ch * BOARD_DIM * BOARD_DIM;
     tensor[start..start + BOARD_DIM * BOARD_DIM].to_vec()
 }
-
 
 // =========================================================================
 // 1. Encoder mirror equivariance (full tensor level)
@@ -200,12 +196,9 @@ fn policy_index_mirror_equivariance_100_positions() {
                 is_en_passant: false,
             };
 
-            let mirror_idx = stm_policy_index(&mirror_mv, stm.opponent())
-                .unwrap_or_else(|| {
-                    panic!(
-                        "position {i}: mirrored move {mirror_mv:?} has no policy index"
-                    )
-                });
+            let mirror_idx = stm_policy_index(&mirror_mv, stm.opponent()).unwrap_or_else(|| {
+                panic!("position {i}: mirrored move {mirror_mv:?} has no policy index")
+            });
 
             assert_eq!(
                 idx, mirror_idx,

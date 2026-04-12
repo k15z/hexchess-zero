@@ -246,6 +246,7 @@ struct PyMctsResult {
     #[pyo3(get)]
     value: f32,
     wdl: [f32; 3],
+    nn_wdl: [f32; 3],
     #[pyo3(get)]
     nodes: u32,
 }
@@ -266,6 +267,13 @@ impl PyMctsResult {
     #[getter]
     fn wdl(&self) -> (f32, f32, f32) {
         (self.wdl[0], self.wdl[1], self.wdl[2])
+    }
+
+    /// Raw NN evaluation `[W, D, L]` before MCTS backups. For "NN vs MCTS"
+    /// diagnostics comparing network intuition to search result.
+    #[getter]
+    fn nn_wdl(&self) -> (f32, f32, f32) {
+        (self.nn_wdl[0], self.nn_wdl[1], self.nn_wdl[2])
     }
 
     fn __repr__(&self) -> String {
@@ -786,9 +794,11 @@ impl PyMctsSearch {
     }
 
     /// Run a Playout-Cap-Randomization search step. Returns a dict:
-    ///   {best_move, value, wdl, nodes, was_full_search, policy_target (or None)}
-    /// where `wdl` is a `(W, D, L)` tuple from the STM's perspective. Only
-    /// full-search steps should be recorded as training samples.
+    ///   {best_move, value, wdl, nn_wdl, nodes, was_full_search, temperature,
+    ///    policy_target (or None)}
+    /// where `wdl` is a `(W, D, L)` tuple from the STM's perspective (after
+    /// MCTS backups) and `nn_wdl` is the raw NN evaluation before search.
+    /// Only full-search steps should be recorded as training samples.
     #[pyo3(signature = (game, ply=0))]
     fn run_pcr<'py>(
         &mut self,
@@ -804,8 +814,13 @@ impl PyMctsSearch {
         )?;
         dict.set_item("value", outcome.value)?;
         dict.set_item("wdl", (outcome.wdl[0], outcome.wdl[1], outcome.wdl[2]))?;
+        dict.set_item(
+            "nn_wdl",
+            (outcome.nn_wdl[0], outcome.nn_wdl[1], outcome.nn_wdl[2]),
+        )?;
         dict.set_item("nodes", outcome.nodes_searched)?;
         dict.set_item("was_full_search", outcome.was_full_search)?;
+        dict.set_item("temperature", outcome.temperature)?;
         match outcome.policy_target {
             Some(p) => {
                 let arr = numpy::PyArray1::from_slice(py, &p);
@@ -832,6 +847,7 @@ impl PyMctsSearch {
             policy: result.policy,
             value: result.value,
             wdl: result.wdl,
+            nn_wdl: result.nn_wdl,
             nodes: result.nodes_searched,
         }
     }

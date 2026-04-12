@@ -364,35 +364,41 @@ class ReplayBufferV2(IterableDataset):
         self.window_size = window_size
         self.s3_prefix = s3_prefix
         self.imitation_mix = imitation_mix
-        self.files, self.total_positions = self._select_and_download()
+        self.files, self.file_weights, self.total_positions = self._select_and_download()
         # Also load imitation files if mixing is enabled.
         self.imitation_files: list[Path] = []
+        self.imitation_weights: list[int] = []
         if imitation_mix > 0:
-            self.imitation_files = self._download_imitation()
+            self.imitation_files, self.imitation_weights = self._download_imitation()
 
-    def _select_and_download(self) -> tuple[list[Path], int]:
+    def _select_and_download(self) -> tuple[list[Path], list[int], int]:
         selected = storage.select_recent_files(self.s3_prefix, self.window_size)
         if not selected:
-            return [], 0
+            return [], [], 0
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         needed = set()
         local_files: list[Path] = []
+        weights: list[int] = []
         total = 0
         for entry in selected:
+            # Skip files with zero positions (avoids ValueError in weighted sampling).
+            if entry["positions"] <= 0:
+                continue
             safe_name = entry["key"].replace("/", "_")
             local_path = self.cache_dir / safe_name
             needed.add(safe_name)
             if not local_path.exists():
                 storage.get_file(entry["key"], local_path)
             local_files.append(local_path)
+            weights.append(entry["positions"])
             total += entry["positions"]
         # Prune stale cache entries
         for f in self.cache_dir.iterdir():
             if f.name not in needed and f.suffix == ".npz":
                 f.unlink()
-        return local_files, total
+        return local_files, weights, total
 
-    def _download_imitation(self) -> list[Path]:
+    def _download_imitation(self) -> tuple[list[Path], list[int]]:
         """Download imitation files to a separate cache."""
         imit_cache = self.cache_dir.parent / "imitation"
         imit_cache.mkdir(parents=True, exist_ok=True)
@@ -400,13 +406,18 @@ class ReplayBufferV2(IterableDataset):
             storage.IMITATION_PREFIX, 500_000  # all imitation data
         )
         local_files: list[Path] = []
+        weights: list[int] = []
         for entry in selected:
+            # Skip files with zero positions.
+            if entry["positions"] <= 0:
+                continue
             safe = entry["key"].replace("/", "_")
             lp = imit_cache / safe
             if not lp.exists():
                 storage.get_file(entry["key"], lp)
             local_files.append(lp)
-        return local_files
+            weights.append(entry["positions"])
+        return local_files, weights
 
     def stats(self) -> dict:
         return {"files": len(self.files), "positions": self.total_positions,
@@ -448,13 +459,18 @@ class ReplayBufferV2(IterableDataset):
             # cache — we want the trainer to fail loudly instead of
             # silently retrying forever.
             if use_imitation:
-                [chosen] = random.choices(self.imitation_files, k=1)
+                [chosen] = random.choices(
+                    self.imitation_files, weights=self.imitation_weights, k=1
+                )
                 try:
                     b = load_imitation_npz(chosen)
                 except (OSError, ValueError):
                     continue
             else:
-                [chosen] = random.choices(self.files, k=1)
+                # Position-weighted sampling: files with more positions are
+                # selected proportionally more often, so each position has
+                # equal probability of being sampled (position-uniform).
+                [chosen] = random.choices(self.files, weights=self.file_weights, k=1)
                 try:
                     b = load_v2_npz(chosen)
                 except (OSError, ValueError):

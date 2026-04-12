@@ -123,7 +123,9 @@ mod onnx_impl {
                 .expect("failed to extract stv");
 
             // Extract aux_policy logits: shape [N, num_move_indices]
-            let aux_policy_value = outputs.remove("aux_policy").expect("no 'aux_policy' output");
+            let aux_policy_value = outputs
+                .remove("aux_policy")
+                .expect("no 'aux_policy' output");
             let aux_policy_array = aux_policy_value
                 .try_extract_array::<f32>()
                 .expect("failed to extract aux_policy");
@@ -133,7 +135,9 @@ mod onnx_impl {
             let value_flat = value_array.as_slice().expect("non-contiguous value");
             let mlh_flat = mlh_array.as_slice().expect("non-contiguous mlh");
             let stv_flat = stv_array.as_slice().expect("non-contiguous stv");
-            let aux_policy_flat = aux_policy_array.as_slice().expect("non-contiguous aux_policy");
+            let aux_policy_flat = aux_policy_array
+                .as_slice()
+                .expect("non-contiguous aux_policy");
 
             let mut results = Vec::with_capacity(n);
             for i in 0..n {
@@ -431,13 +435,15 @@ mod tests {
             );
         }
 
-        let tract_top = tract_result.policy
+        let tract_top = tract_result
+            .policy
             .iter()
             .enumerate()
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
             .unwrap()
             .0;
-        let onnx_top = onnx_result.policy
+        let onnx_top = onnx_result
+            .policy
             .iter()
             .enumerate()
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())

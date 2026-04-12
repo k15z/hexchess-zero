@@ -171,7 +171,11 @@ mod tests {
     fn generate_positions_deterministic() {
         let a = generate_positions(99, PlyBucket::Opening, 5);
         let b = generate_positions(99, PlyBucket::Opening, 5);
-        assert_eq!(a.len(), b.len(), "deterministic runs should produce same count");
+        assert_eq!(
+            a.len(),
+            b.len(),
+            "deterministic runs should produce same count"
+        );
         for (ga, gb) in a.iter().zip(b.iter()) {
             assert_eq!(ga.board.zobrist_hash, gb.board.zobrist_hash);
         }
