@@ -6,7 +6,7 @@ full-search positions of each game, fill per-game targets (MLH, short-horizon
 WDL), and flush a rich `.npz` + metadata sidecar + per-game trace to S3.
 
 Schema (see notes/13-implementation-plan.md §5.3):
-    boards                (N, 22, 11, 11)        int8
+    boards                (N, 22, 11, 11)        float16
     policy                (N, num_move_indices)  float16
     policy_aux_opp        (N, num_move_indices)  float16
     legal_mask            (N, num_move_indices)  bool
@@ -30,20 +30,9 @@ denominator and leave the network unpenalized for putting mass on them.
 
 Only full-search PCR positions (was_full_search=True) are kept as samples.
 
-Board quantization: the `boards` float32 -> int8 cast is lossless for all
-{0,1}-valued planes (12 piece planes, side-to-move, en-passant, validity,
-in-check, last-move from/to) and for the 0/1/2-valued repetition plane.
-The three normalized scalar planes are lossy:
-  - ch 14 (halfmove_clock/100) — halfmove_clock is capped at 100 by the
-    50-move rule, so this plane lives in [0, 1] and `rint` binarizes it.
-  - ch 21 (halfmove_clock/50, clamped [0, 1]) — same story, binarized.
-  - ch 13 (fullmove/100) — fullmove is unbounded, so this plane is
-    quantized to small non-negative integers (0 for moves <50, 1 for
-    ~50-150, 2 for ~150-250, ...). Coarse but not collapsed.
-The loader in `training/data_v2.py` does NOT rescale on load and treats
-the stored int8 values as-is. If these signals turn out to matter we
-would need to either bump the schema to store raw integer clocks or
-scale them before quantization — see `data_v2._decode_boards`.
+Boards are persisted as float16 to preserve the normalized scalar planes
+(fullmove, halfmove-clock features) while still cutting storage roughly in
+half versus float32. The trainer loader upcasts to float32 on read.
 """
 
 from __future__ import annotations
@@ -272,7 +261,7 @@ def write_samples_to_npz(
     if n == 0:
         raise ValueError("refusing to write empty npz")
 
-    boards = np.zeros((n, 22, 11, 11), dtype=np.int8)
+    boards = np.zeros((n, 22, 11, 11), dtype=np.float16)
     policy = np.zeros((n, num_move_indices), dtype=np.float16)
     policy_aux_opp = np.zeros((n, num_move_indices), dtype=np.float16)
     legal_mask = np.zeros((n, num_move_indices), dtype=bool)
@@ -289,11 +278,9 @@ def write_samples_to_npz(
     game_id = np.full((n,), record.game_id, dtype=np.uint64)
 
     for i, pos in enumerate(record.positions):
-        # Cast float board to int8. Binary planes and the {0,1,2}
-        # repetition plane round-trip exactly; the three normalized
-        # fractional planes (ch 13/14/21) are effectively binarized.
-        # See module docstring for details.
-        boards[i] = np.clip(np.rint(pos.board), -128, 127).astype(np.int8)
+        # Store boards in float16 to preserve fractional scalar planes while
+        # reducing NPZ size/bandwidth versus float32.
+        boards[i] = pos.board.astype(np.float16)
         policy[i] = pos.policy.astype(np.float16)
         policy_aux_opp[i] = pos.policy_aux_opp.astype(np.float16)
         legal_mask[i] = pos.legal_mask.astype(bool)
