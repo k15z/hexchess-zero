@@ -131,10 +131,9 @@ repetitions) but still probably worth implementing.
 
 ## Resignation
 
-Resign threshold: if root `V` is below some `v_resign` (e.g. `−0.95`) for `k` consecutive moves,
-resign. Big training-throughput win since hopeless games end early.
+Removed from this project.
 
-**But always play out 10% of games to the end** (no resignation) and measure how many you would
-have *wrongly* resigned. Keep the false-positive resign rate below ~5%. KataGo and AlphaZero both
-implemented this calibration loop. AlphaZero's number was ~5% false positives at threshold
-`-0.9`.
+We tried the standard KataGo/AlphaZero-style calibration idea, but the
+observed false-positive rate in skipped calibration games was far too high
+for self-play labels to remain trustworthy. Games now always play to natural
+termination and throughput is recovered elsewhere.

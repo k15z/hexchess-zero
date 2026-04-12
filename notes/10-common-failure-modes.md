@@ -193,7 +193,7 @@ training cross-entropy returns NaN.
 
 ## 14. Off-by-one in repetition counting
 
-**Symptom:** Engine resigns or accepts draw on the third *visit* not the third *repetition*.
+**Symptom:** Engine accepts draw on the third *visit* not the third *repetition*.
 
 **Causes:** Confusing position-count with repetition-count.
 

@@ -848,7 +848,6 @@ function buildSearch(data) {
   html += `<ul style="margin:8px 0 0 18px;font-size:11px;opacity:0.4">
     <li>TT hit rate — needs Rust MCTS to expose tt_stats (not yet instrumented)</li>
     <li>LCB vs argmax-visit divergence — needs eval-game accounting</li>
-    <li>Resign false-positive rate — needs 10%-skip games to write outcome</li>
   </ul>`;
 
   const badge = withStats.length ? `${withStats.length} worker${withStats.length > 1 ? 's' : ''}` : 'waiting';

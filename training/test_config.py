@@ -36,13 +36,6 @@ def test_validate_rejects_bad_window():
         cfg.validate()
 
 
-def test_validate_rejects_bad_resign():
-    cfg = AsyncConfig()
-    cfg.resign_threshold = 1.5
-    with pytest.raises(ValueError, match="resign_threshold"):
-        cfg.validate()
-
-
 def test_validate_rejects_empty_run_id():
     cfg = AsyncConfig()
     cfg.run_id = ""

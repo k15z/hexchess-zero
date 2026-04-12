@@ -3,12 +3,11 @@
 //! Uses arena-style allocation with nodes stored in a `Vec<MctsNode>` and
 //! referenced by index, avoiding pointer overhead and improving cache locality.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 
 /// 95% one-sided normal z-score, used for LCB confidence intervals.
 const LCB_Z_95: f64 = 1.96;
 
-use crate::board::Color;
 use crate::eval;
 use crate::game::GameState;
 use crate::movegen::Move;
@@ -57,27 +56,6 @@ impl Default for PcrConfig {
             p_full: 0.25,
             n_full: 800,
             n_fast: 160,
-        }
-    }
-}
-
-/// Resignation config (KataGo §3.3).
-#[derive(Clone, Debug)]
-pub struct ResignConfig {
-    /// Whether resignation is active at all for this game.
-    pub enabled: bool,
-    /// Win-probability threshold below which STM is considered resigning.
-    pub v_resign: f32,
-    /// Number of consecutive moves below threshold required to resign.
-    pub k: usize,
-}
-
-impl Default for ResignConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            v_resign: 0.05,
-            k: 5,
         }
     }
 }
@@ -149,8 +127,6 @@ pub struct SearchConfig {
     pub temperature: TemperatureSchedule,
     /// Playout Cap Randomization settings.
     pub pcr: PcrConfig,
-    /// Resignation settings.
-    pub resign: ResignConfig,
     /// Use LCB (lower confidence bound) for final move selection.
     pub use_lcb: bool,
     /// Draw-utility ("contempt") added to PUCT Q as `draw_utility * D`.
@@ -182,7 +158,6 @@ impl SearchConfig {
             policy_target_pruning: true,
             temperature: TemperatureSchedule::default(),
             pcr: PcrConfig::default(),
-            resign: ResignConfig::default(),
             use_lcb: false,
             draw_utility: 0.0,
             two_fold_as_draw: true,
@@ -214,10 +189,6 @@ impl SearchConfig {
                 p_full: 1.0,
                 n_full: 800,
                 n_fast: 800,
-            },
-            resign: ResignConfig {
-                enabled: false,
-                ..ResignConfig::default()
             },
             use_lcb: true,
             draw_utility: 0.0,
@@ -523,8 +494,8 @@ pub struct SearchResult {
     /// with callers that only want a single number. Equals `wdl[0] - wdl[2]`.
     pub value: f32,
     /// Average WDL distribution `[W, D, L]` at the root, from the root's
-    /// side-to-move perspective. Preserves the draw mass that callers need
-    /// for resignation (`P(W) < threshold`) and calibration.
+    /// side-to-move perspective. Preserves draw mass for callers that need
+    /// more than a single scalar `W - L` value.
     pub wdl: [f32; 3],
     /// Raw NN evaluation WDL `[W, D, L]` of the root position *before* any
     /// MCTS backups. Useful for "NN vs MCTS" diagnostics to see how much
@@ -596,9 +567,6 @@ pub struct MctsSearch {
     tt_hits: u64,
     tt_misses: u64,
     tt_clears: u64,
-    /// Rolling buffer of STM P(W) at the root for the last `k` moves of
-    /// each side, used by `should_resign`.
-    resign_history: [VecDeque<f32>; 2],
     /// Reusable scratch path buffer for `simulate` (avoids per-sim alloc).
     path_scratch: Vec<usize>,
     /// Reusable buffer of leaves for `simulate_batched`.
@@ -627,7 +595,6 @@ impl MctsSearch {
             tt_hits: 0,
             tt_misses: 0,
             tt_clears: 0,
-            resign_history: [VecDeque::new(), VecDeque::new()],
             path_scratch: Vec::new(),
             leaves_scratch: Vec::new(),
             rng,
@@ -1625,30 +1592,6 @@ impl MctsSearch {
         let best_idx = self.lcb_best_child_idx(&root_children)?;
         self.nodes[best_idx].action
     }
-
-    /// Record a root-side win-probability observation for the resignation
-    /// tracker. Must be called with the STM's point-of-view `p_win` for each
-    /// actual move played. Returns `true` when the rolling window has filled
-    /// with consecutive below-threshold values and resignation is warranted.
-    pub fn record_and_check_resign(&mut self, stm: Color, p_win: f32) -> bool {
-        if !self.config.resign.enabled {
-            return false;
-        }
-        let side = stm.index();
-        let cfg = self.config.resign.clone();
-        let hist = &mut self.resign_history[side];
-        hist.push_back(p_win);
-        while hist.len() > cfg.k {
-            hist.pop_front();
-        }
-        hist.len() == cfg.k && hist.iter().all(|&p| p < cfg.v_resign)
-    }
-
-    /// Reset the resignation tracker (e.g. at the start of a new game).
-    pub fn reset_resign_history(&mut self) {
-        self.resign_history[0].clear();
-        self.resign_history[1].clear();
-    }
 }
 
 /// Outcome of a `run_pcr` call.
@@ -1659,8 +1602,7 @@ pub struct PcrOutcome {
     /// Scalar `W - L` root value, kept for back-compat with callers that
     /// only want one number.
     pub value: f32,
-    /// Root WDL distribution `[W, D, L]` from STM perspective. The worker
-    /// uses `wdl[0]` as the resignation signal `P(W)`.
+    /// Root WDL distribution `[W, D, L]` from STM perspective.
     pub wdl: [f32; 3],
     /// Raw NN evaluation WDL `[W, D, L]` of the root position *before* any
     /// MCTS backups. For "NN vs MCTS" diagnostics.
@@ -1791,6 +1733,7 @@ fn sample_gamma_gt1<R: Rng + ?Sized>(rng: &mut R, alpha: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::board::Color;
 
     /// Helper: build an evaluator that returns uniform policy and zero value.
     fn random_evaluator() -> Box<dyn Evaluator> {
@@ -2754,35 +2697,6 @@ mod tests {
     }
 
     #[test]
-    fn resignation_triggers_after_k_low_values() {
-        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
-        search.config_mut().resign = ResignConfig {
-            enabled: true,
-            v_resign: 0.05,
-            k: 5,
-        };
-        for _ in 0..4 {
-            assert!(!search.record_and_check_resign(Color::White, 0.01));
-        }
-        assert!(search.record_and_check_resign(Color::White, 0.01));
-    }
-
-    #[test]
-    fn resignation_resets_on_high_value() {
-        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
-        search.config_mut().resign = ResignConfig {
-            enabled: true,
-            v_resign: 0.05,
-            k: 5,
-        };
-        for _ in 0..4 {
-            assert!(!search.record_and_check_resign(Color::White, 0.01));
-        }
-        assert!(!search.record_and_check_resign(Color::White, 0.5));
-        assert!(!search.record_and_check_resign(Color::White, 0.01));
-    }
-
-    #[test]
     fn rng_seed_yields_deterministic_visits() {
         // Two searches with the same seed on the same position must produce
         // identical visit counts across all root children.
@@ -3134,15 +3048,6 @@ mod tests {
                 expected_aux.contains_key(&i),
                 "aux[{i}] = {p} but no visited grandchild maps to that STM index"
             );
-        }
-    }
-
-    #[test]
-    fn resignation_disabled_never_fires() {
-        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
-        search.config_mut().resign.enabled = false;
-        for _ in 0..20 {
-            assert!(!search.record_and_check_resign(Color::White, 0.0));
         }
     }
 }

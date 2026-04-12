@@ -28,12 +28,18 @@ class _BaseConfig:
     run_id: str = field(default_factory=_default_run_id)
 
     # --- MCTS ---
-    num_simulations: int = 800  # quality-over-speed default: deeper search for cleaner self-play targets
+    num_simulations: int = (
+        800  # quality-over-speed default: deeper search for cleaner self-play targets
+    )
 
     # --- Self-play ---
-    temperature_threshold: int = 60  # after this many moves, temperature drops to temperature_low
+    temperature_threshold: int = (
+        60  # after this many moves, temperature drops to temperature_low
+    )
     temperature_high: float = 1.0
-    temperature_low: float = 0.35  # Lc0-style floor — 0.01 produced one-hot targets in 65-70% of positions
+    temperature_low: float = (
+        0.35  # Lc0-style floor — 0.01 produced one-hot targets in 65-70% of positions
+    )
     dirichlet_alpha: float = 0.3
     dirichlet_epsilon: float = 0.25
 
@@ -105,18 +111,11 @@ class _BaseConfig:
     pcr_n_full: int = 800
     pcr_n_fast: int = 160
 
-    # --- Resignation (plan §1.10) ---
-    # Use expected score (W + 0.5*D) rather than raw P(win). In this
-    # draw-heavy regime, raw P(win) treats "nearly certain draw" as
-    # "nearly certain loss" and over-resigns badly.
-    resign_threshold: float = 0.05
-    resign_streak: int = 5
-    resign_min_plies: int = 40
-    resign_skip_prob: float = 0.10
-
     # --- Gating (plan §4.6) ---
     gating_enabled_first_n_versions: int = 5
-    gating_games: int = 30  # early-run gate length (was 200; cut 6.7× for pipeline validation)
+    gating_games: int = (
+        30  # early-run gate length (was 200; cut 6.7× for pipeline validation)
+    )
     gating_win_threshold: float = 0.50
     gating_max_failures: int = 3
 
@@ -145,11 +144,17 @@ class AsyncConfig(_BaseConfig):
     """
 
     # --- Async-specific ---
-    worker_batch_size: int = 2  # games per flush (small so bootstrap data lands quickly)
+    worker_batch_size: int = (
+        2  # games per flush (small so bootstrap data lands quickly)
+    )
     steps_per_cycle: int = 3000  # 3× more training per version (was 1000; each cycle now converges before next promotion)
     reload_interval: int = 1000  # reload buffer from disk every N steps for fresh data
-    max_train_steps_per_new_data: float = 4.0  # target passes per data point (KataGo-style bucket)
-    min_positions_to_start: int = 200_000  # bootstrap gate — workers can generate more after the trainer starts
+    max_train_steps_per_new_data: float = (
+        4.0  # target passes per data point (KataGo-style bucket)
+    )
+    min_positions_to_start: int = (
+        200_000  # bootstrap gate — workers can generate more after the trainer starts
+    )
 
     # --- Imitation bootstrap ---
     # Depth 5 is prohibitively slow on Glinski (>10 min per game observed).
@@ -158,10 +163,16 @@ class AsyncConfig(_BaseConfig):
     # instead of days.
     imitation_depth: int = 3
     imitation_exploration_plies: int = 30  # plies using softmax sampling for diversity
-    imitation_temperature: float = 200.0  # softmax temperature for policy targets and exploration sampling
+    imitation_temperature: float = (
+        200.0  # softmax temperature for policy targets and exploration sampling
+    )
     imitation_wdl_lambda: float = 0.5  # blend: λ*sigmoid(eval) + (1-λ)*game_outcome
-    bootstrap_steps: int = 50_000  # training steps for imitation bootstrap (before self-play)
-    bootstrap_learning_rate: float = 0.003  # higher LR for clean supervised signal (3x self-play LR)
+    bootstrap_steps: int = (
+        50_000  # training steps for imitation bootstrap (before self-play)
+    )
+    bootstrap_learning_rate: float = (
+        0.003  # higher LR for clean supervised signal (3x self-play LR)
+    )
 
     # --- Local cache ---
 
@@ -212,10 +223,14 @@ class AsyncConfig(_BaseConfig):
         _check(self.l2_regularization >= 0, "l2_regularization must be >= 0")
         _check(self.grad_clip_norm > 0, "grad_clip_norm must be > 0")
         _check(self.lr_warmup_steps >= 0, "lr_warmup_steps must be >= 0")
-        _check(self.runtime_health_check_every_steps > 0,
-               "runtime_health_check_every_steps must be > 0")
-        _check(self.promote_every_new_positions > 0,
-               "promote_every_new_positions must be > 0")
+        _check(
+            self.runtime_health_check_every_steps > 0,
+            "runtime_health_check_every_steps must be > 0",
+        )
+        _check(
+            self.promote_every_new_positions > 0,
+            "promote_every_new_positions must be > 0",
+        )
         _check(self.num_simulations > 0, "num_simulations must be > 0")
 
         _check(self.window_c > 0, "window_c must be > 0")
@@ -225,39 +240,42 @@ class AsyncConfig(_BaseConfig):
         _check(0 < self.pcr_p_full <= 1.0, "pcr_p_full must be in (0, 1]")
         _check(self.pcr_n_full > 0, "pcr_n_full must be > 0")
         _check(self.pcr_n_fast > 0, "pcr_n_fast must be > 0")
-        _check(self.pcr_n_fast <= self.pcr_n_full,
-               "pcr_n_fast must be <= pcr_n_full")
-
-        _check(0.0 < self.resign_threshold < 1.0,
-               "resign_threshold must be in (0, 1)")
-        _check(self.resign_streak >= 1, "resign_streak must be >= 1")
-        _check(self.resign_min_plies >= 0, "resign_min_plies must be >= 0")
-        _check(0.0 <= self.resign_skip_prob <= 1.0,
-               "resign_skip_prob must be in [0, 1]")
+        _check(self.pcr_n_fast <= self.pcr_n_full, "pcr_n_fast must be <= pcr_n_full")
 
         _check(self.gating_games > 0, "gating_games must be > 0")
-        _check(0.0 < self.gating_win_threshold <= 1.0,
-               "gating_win_threshold must be in (0, 1]")
+        _check(
+            0.0 < self.gating_win_threshold <= 1.0,
+            "gating_win_threshold must be in (0, 1]",
+        )
 
         _check(self.swa_buffer_size >= 1, "swa_buffer_size must be >= 1")
-        _check(0.0 < self.swa_ema_decay <= 1.0,
-               "swa_ema_decay must be in (0, 1]")
-        _check(self.swa_snapshot_every_samples > 0,
-               "swa_snapshot_every_samples must be > 0")
-        _check(self.swa_bn_refresh_batches >= 1,
-               "swa_bn_refresh_batches must be >= 1")
+        _check(0.0 < self.swa_ema_decay <= 1.0, "swa_ema_decay must be in (0, 1]")
+        _check(
+            self.swa_snapshot_every_samples > 0,
+            "swa_snapshot_every_samples must be > 0",
+        )
+        _check(self.swa_bn_refresh_batches >= 1, "swa_bn_refresh_batches must be >= 1")
 
-        _check(self.max_train_steps_per_new_data > 0,
-               "max_train_steps_per_new_data must be > 0")
-        _check(0.0 <= self.imitation_mix_start <= 1.0,
-               "imitation_mix_start must be in [0, 1]")
-        _check(0.0 <= self.imitation_mix_end <= 1.0,
-               "imitation_mix_end must be in [0, 1]")
-        _check(self.imitation_mix_start >= self.imitation_mix_end,
-               "imitation_mix_start must be >= imitation_mix_end "
-               "(schedule is a decay, not a ramp)")
-        _check(self.imitation_mix_decay_end_version >= 1,
-               "imitation_mix_decay_end_version must be >= 1")
+        _check(
+            self.max_train_steps_per_new_data > 0,
+            "max_train_steps_per_new_data must be > 0",
+        )
+        _check(
+            0.0 <= self.imitation_mix_start <= 1.0,
+            "imitation_mix_start must be in [0, 1]",
+        )
+        _check(
+            0.0 <= self.imitation_mix_end <= 1.0, "imitation_mix_end must be in [0, 1]"
+        )
+        _check(
+            self.imitation_mix_start >= self.imitation_mix_end,
+            "imitation_mix_start must be >= imitation_mix_end "
+            "(schedule is a decay, not a ramp)",
+        )
+        _check(
+            self.imitation_mix_decay_end_version >= 1,
+            "imitation_mix_decay_end_version must be >= 1",
+        )
         _check(bool(self.run_id), "run_id must be non-empty")
 
         if errors:

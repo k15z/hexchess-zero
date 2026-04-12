@@ -32,7 +32,6 @@ def test_training_mode_defaults_match_search_config_training():
     assert cfg["forced_playout_k"] == pytest.approx(2.0)
     assert cfg["policy_target_pruning"] is True
     assert cfg["use_lcb"] is False
-    assert cfg["resign_enabled"] is True
     assert cfg["fpu_reduction"] == pytest.approx(0.0)
     # Training has Dirichlet ON by default.
     assert cfg["dirichlet"] is not None
@@ -48,7 +47,6 @@ def test_eval_mode_matches_search_config_eval():
     assert cfg["forced_playout_k"] == pytest.approx(0.0)
     assert cfg["policy_target_pruning"] is False
     assert cfg["use_lcb"] is True
-    assert cfg["resign_enabled"] is False
     assert cfg["fpu_reduction"] == pytest.approx(0.2)
     # Eval has no Dirichlet at root.
     assert cfg["dirichlet"] is None

@@ -6,7 +6,7 @@
 ///
 /// This is the real output of the value head: MCTS stores, averages, and
 /// backpropagates these distributions rather than the scalar collapse so the
-/// draw mass is preserved for resignation and contempt shaping.
+/// draw mass is preserved for callers that use WDL directly and for contempt shaping.
 pub fn softmax_wdl(wdl_logits: &[f32]) -> [f32; 3] {
     assert_eq!(wdl_logits.len(), 3);
     let w = wdl_logits[0];

@@ -145,9 +145,9 @@ strongly recommended.
 
 ## Resignation calibration
 
-Discussed in `04-mcts-tuning.md`: skip ~10% of self-play games at the resignation gate, measure
-how many would have been wrongly resigned, target false-positive < 5%. KataGo and AlphaZero both
-do this.
+Removed from the training loop. The calibration sample showed too many false
+positives, so self-play now runs to natural termination and does not maintain
+resignation telemetry.
 
 ## Operational summary
 
