@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: trainer
-          image: ghcr.io/k15z/hexchess-zero/training:latest
+          image: ghcr.io/k15z/hexchess-zero/training:cuda
           imagePullPolicy: Always
           args: ["trainer"]
           envFrom:
