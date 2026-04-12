@@ -1208,8 +1208,6 @@ impl MctsSearch {
             self.select_by_temperature(&root_children, temperature)
         };
 
-        // Record which child was selected so aux_opponent_policy can report
-        // grandchildren of the actually played move, not just visit-max.
         self.last_selected_child_idx = Some(best_child_idx);
 
         let best_move = self.nodes[best_child_idx]
@@ -1457,14 +1455,12 @@ impl MctsSearch {
         }
         // Use the child that extract_result actually selected (which may have
         // been temperature-sampled). Falls back to LCB/visit-max if no prior
-        // search recorded a selection (e.g. direct aux_opponent_policy call
-        // without going through extract_result), or if the stored index is
-        // stale (not a member of the current root's children).
+        // search recorded a selection, or if the stored index is stale.
         let root_children = self.nodes[0].children.clone();
-        let stored_idx_valid = self
+        let best_child_idx = if let Some(idx) = self
             .last_selected_child_idx
-            .is_some_and(|idx| root_children.contains(&idx));
-        let best_child_idx = if let Some(idx) = self.last_selected_child_idx.filter(|_| stored_idx_valid) {
+            .filter(|&idx| root_children.contains(&idx))
+        {
             idx
         } else if self.config.use_lcb {
             self.lcb_best_child_idx(&root_children).or_else(|| {
