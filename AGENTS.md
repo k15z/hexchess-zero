@@ -115,6 +115,8 @@ Position count is encoded in each `.npz` filename (`_n{count}`) so the trainer c
 ## Workflow
 
 - Always run `codex review` on a PR before merging it. Use `codex review --base <branch>` for branch diffs or `codex review --uncommitted` for local changes.
+- Do not merge feature branches directly into local or remote `main`. If a task says "merge the PR", push the branch and create or update a GitHub PR instead of advancing `main` locally.
+- When merging a PR, use GitHub's `squash` or `rebase` merge modes. Do not create merge commits unless the user explicitly asks for that history shape.
 - When asked to assess training health, consult `ai/training-health.md` for the data collection and interpretation checklist.
 
 ## Key Conventions
