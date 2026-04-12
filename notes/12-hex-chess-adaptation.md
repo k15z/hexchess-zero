@@ -46,7 +46,7 @@ Use `α = 0.25`. **Confirmed empirically.**
 
 ### 4. MCTS sims
 
-CLAUDE.md notes: ≥800 sims is the production minimum. This matches KataGo / Lc0 / AlphaZero. Do
+AGENTS.md notes: ≥800 sims is the production minimum. This matches KataGo / Lc0 / AlphaZero. Do
 not be tempted to evaluate at 100 sims to "save time" — it produces misleading rankings because
 the NN's prior advantage compounds with depth.
 
