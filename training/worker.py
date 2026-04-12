@@ -249,6 +249,12 @@ def _value_to_p_win(value: float) -> float:
     return (q + 1.0) * 0.5
 
 
+def _wdl_to_expected_score(wdl: list[float] | tuple[float, float, float]) -> float:
+    """Map STM-POV WDL to expected score in [0, 1]."""
+    win, draw, _loss = (float(x) for x in wdl)
+    return max(0.0, min(1.0, win + 0.5 * draw))
+
+
 def _resigned_outcome(resigning_side: str) -> tuple[str, str, list[float]]:
     """Return ``(result, termination, wdl_white)`` when a side resigns."""
     if resigning_side == "white":
@@ -548,12 +554,14 @@ def _play_one_game_pcr(
         nodes = int(outcome["nodes"])
         policy_target = outcome["policy_target"]  # np.ndarray or None
 
-        # Feed the real P(win) from the WDL head into the engine's resign
-        # tracker. Uses actual P(W) instead of the scalar W-L approximation,
-        # so a drawn position (W=5%, D=90%, L=5%) correctly triggers
-        # resignation when win probability is below threshold.
-        p_win = float(root_wdl[0])
-        would_fire = search.record_and_check_resign(side, p_win)
+        # Feed expected score from the WDL head into the resign tracker.
+        # Raw P(win) over-resigns in draw-heavy self-play because a nearly
+        # forced draw can still have very low win probability.
+        expected_score = _wdl_to_expected_score(root_wdl)
+        would_fire = (
+            total_ply >= cfg.resign_min_plies
+            and search.record_and_check_resign(side, expected_score)
+        )
         if would_fire and resign_would_fire_side is None:
             resign_would_fire_side = side
             resign_would_fire_ply = total_ply

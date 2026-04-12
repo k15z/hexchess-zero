@@ -26,6 +26,7 @@ from training.worker import (
     _resign_calibration_correct,
     _resigned_outcome,
     _root_q_to_wdl,
+    _wdl_to_expected_score,
     _value_to_p_win,
 )
 
@@ -331,6 +332,13 @@ def test_value_to_p_win_endpoints_and_mid():
     assert _value_to_p_win(2.0) == pytest.approx(1.0)
 
 
+def test_wdl_to_expected_score_handles_draw_heavy_positions():
+    assert _wdl_to_expected_score([1.0, 0.0, 0.0]) == pytest.approx(1.0)
+    assert _wdl_to_expected_score([0.0, 1.0, 0.0]) == pytest.approx(0.5)
+    assert _wdl_to_expected_score([0.0, 0.0, 1.0]) == pytest.approx(0.0)
+    assert _wdl_to_expected_score([0.05, 0.90, 0.05]) == pytest.approx(0.50)
+
+
 def test_resign_tracker_fires_after_k_consecutive_low():
     t = ResignTracker(v_resign=0.05, k=3)
     assert t.record("white", 0.01) is False
@@ -371,6 +379,15 @@ def test_resign_tracker_disabled_returns_false():
     assert t.record("white", 0.0) is False
     t2 = ResignTracker(v_resign=0.05, k=0)
     assert t2.record("white", 0.0) is False
+
+
+def test_expected_score_threshold_does_not_resign_draw_heavy_positions():
+    t = ResignTracker(v_resign=0.05, k=3)
+    drawish = _wdl_to_expected_score([0.05, 0.90, 0.05])
+    assert drawish == pytest.approx(0.50)
+    assert t.record("white", drawish) is False
+    assert t.record("white", drawish) is False
+    assert t.record("white", drawish) is False
 
 
 def test_resigned_outcome_white_loses():
