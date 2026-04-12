@@ -4,7 +4,7 @@ use pyo3::prelude::*;
 use numpy::ndarray::{Array3, Array4};
 use numpy::{IntoPyArray, PyArray3, PyArray4};
 
-use hexchess_engine::board::{self, HexCoord, PieceKind};
+use hexchess_engine::board::{self, Color, HexCoord, PieceKind};
 use hexchess_engine::eval::EvalWeights;
 use hexchess_engine::game::GameState;
 use hexchess_engine::inference::OnnxEvaluator;
@@ -245,6 +245,7 @@ struct PyMctsResult {
     policy: Vec<f32>,
     #[pyo3(get)]
     value: f32,
+    wdl: [f32; 3],
     #[pyo3(get)]
     nodes: u32,
 }
@@ -260,11 +261,21 @@ impl PyMctsResult {
         numpy::PyArray1::from_slice(py, &self.policy)
     }
 
+    /// Root `[W, D, L]` distribution from STM perspective. Trainer and
+    /// worker use `wdl[0]` directly as `P(win)` for resignation.
+    #[getter]
+    fn wdl(&self) -> (f32, f32, f32) {
+        (self.wdl[0], self.wdl[1], self.wdl[2])
+    }
+
     fn __repr__(&self) -> String {
         format!(
-            "MctsResult(best_move={}, value={:.3}, nodes={})",
+            "MctsResult(best_move={}, value={:.3}, wdl=({:.3}, {:.3}, {:.3}), nodes={})",
             self.best_move.__str__(),
             self.value,
+            self.wdl[0],
+            self.wdl[1],
+            self.wdl[2],
             self.nodes
         )
     }
@@ -734,8 +745,9 @@ impl PyMctsSearch {
     }
 
     /// Run a Playout-Cap-Randomization search step. Returns a dict:
-    ///   {best_move, value, nodes, was_full_search, policy_target (or None)}
-    /// Only full-search steps should be recorded as training samples.
+    ///   {best_move, value, wdl, nodes, was_full_search, policy_target (or None)}
+    /// where `wdl` is a `(W, D, L)` tuple from the STM's perspective. Only
+    /// full-search steps should be recorded as training samples.
     #[pyo3(signature = (game, ply=0))]
     fn run_pcr<'py>(
         &mut self,
@@ -750,6 +762,7 @@ impl PyMctsSearch {
             PyMove::from_engine(&outcome.best_move).into_pyobject(py)?,
         )?;
         dict.set_item("value", outcome.value)?;
+        dict.set_item("wdl", (outcome.wdl[0], outcome.wdl[1], outcome.wdl[2]))?;
         dict.set_item("nodes", outcome.nodes_searched)?;
         dict.set_item("was_full_search", outcome.was_full_search)?;
         match outcome.policy_target {
@@ -777,8 +790,40 @@ impl PyMctsSearch {
             best_move: PyMove::from_engine(&result.best_move),
             policy: result.policy,
             value: result.value,
+            wdl: result.wdl,
             nodes: result.nodes_searched,
         }
+    }
+
+    /// Set the draw-utility ("contempt") coefficient. Positive values bias
+    /// search toward draws; negative values bias away. Default 0 keeps the
+    /// plain `W − L` AlphaZero Q function.
+    fn set_draw_utility(&mut self, draw_utility: f32) {
+        self.search.set_draw_utility(draw_utility);
+    }
+
+    /// Record the STM's root `P(win)` and return True if resignation
+    /// should fire. The engine tracks a rolling window per side and returns
+    /// True only once `k` consecutive observations are below `v_resign`.
+    /// Must be called with the side that just searched; passing the wrong
+    /// side silently corrupts the rolling window.
+    fn record_and_check_resign(&mut self, side: &str, p_win: f32) -> PyResult<bool> {
+        let color = match side {
+            "white" => Color::White,
+            "black" => Color::Black,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "side must be 'white' or 'black', got {other}"
+                )));
+            }
+        };
+        Ok(self.search.record_and_check_resign(color, p_win))
+    }
+
+    /// Reset the per-side rolling P(win) histories used for resignation.
+    /// Call at the start of every new game.
+    fn reset_resign_history(&mut self) {
+        self.search.reset_resign_history();
     }
 
     /// Return the opponent-reply visit distribution from the previous
@@ -818,7 +863,10 @@ impl PyMctsSearch {
         dict.set_item("forced_playout_k", cfg.forced_playout_k)?;
         dict.set_item("policy_target_pruning", cfg.policy_target_pruning)?;
         dict.set_item("use_lcb", cfg.use_lcb)?;
+        dict.set_item("draw_utility", cfg.draw_utility)?;
         dict.set_item("resign_enabled", cfg.resign.enabled)?;
+        dict.set_item("resign_v", cfg.resign.v_resign)?;
+        dict.set_item("resign_k", cfg.resign.k)?;
         match &cfg.dirichlet {
             Some(d) => {
                 let dnode = pyo3::types::PyDict::new(py);

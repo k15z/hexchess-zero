@@ -509,15 +509,17 @@ def _play_one_game_pcr(
     assert hexchess is not None
     num_moves = hexchess.num_move_indices()
 
-    # Per-game seed + resign-skip coin. The engine-side ``set_resign_enabled``
-    # flag is a dead no-op (``record_and_check_resign`` is never called from
-    # ``run_pcr``); actual resignation is handled below by ``ResignTracker``.
+    # Per-game seed + resign-skip coin. The engine's
+    # ``record_and_check_resign`` now runs with real P(W) from the WDL
+    # head. We always leave resign.enabled = True so the engine tracks the
+    # sliding window for calibration even when the skip coin says "don't
+    # actually resign". The skip is enforced in the break guard below.
     seed = py_rng.getrandbits(64)
     search.set_rng_seed(seed)
     resigned_skipped = py_rng.random() < cfg.resign_skip_prob
-    resign_tracker = ResignTracker(
-        v_resign=cfg.resign_threshold, k=cfg.resign_streak
-    )
+    search.set_resign_threshold(cfg.resign_threshold)
+    search.set_resign_streak(cfg.resign_streak)
+    search.reset_resign_history()
     resign_fired = False
     resign_side: str | None = None
     resign_would_fire_ply: int | None = None
@@ -540,8 +542,19 @@ def _play_one_game_pcr(
         best_move = outcome["best_move"]
         was_full = bool(outcome["was_full_search"])
         value = float(outcome["value"])
+        root_wdl = outcome["wdl"]  # (W, D, L) tuple from STM perspective
         nodes = int(outcome["nodes"])
         policy_target = outcome["policy_target"]  # np.ndarray or None
+
+        # Feed the real P(win) from the WDL head into the engine's resign
+        # tracker. Uses actual P(W) instead of the scalar W-L approximation,
+        # so a drawn position (W=5%, D=90%, L=5%) correctly triggers
+        # resignation when win probability is below threshold.
+        p_win = float(root_wdl[0])
+        would_fire = search.record_and_check_resign(side, p_win)
+        if would_fire and resign_would_fire_side is None:
+            resign_would_fire_side = side
+            resign_would_fire_ply = total_ply
 
         if was_full and policy_target is not None:
             policy_np = np.asarray(policy_target, dtype=np.float32)
@@ -587,15 +600,6 @@ def _play_one_game_pcr(
             )
             positions.append(pos)
 
-        # Resignation check. Runs on every ply (full and fast PCR alike) so
-        # the sliding window matches the engine's per-move tracker. When
-        # ``resigned_skipped=True`` we always play on but remember the first
-        # would-fire event so the false-positive rate can be measured.
-        p_win = _value_to_p_win(value)
-        would_fire = resign_tracker.record(side, p_win)
-        if would_fire and resign_would_fire_side is None:
-            resign_would_fire_side = side
-            resign_would_fire_ply = total_ply
         if would_fire and not resigned_skipped:
             resign_fired = True
             resign_side = side

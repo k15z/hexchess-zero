@@ -2,11 +2,12 @@
 //!
 //! Requires the `onnx` feature flag: `cargo build --features onnx`
 
-/// Convert WDL logits [W, D, L] to a scalar value in [-1, 1] via softmax.
+/// Softmax the 3-dim WDL logits into a probability vector `[W, D, L]`.
 ///
-/// Returns `W_prob - L_prob`, which is exactly 1.0 for a certain win,
-/// -1.0 for a certain loss, and 0.0 for a certain draw or uniform.
-pub fn wdl_to_value(wdl_logits: &[f32]) -> f32 {
+/// This is the real output of the value head: MCTS stores, averages, and
+/// backpropagates these distributions rather than the scalar collapse so the
+/// draw mass is preserved for resignation and contempt shaping.
+pub fn softmax_wdl(wdl_logits: &[f32]) -> [f32; 3] {
     assert_eq!(wdl_logits.len(), 3);
     let w = wdl_logits[0];
     let d = wdl_logits[1];
@@ -16,7 +17,17 @@ pub fn wdl_to_value(wdl_logits: &[f32]) -> f32 {
     let ed = (d - max).exp();
     let el = (l - max).exp();
     let sum = ew + ed + el;
-    (ew - el) / sum
+    [ew / sum, ed / sum, el / sum]
+}
+
+/// Collapse WDL logits to a scalar value in `[-1, 1]` via `W_prob - L_prob`.
+///
+/// Kept for callers that only need the scalar projection (tests, legacy
+/// tooling). MCTS itself now consumes the full distribution from
+/// [`softmax_wdl`].
+pub fn wdl_to_value(wdl_logits: &[f32]) -> f32 {
+    let p = softmax_wdl(wdl_logits);
+    p[0] - p[2]
 }
 
 #[cfg(feature = "onnx")]
@@ -60,11 +71,11 @@ mod onnx_impl {
     }
 
     impl Evaluator for OnnxEvaluator {
-        fn evaluate(&self, state: &GameState) -> (Vec<f32>, f32) {
+        fn evaluate(&self, state: &GameState) -> (Vec<f32>, [f32; 3]) {
             self.evaluate_batch(&[state]).into_iter().next().unwrap()
         }
 
-        fn evaluate_batch(&self, states: &[&GameState]) -> Vec<(Vec<f32>, f32)> {
+        fn evaluate_batch(&self, states: &[&GameState]) -> Vec<(Vec<f32>, [f32; 3])> {
             let n = states.len();
             assert!(n > 0, "evaluate_batch called with empty slice");
 
@@ -117,10 +128,10 @@ mod onnx_impl {
                     }
                 }
 
-                // WDL logits → softmax → scalar value = W - L
-                let wdl = &value_flat[i * 3..(i + 1) * 3];
-                let value = super::wdl_to_value(wdl);
-                results.push((policy, value));
+                // Full WDL distribution is carried through MCTS; the scalar
+                // collapse happens lazily via `q_value()` when contempt is 0.
+                let wdl = super::softmax_wdl(&value_flat[i * 3..(i + 1) * 3]);
+                results.push((policy, wdl));
             }
 
             results
@@ -196,7 +207,7 @@ mod tract_impl {
             Self::from_typed_model(optimized)
         }
 
-        fn run_inference(&self, state: &GameState) -> (Vec<f32>, f32) {
+        fn run_inference(&self, state: &GameState) -> (Vec<f32>, [f32; 3]) {
             let c = serialization::NUM_CHANNELS;
             let d = serialization::BOARD_DIM;
 
@@ -231,15 +242,13 @@ mod tract_impl {
                 }
             }
 
-            // WDL logits → softmax → scalar value = W - L
-            let wdl = value_tensor.as_slice().unwrap();
-            let value = crate::inference::wdl_to_value(wdl);
-            (policy, value)
+            let wdl = crate::inference::softmax_wdl(value_tensor.as_slice().unwrap());
+            (policy, wdl)
         }
     }
 
     impl Evaluator for TractEvaluator {
-        fn evaluate(&self, state: &GameState) -> (Vec<f32>, f32) {
+        fn evaluate(&self, state: &GameState) -> (Vec<f32>, [f32; 3]) {
             self.run_inference(state)
         }
     }
@@ -300,10 +309,14 @@ mod tests {
         let model_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../.data/gen1/model/best.onnx");
         let eval = super::TractEvaluator::from_path(model_path).expect("load failed");
         let state = GameState::new();
-        let (policy, value) = eval.evaluate(&state);
+        let (policy, wdl) = eval.evaluate(&state);
 
         assert_eq!(policy.len(), serialization::num_move_indices());
-        assert!(value > -1.0 && value < 1.0, "value {value} out of range");
+        let wdl_sum = wdl[0] + wdl[1] + wdl[2];
+        assert!((wdl_sum - 1.0).abs() < 1e-4, "wdl sum {wdl_sum} != 1.0");
+        for &p in &wdl {
+            assert!((0.0..=1.0).contains(&p), "wdl probability {p} out of range");
+        }
         let sum: f32 = policy.iter().sum();
         assert!((sum - 1.0).abs() < 0.01, "policy sum {sum} != 1.0");
     }
@@ -318,13 +331,17 @@ mod tests {
         let onnx = super::OnnxEvaluator::from_path(model_path).expect("onnx load failed");
         let state = GameState::new();
 
-        let (tract_policy, tract_value) = tract.evaluate(&state);
-        let (onnx_policy, onnx_value) = onnx.evaluate(&state);
+        let (tract_policy, tract_wdl) = tract.evaluate(&state);
+        let (onnx_policy, onnx_wdl) = onnx.evaluate(&state);
 
-        assert!(
-            (tract_value - onnx_value).abs() < 0.01,
-            "value mismatch: tract={tract_value}, onnx={onnx_value}"
-        );
+        for i in 0..3 {
+            assert!(
+                (tract_wdl[i] - onnx_wdl[i]).abs() < 0.01,
+                "wdl[{i}] mismatch: tract={}, onnx={}",
+                tract_wdl[i],
+                onnx_wdl[i],
+            );
+        }
 
         let tract_top = tract_policy
             .iter()

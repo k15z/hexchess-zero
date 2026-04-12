@@ -153,6 +153,11 @@ pub struct SearchConfig {
     pub resign: ResignConfig,
     /// Use LCB (lower confidence bound) for final move selection.
     pub use_lcb: bool,
+    /// Draw-utility ("contempt") added to PUCT Q as `draw_utility * D`.
+    /// 0.0 preserves pure `W - L` AlphaZero behavior. Positive values make
+    /// draws feel like partial wins; negative values are classic Lc0-style
+    /// contempt where draws feel like partial losses.
+    pub draw_utility: f32,
     /// Treat 2-fold repetition encountered within a search path as an immediate draw.
     pub two_fold_as_draw: bool,
     /// Optional seed for the internal RNG (used for Dirichlet noise sampling
@@ -179,6 +184,7 @@ impl SearchConfig {
             pcr: PcrConfig::default(),
             resign: ResignConfig::default(),
             use_lcb: false,
+            draw_utility: 0.0,
             two_fold_as_draw: true,
             rng_seed: None,
         }
@@ -214,6 +220,7 @@ impl SearchConfig {
                 ..ResignConfig::default()
             },
             use_lcb: true,
+            draw_utility: 0.0,
             two_fold_as_draw: true,
             rng_seed: None,
         }
@@ -241,20 +248,32 @@ pub fn dynamic_c_puct(base: f32, c2: f32, parent_visits: u32) -> f32 {
 // Evaluator trait
 // ---------------------------------------------------------------------------
 
-/// Trait for position evaluation, returning a policy vector and scalar value.
+/// Trait for position evaluation, returning a policy vector and a WDL
+/// probability distribution.
 ///
 /// The policy vector is a probability distribution over move indices (length
-/// `serialization::num_move_indices()`). The value is in [-1, 1] where
-/// positive means good for the side to move.
+/// `serialization::num_move_indices()`). The value is `[W, D, L]` — win,
+/// draw, and loss probabilities from the side-to-move's perspective, summing
+/// to 1. Historically this was a single scalar `W - L`; carrying the full
+/// distribution lets MCTS drive resignation off real `P(W)` and lets an
+/// optional draw-contempt knob reshape PUCT Q.
 pub trait Evaluator: Send + Sync {
-    fn evaluate(&self, state: &GameState) -> (Vec<f32>, f32);
+    fn evaluate(&self, state: &GameState) -> (Vec<f32>, [f32; 3]);
 
     /// Evaluate multiple positions in a single batch. The default implementation
     /// calls `evaluate` sequentially; backends that support batched inference
     /// (e.g. ONNX Runtime) should override this for better throughput.
-    fn evaluate_batch(&self, states: &[&GameState]) -> Vec<(Vec<f32>, f32)> {
+    fn evaluate_batch(&self, states: &[&GameState]) -> Vec<(Vec<f32>, [f32; 3])> {
         states.iter().map(|s| self.evaluate(s)).collect()
     }
+}
+
+/// Project a scalar value in `[-1, 1]` into a WDL distribution with zero
+/// draw mass: `[(1+v)/2, 0, (1-v)/2]`. This preserves `W - L == v` exactly
+/// and is used by non-NN evaluators that only produce a scalar.
+pub fn scalar_to_wdl(v: f32) -> [f32; 3] {
+    let v = v.clamp(-1.0, 1.0);
+    [0.5 * (1.0 + v), 0.0, 0.5 * (1.0 - v)]
 }
 
 // ---------------------------------------------------------------------------
@@ -265,7 +284,7 @@ pub trait Evaluator: Send + Sync {
 pub struct HeuristicEvaluator;
 
 impl Evaluator for HeuristicEvaluator {
-    fn evaluate(&self, state: &GameState) -> (Vec<f32>, f32) {
+    fn evaluate(&self, state: &GameState) -> (Vec<f32>, [f32; 3]) {
         let moves = state.legal_moves();
         let num_indices = serialization::num_move_indices();
         let mut policy = vec![0.0f32; num_indices];
@@ -283,7 +302,7 @@ impl Evaluator for HeuristicEvaluator {
         let cp = eval::evaluate(state) as f32;
         let value = (cp / eval::CP_TANH_SCALE).tanh();
 
-        (policy, value)
+        (policy, scalar_to_wdl(value))
     }
 }
 
@@ -312,7 +331,7 @@ impl WeightedHeuristicEvaluator {
 }
 
 impl Evaluator for WeightedHeuristicEvaluator {
-    fn evaluate(&self, state: &GameState) -> (Vec<f32>, f32) {
+    fn evaluate(&self, state: &GameState) -> (Vec<f32>, [f32; 3]) {
         let moves = state.legal_moves();
         let num_indices = serialization::num_move_indices();
         let mut policy = vec![0.0f32; num_indices];
@@ -354,7 +373,7 @@ impl Evaluator for WeightedHeuristicEvaluator {
         let cp = eval::evaluate_weighted(state, &self.weights) as f32;
         let value = (cp / eval::CP_TANH_SCALE).tanh();
 
-        (policy, value)
+        (policy, scalar_to_wdl(value))
     }
 }
 
@@ -367,9 +386,15 @@ struct MctsNode {
     action_index: Option<usize>,
     children: Vec<usize>,
     visit_count: u32,
-    value_sum: f64,
-    /// Welford M2 accumulator (sum of squared deviations) of backed-up
-    /// values at this node, used for LCB variance estimates.
+    /// Running sum of backed-up WDL probability vectors `[W, D, L]`, always
+    /// from this node's side-to-move perspective. Backprop swaps W and L on
+    /// each parent hop.
+    value_sum: [f64; 3],
+    /// Welford M2 accumulator (sum of squared deviations) of the scalar
+    /// `W - L` projections of each backup, used for LCB confidence intervals
+    /// on the scalar choice function. Tracking variance on the WDL vector
+    /// would require a covariance matrix for no added signal since LCB
+    /// picks a single move on the scalar axis.
     m2: f64,
     prior: f32,
     is_expanded: bool,
@@ -382,23 +407,54 @@ impl MctsNode {
             action_index,
             children: Vec::new(),
             visit_count: 0,
-            value_sum: 0.0,
+            value_sum: [0.0; 3],
             m2: 0.0,
             prior,
             is_expanded: false,
         }
     }
 
+    /// Average WDL distribution `[W, D, L]` over this node's visits.
+    fn q_wdl(&self) -> [f64; 3] {
+        if self.visit_count == 0 {
+            return [0.0; 3];
+        }
+        let n = self.visit_count as f64;
+        [
+            self.value_sum[0] / n,
+            self.value_sum[1] / n,
+            self.value_sum[2] / n,
+        ]
+    }
+
+    /// Scalar `W - L` projection of the node's average WDL. This is the
+    /// canonical AlphaZero Q and is what PUCT compares when `draw_utility`
+    /// is 0.
     fn q_value(&self) -> f64 {
         if self.visit_count == 0 {
             0.0
         } else {
-            self.value_sum / self.visit_count as f64
+            let n = self.visit_count as f64;
+            (self.value_sum[0] - self.value_sum[2]) / n
         }
     }
 
-    /// Sample variance of backed-up values (Welford / (n-1)). Zero when
-    /// fewer than 2 samples are present.
+    /// Contempt-adjusted scalar Q: `W - L + draw_utility * D`. With
+    /// `draw_utility == 0` this is exactly [`Self::q_value`]; positive
+    /// values treat draws as partial wins (appropriate for the weaker
+    /// side) and negative values treat draws as partial losses (classic
+    /// contempt for the stronger side).
+    fn q_value_contempt(&self, draw_utility: f64) -> f64 {
+        if self.visit_count == 0 {
+            0.0
+        } else {
+            let n = self.visit_count as f64;
+            (self.value_sum[0] - self.value_sum[2] + draw_utility * self.value_sum[1]) / n
+        }
+    }
+
+    /// Sample variance of the scalar `W - L` backups (Welford / (n-1)).
+    /// Zero when fewer than 2 samples are present.
     fn variance(&self) -> f64 {
         if self.visit_count < 2 {
             0.0
@@ -406,6 +462,24 @@ impl MctsNode {
             self.m2 / (self.visit_count as f64 - 1.0)
         }
     }
+}
+
+/// Map a terminal `GameState` to a 1-hot WDL vector from the side-to-move
+/// perspective. `None` returns a neutral draw, matching the legacy scalar
+/// fallback of `outcome_value().unwrap_or(0.0)`.
+fn terminal_wdl(state: &GameState) -> [f64; 3] {
+    match state.outcome_value() {
+        Some(v) if v > 0.5 => [1.0, 0.0, 0.0],
+        Some(v) if v < -0.5 => [0.0, 0.0, 1.0],
+        _ => [0.0, 1.0, 0.0],
+    }
+}
+
+/// Swap the win and loss components of a WDL vector. Applied at each parent
+/// hop during backpropagation because the STM changes.
+#[inline]
+fn flip_wdl(wdl: [f64; 3]) -> [f64; 3] {
+    [wdl[2], wdl[1], wdl[0]]
 }
 
 // ---------------------------------------------------------------------------
@@ -417,8 +491,13 @@ pub struct SearchResult {
     pub best_move: Move,
     /// Visit-count distribution over all move indices (normalized to sum to 1).
     pub policy: Vec<f32>,
-    /// Value estimate of the root position.
+    /// Scalar value estimate `W - L` of the root position, for back-compat
+    /// with callers that only want a single number. Equals `wdl[0] - wdl[2]`.
     pub value: f32,
+    /// Average WDL distribution `[W, D, L]` at the root, from the root's
+    /// side-to-move perspective. Preserves the draw mass that callers need
+    /// for resignation (`P(W) < threshold`) and calibration.
+    pub wdl: [f32; 3],
     /// Visit count at the root node (= number of simulations whose
     /// backups reached the root). For a search with no early-terminal
     /// hits, this equals the requested simulation count.
@@ -473,7 +552,7 @@ enum DescendOutcome {
 struct LeafInfo {
     path: Vec<usize>,
     leaf_state: Option<GameState>,
-    terminal_value: f64,
+    terminal_wdl: [f64; 3],
     key: TtKey,
 }
 
@@ -481,7 +560,7 @@ pub struct MctsSearch {
     nodes: Vec<MctsNode>,
     evaluator: Box<dyn Evaluator>,
     config: SearchConfig,
-    tt: HashMap<TtKey, (Vec<f32>, f32)>,
+    tt: HashMap<TtKey, (Vec<f32>, [f32; 3])>,
     tt_hits: u64,
     tt_misses: u64,
     tt_clears: u64,
@@ -560,11 +639,18 @@ impl MctsSearch {
         self.config.dirichlet = config;
     }
 
+    /// Set the draw-utility ("contempt") knob in the current config. Positive
+    /// values bias search toward draws, negative values bias away. 0 recovers
+    /// pure `W - L` AlphaZero behavior.
+    pub fn set_draw_utility(&mut self, draw_utility: f32) {
+        self.config.draw_utility = draw_utility;
+    }
+
     pub fn reset(&mut self) {
         self.nodes.clear();
     }
 
-    fn tt_insert(&mut self, key: TtKey, entry: (Vec<f32>, f32)) {
+    fn tt_insert(&mut self, key: TtKey, entry: (Vec<f32>, [f32; 3])) {
         if self.tt.len() >= self.config.tt_capacity {
             self.tt.clear();
             self.tt_clears += 1;
@@ -685,16 +771,16 @@ impl MctsSearch {
         let node_idx = *path.last().unwrap();
         let moves_made = path.len() - 1;
 
-        let value = match outcome {
-            DescendOutcome::TwoFoldDraw => 0.0,
+        let wdl = match outcome {
+            DescendOutcome::TwoFoldDraw => [0.0, 1.0, 0.0],
             DescendOutcome::Leaf => {
                 if state.is_game_over() {
-                    state.outcome_value().unwrap_or(0.0) as f64
+                    terminal_wdl(state)
                 } else {
                     let key = TtKey::from_state(state);
                     if let Some(cached) = self.tt.get(&key) {
                         self.tt_hits += 1;
-                        let value_f64 = cached.1 as f64;
+                        let cached_wdl = cached.1;
                         Self::expand_nodes(
                             &mut self.nodes,
                             &self.config,
@@ -703,10 +789,14 @@ impl MctsSearch {
                             state,
                             &cached.0,
                         );
-                        value_f64
+                        [
+                            cached_wdl[0] as f64,
+                            cached_wdl[1] as f64,
+                            cached_wdl[2] as f64,
+                        ]
                     } else {
                         self.tt_misses += 1;
-                        let (policy, value) = self.evaluator.evaluate(state);
+                        let (policy, wdl) = self.evaluator.evaluate(state);
                         Self::expand_nodes(
                             &mut self.nodes,
                             &self.config,
@@ -715,14 +805,14 @@ impl MctsSearch {
                             state,
                             &policy,
                         );
-                        self.tt_insert(key, (policy, value));
-                        value as f64
+                        self.tt_insert(key, (policy, wdl));
+                        [wdl[0] as f64, wdl[1] as f64, wdl[2] as f64]
                     }
                 }
             }
         };
 
-        self.backpropagate(&path, value);
+        self.backpropagate(&path, wdl);
 
         for _ in 0..moves_made {
             state.undo_move();
@@ -760,24 +850,24 @@ impl MctsSearch {
                         leaves.push(LeafInfo {
                             path,
                             leaf_state: None,
-                            terminal_value: 0.0,
+                            terminal_wdl: [0.0, 1.0, 0.0],
                             key,
                         });
                     }
                     DescendOutcome::Leaf if state.is_game_over() => {
-                        let val = state.outcome_value().unwrap_or(0.0) as f64;
+                        let wdl = terminal_wdl(state);
                         self.apply_virtual_loss(&path);
                         leaves.push(LeafInfo {
                             path,
                             leaf_state: None,
-                            terminal_value: val,
+                            terminal_wdl: wdl,
                             key,
                         });
                     }
                     DescendOutcome::Leaf => {
                         if let Some(cached) = self.tt.get(&key) {
                             self.tt_hits += 1;
-                            let val = cached.1 as f64;
+                            let cached_wdl = cached.1;
                             Self::expand_nodes(
                                 &mut self.nodes,
                                 &self.config,
@@ -790,7 +880,11 @@ impl MctsSearch {
                             leaves.push(LeafInfo {
                                 path,
                                 leaf_state: None,
-                                terminal_value: val,
+                                terminal_wdl: [
+                                    cached_wdl[0] as f64,
+                                    cached_wdl[1] as f64,
+                                    cached_wdl[2] as f64,
+                                ],
                                 key,
                             });
                         } else {
@@ -800,7 +894,7 @@ impl MctsSearch {
                             leaves.push(LeafInfo {
                                 path,
                                 leaf_state: Some(snapshot),
-                                terminal_value: 0.0,
+                                terminal_wdl: [0.0; 3],
                                 key,
                             });
                         }
@@ -820,7 +914,7 @@ impl MctsSearch {
                 }
             }
 
-            let eval_results: Vec<(Vec<f32>, f32)> = if eval_indices.is_empty() {
+            let eval_results: Vec<(Vec<f32>, [f32; 3])> = if eval_indices.is_empty() {
                 Vec::new()
             } else {
                 let states_for_eval: Vec<&GameState> = eval_indices
@@ -833,9 +927,9 @@ impl MctsSearch {
             for leaf in &mut leaves {
                 self.remove_virtual_loss(&leaf.path);
 
-                let value = if let Some(ref leaf_state) = leaf.leaf_state {
+                let wdl = if let Some(ref leaf_state) = leaf.leaf_state {
                     let result_idx = seen_keys[&leaf.key];
-                    let (policy, val) = &eval_results[result_idx];
+                    let (policy, wdl) = &eval_results[result_idx];
                     let node_idx = *leaf.path.last().unwrap();
 
                     if !self.nodes[node_idx].is_expanded {
@@ -847,14 +941,14 @@ impl MctsSearch {
                             leaf_state,
                             policy,
                         );
-                        self.tt_insert(leaf.key, (policy.clone(), *val));
+                        self.tt_insert(leaf.key, (policy.clone(), *wdl));
                     }
-                    *val as f64
+                    [wdl[0] as f64, wdl[1] as f64, wdl[2] as f64]
                 } else {
-                    leaf.terminal_value
+                    leaf.terminal_wdl
                 };
 
-                self.backpropagate(&leaf.path, value);
+                self.backpropagate(&leaf.path, wdl);
             }
 
             done += batch_count as u32;
@@ -865,17 +959,20 @@ impl MctsSearch {
     }
 
     /// Apply virtual loss along a path: increment visit counts and add
-    /// VIRTUAL_LOSS to value sums to discourage re-selection.
+    /// VIRTUAL_LOSS to the win channel of the node's value sum to discourage
+    /// re-selection.
     ///
-    /// Rationale: PUCT uses `q = -child.q_value()` (negated for parent's
-    /// perspective). Adding to `value_sum` makes `q_value()` more positive,
-    /// so `-q_value()` becomes more negative, lowering the PUCT score and
-    /// discouraging the parent from re-selecting this child.
+    /// Rationale: PUCT uses `q = -child.q_value_contempt()` (negated for
+    /// parent's perspective). Bumping the `W` component of `value_sum` makes
+    /// `q_value()` more positive, so `-q_value()` becomes more negative,
+    /// lowering the PUCT score and discouraging the parent from re-selecting
+    /// this child. Virtual loss has no effect on contempt-adjusted Q beyond
+    /// the scalar W-L axis because we only touch the `W` channel.
     fn apply_virtual_loss(&mut self, path: &[usize]) {
         let vl = self.config.virtual_loss as f64;
         for &idx in path {
             self.nodes[idx].visit_count += 1;
-            self.nodes[idx].value_sum += vl;
+            self.nodes[idx].value_sum[0] += vl;
         }
     }
 
@@ -883,7 +980,7 @@ impl MctsSearch {
         let vl = self.config.virtual_loss as f64;
         for &idx in path {
             self.nodes[idx].visit_count -= 1;
-            self.nodes[idx].value_sum -= vl;
+            self.nodes[idx].value_sum[0] -= vl;
         }
     }
 
@@ -893,7 +990,8 @@ impl MctsSearch {
         let parent = &self.nodes[node_idx];
         let parent_visits = parent.visit_count;
         let parent_visits_sqrt = (parent_visits as f64).sqrt();
-        let parent_q = parent.q_value();
+        let draw_utility = self.config.draw_utility as f64;
+        let parent_q = parent.q_value_contempt(draw_utility);
 
         let base = if is_root {
             self.config.c_puct_root
@@ -924,7 +1022,7 @@ impl MctsSearch {
             let q = if child.visit_count == 0 {
                 q_fpu
             } else {
-                -child.q_value()
+                -child.q_value_contempt(draw_utility)
             };
             let u = c * child.prior as f64 * parent_visits_sqrt / (1.0 + child.visit_count as f64);
             let score = q + u;
@@ -1027,28 +1125,37 @@ impl MctsSearch {
         nodes[node_idx].is_expanded = true;
     }
 
-    fn backpropagate(&mut self, path: &[usize], leaf_value: f64) {
-        let mut value = leaf_value;
+    fn backpropagate(&mut self, path: &[usize], leaf_wdl: [f64; 3]) {
+        let mut wdl = leaf_wdl;
         let track_variance = self.config.use_lcb;
         for &node_idx in path.iter().rev() {
             let node = &mut self.nodes[node_idx];
             if track_variance {
+                // Welford update on the scalar W-L projection. This is the
+                // only dimension LCB actually consumes — tracking a full
+                // WDL covariance would not change any move choice.
+                let scalar = wdl[0] - wdl[2];
                 let old_mean = if node.visit_count == 0 {
                     0.0
                 } else {
-                    node.value_sum / node.visit_count as f64
+                    (node.value_sum[0] - node.value_sum[2]) / node.visit_count as f64
                 };
                 node.visit_count += 1;
-                node.value_sum += value;
-                let new_mean = node.value_sum / node.visit_count as f64;
-                let delta = value - old_mean;
-                let delta2 = value - new_mean;
+                node.value_sum[0] += wdl[0];
+                node.value_sum[1] += wdl[1];
+                node.value_sum[2] += wdl[2];
+                let new_mean = (node.value_sum[0] - node.value_sum[2]) / node.visit_count as f64;
+                let delta = scalar - old_mean;
+                let delta2 = scalar - new_mean;
                 node.m2 += delta * delta2;
             } else {
                 node.visit_count += 1;
-                node.value_sum += value;
+                node.value_sum[0] += wdl[0];
+                node.value_sum[1] += wdl[1];
+                node.value_sum[2] += wdl[2];
             }
-            value = -value;
+            // STM flips at the parent, so the parent sees W and L swapped.
+            wdl = flip_wdl(wdl);
         }
     }
 
@@ -1133,12 +1240,15 @@ impl MctsSearch {
             }
         }
 
-        let value = self.nodes[0].q_value() as f32;
+        let root_wdl = self.nodes[0].q_wdl();
+        let wdl = [root_wdl[0] as f32, root_wdl[1] as f32, root_wdl[2] as f32];
+        let value = wdl[0] - wdl[2];
 
         SearchResult {
             best_move,
             policy,
             value,
+            wdl,
             // Root visit count, not arena size: this is what the Python
             // consumer records as `root_n` on each training sample.
             nodes_searched: self.nodes[0].visit_count,
@@ -1221,6 +1331,7 @@ impl MctsSearch {
         PcrOutcome {
             best_move: result.best_move,
             value: result.value,
+            wdl: result.wdl,
             nodes_searched: result.nodes_searched,
             was_full_search: was_full,
             policy_target,
@@ -1446,8 +1557,12 @@ impl MctsSearch {
 pub struct PcrOutcome {
     /// The move chosen to actually play.
     pub best_move: Move,
-    /// Root value estimate from the search.
+    /// Scalar `W - L` root value, kept for back-compat with callers that
+    /// only want one number.
     pub value: f32,
+    /// Root WDL distribution `[W, D, L]` from STM perspective. The worker
+    /// uses `wdl[0]` as the resignation signal `P(W)`.
+    pub wdl: [f32; 3],
     /// Root visit count after the search (= simulations whose backups
     /// reached the root). Equals the requested sim count absent early
     /// terminal hits. This is what the trainer stores as `root_n`.
@@ -1582,13 +1697,20 @@ mod tests {
     fn heuristic_evaluator_returns_valid_policy() {
         let evaluator = HeuristicEvaluator;
         let state = GameState::new();
-        let (policy, value) = evaluator.evaluate(&state);
+        let (policy, wdl) = evaluator.evaluate(&state);
 
-        // Starting position is symmetric — value should be near zero.
+        // Starting position is symmetric — scalar W−L should be near zero
+        // and the WDL distribution should sum to 1.
+        let value = wdl[0] - wdl[2];
         assert!(
             value.abs() < 1e-4,
             "value should be ~0.0 for starting pos, got {}",
             value
+        );
+        let wdl_sum = wdl[0] + wdl[1] + wdl[2];
+        assert!(
+            (wdl_sum - 1.0).abs() < 1e-4,
+            "wdl should sum to 1, got {wdl_sum}"
         );
 
         // Policy should sum to ~1 over legal moves.
@@ -1726,13 +1848,13 @@ mod tests {
     }
 
     impl Evaluator for CountingEvaluator {
-        fn evaluate(&self, state: &GameState) -> (Vec<f32>, f32) {
+        fn evaluate(&self, state: &GameState) -> (Vec<f32>, [f32; 3]) {
             self.single_calls
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             HeuristicEvaluator.evaluate(state)
         }
 
-        fn evaluate_batch(&self, states: &[&GameState]) -> Vec<(Vec<f32>, f32)> {
+        fn evaluate_batch(&self, states: &[&GameState]) -> Vec<(Vec<f32>, [f32; 3])> {
             self.batch_calls
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             states
@@ -1745,10 +1867,10 @@ mod tests {
     /// Wrapper to share a CountingEvaluator via Arc while implementing Evaluator.
     struct ArcEval(std::sync::Arc<CountingEvaluator>);
     impl Evaluator for ArcEval {
-        fn evaluate(&self, state: &GameState) -> (Vec<f32>, f32) {
+        fn evaluate(&self, state: &GameState) -> (Vec<f32>, [f32; 3]) {
             self.0.evaluate(state)
         }
-        fn evaluate_batch(&self, states: &[&GameState]) -> Vec<(Vec<f32>, f32)> {
+        fn evaluate_batch(&self, states: &[&GameState]) -> Vec<(Vec<f32>, [f32; 3])> {
             self.0.evaluate_batch(states)
         }
     }
@@ -2085,6 +2207,7 @@ mod tests {
         assert!(t.two_fold_as_draw);
         assert!(t.dirichlet.is_some());
         assert!(!t.use_lcb);
+        assert_eq!(t.draw_utility, 0.0);
 
         let e = SearchConfig::eval();
         assert_eq!(e.fpu_reduction, 0.2);
@@ -2092,6 +2215,7 @@ mod tests {
         assert_eq!(e.forced_playout_k, 0.0);
         assert!(e.use_lcb);
         assert_eq!(e.pcr.p_full, 1.0);
+        assert_eq!(e.draw_utility, 0.0);
     }
 
     #[test]
@@ -2262,14 +2386,16 @@ mod tests {
 
         let mut c_a = MctsNode::new(Some(legal[0]), Some(0), 0.5);
         c_a.visit_count = 100;
-        c_a.value_sum = -60.0;
+        // Equivalent to the legacy scalar `value_sum = -60`: all loss mass,
+        // no draws, Q = (0 − 60) / 100 = −0.6.
+        c_a.value_sum = [0.0, 0.0, 60.0];
         c_a.m2 = 1.0;
         search.nodes.push(c_a);
         search.nodes[0].children.push(1);
 
         let mut c_b = MctsNode::new(Some(legal[1]), Some(1), 0.5);
         c_b.visit_count = 100;
-        c_b.value_sum = -62.0;
+        c_b.value_sum = [0.0, 0.0, 62.0];
         c_b.m2 = 0.01;
         search.nodes.push(c_b);
         search.nodes[0].children.push(2);
@@ -2303,14 +2429,16 @@ mod tests {
 
         let mut c_a = MctsNode::new(Some(legal[0]), Some(0), 0.5);
         c_a.visit_count = 200;
-        c_a.value_sum = -100.0; // Q = -0.5 → root-side q = 0.5
+        // value_sum in WDL form: Q = (0 − 100)/200 = −0.5 → root-side q = 0.5.
+        c_a.value_sum = [0.0, 0.0, 100.0];
         c_a.m2 = 50.0; // var ≈ 0.2513
         search.nodes.push(c_a);
         search.nodes[0].children.push(1);
 
         let mut c_b = MctsNode::new(Some(legal[1]), Some(1), 0.5);
         c_b.visit_count = 100;
-        c_b.value_sum = -48.0; // Q = -0.48 → q = 0.48
+        // Q = (0 − 48)/100 = −0.48 → root-side q = 0.48.
+        c_b.value_sum = [0.0, 0.0, 48.0];
         c_b.m2 = 0.5; // var ≈ 0.00505
         search.nodes.push(c_b);
         search.nodes[0].children.push(2);
@@ -2356,14 +2484,14 @@ mod tests {
         // Same values as the LCB test — LCB would pick c_b, visit-max picks c_a.
         let mut c_a = MctsNode::new(Some(legal[0]), Some(0), 0.5);
         c_a.visit_count = 200;
-        c_a.value_sum = -100.0;
+        c_a.value_sum = [0.0, 0.0, 100.0];
         c_a.m2 = 50.0;
         search.nodes.push(c_a);
         search.nodes[0].children.push(1);
 
         let mut c_b = MctsNode::new(Some(legal[1]), Some(1), 0.5);
         c_b.visit_count = 100;
-        c_b.value_sum = -48.0;
+        c_b.value_sum = [0.0, 0.0, 48.0];
         c_b.m2 = 0.5;
         search.nodes.push(c_b);
         search.nodes[0].children.push(2);
@@ -2485,7 +2613,7 @@ mod tests {
 
         let mut c_a = MctsNode::new(Some(legal[0]), Some(0), 0.5);
         c_a.visit_count = 200;
-        c_a.value_sum = -100.0;
+        c_a.value_sum = [0.0, 0.0, 100.0];
         c_a.m2 = 50.0;
         c_a.is_expanded = true;
         search.nodes.push(c_a);
@@ -2493,7 +2621,7 @@ mod tests {
 
         let mut c_b = MctsNode::new(Some(legal[1]), Some(1), 0.5);
         c_b.visit_count = 100;
-        c_b.value_sum = -48.0;
+        c_b.value_sum = [0.0, 0.0, 48.0];
         c_b.m2 = 0.5;
         c_b.is_expanded = true;
         search.nodes.push(c_b);
@@ -2560,7 +2688,7 @@ mod tests {
 
         let mut c_a = MctsNode::new(Some(legal[0]), Some(0), 0.5);
         c_a.visit_count = 200;
-        c_a.value_sum = -100.0;
+        c_a.value_sum = [0.0, 0.0, 100.0];
         c_a.m2 = 50.0;
         c_a.is_expanded = true;
         search.nodes.push(c_a);
@@ -2568,7 +2696,7 @@ mod tests {
 
         let mut c_b = MctsNode::new(Some(legal[1]), Some(1), 0.5);
         c_b.visit_count = 100;
-        c_b.value_sum = -48.0;
+        c_b.value_sum = [0.0, 0.0, 48.0];
         c_b.m2 = 0.5;
         c_b.is_expanded = true;
         search.nodes.push(c_b);
