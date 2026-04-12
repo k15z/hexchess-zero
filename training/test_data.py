@@ -1,14 +1,15 @@
-"""Tests for the chunk-6 v2 .npz loader + target-dict builder."""
+"""Tests for the training-data loaders and target-dict builder."""
 
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from training.data_v2 import (
-    V2Batch,
+from training.data import (
+    TrainingBatch,
     build_targets_dict,
-    load_v2_npz,
+    load_imitation_npz,
+    load_selfplay_npz,
 )
 
 
@@ -18,7 +19,7 @@ def _write_synthetic_npz(path: Path, n: int = 5, num_moves: int = 17, *,
     boards = rng.integers(-2, 3, size=(n, 22, 11, 11), dtype=np.int8)
     # Each position: visit distribution on 3 of 5 legal moves.
     # The legal_mask is wider than the visited set on purpose so tests can
-    # verify that load_v2_npz reads it as-is instead of deriving it from
+    # verify that load_selfplay_npz reads it as-is instead of deriving it from
     # `policy > 0` (which would drop the 2 legal-but-unvisited moves).
     policy = np.zeros((n, num_moves), dtype=np.float16)
     legal_mask = np.zeros((n, num_moves), dtype=bool)
@@ -57,11 +58,38 @@ def _write_synthetic_npz(path: Path, n: int = 5, num_moves: int = 17, *,
     )
 
 
-def test_loads_v2_npz(tmp_path: Path):
+def _write_imitation_npz(
+    path: Path, *, n: int = 4, num_moves: int = 11, include_legal_masks: bool = True,
+) -> None:
+    rng = np.random.default_rng(0)
+    boards = rng.standard_normal((n, 22, 11, 11)).astype(np.float32)
+    policies = np.zeros((n, num_moves), dtype=np.float32)
+    legal_masks = np.zeros((n, num_moves), dtype=bool)
+    for i in range(n):
+        legal_idx = rng.choice(num_moves, size=5, replace=False)
+        legal_masks[i, legal_idx] = True
+        visited = legal_idx[:3]
+        pi = rng.random(3).astype(np.float32)
+        pi /= pi.sum()
+        policies[i, visited] = pi
+    outcomes = np.tile(
+        np.array([1.0, 0.0, 0.0], dtype=np.float32), (n, 1)
+    )
+    arrays = {
+        "boards": boards,
+        "policies": policies,
+        "outcomes": outcomes,
+    }
+    if include_legal_masks:
+        arrays["legal_masks"] = legal_masks
+    np.savez_compressed(str(path), **arrays)
+
+
+def test_loads_selfplay_npz(tmp_path: Path):
     path = tmp_path / "sample.npz"
     _write_synthetic_npz(path, n=8)
-    batch = load_v2_npz(path)
-    assert isinstance(batch, V2Batch)
+    batch = load_selfplay_npz(path)
+    assert isinstance(batch, TrainingBatch)
     assert len(batch) == 8
     assert batch.boards.dtype == np.float32
     assert batch.boards.shape == (8, 22, 11, 11)
@@ -76,7 +104,7 @@ def test_loads_v2_npz(tmp_path: Path):
 def test_filters_non_full_search_rows(tmp_path: Path):
     path = tmp_path / "mixed.npz"
     _write_synthetic_npz(path, n=6, all_full=False)
-    batch = load_v2_npz(path)
+    batch = load_selfplay_npz(path)
     # Only indices 0,2,4 are full-search
     assert len(batch) == 3
 
@@ -103,13 +131,13 @@ def test_empty_full_search_raises(tmp_path: Path):
     }
     np.savez_compressed(str(path), **arrays)
     with pytest.raises(ValueError):
-        load_v2_npz(path)
+        load_selfplay_npz(path)
 
 
-def test_load_v2_npz_raises_on_missing_legal_mask(tmp_path: Path):
-    """Stale v2 .npz without legal_mask must raise a clear schema error.
+def test_load_selfplay_npz_raises_on_missing_legal_mask(tmp_path: Path):
+    """Stale self-play .npz without legal_mask must raise a clear schema error.
 
-    This guards the trainer: ``ReplayBufferV2`` lets the KeyError escape
+    This guards the trainer: ``ReplayBuffer`` lets the KeyError escape
     so stale pre-schema-change cached files crash loudly instead of
     silently hanging the retry loop.
     """
@@ -128,7 +156,7 @@ def test_load_v2_npz_raises_on_missing_legal_mask(tmp_path: Path):
     }
     np.savez_compressed(str(path), **arrays)
     with pytest.raises(KeyError, match="legal_mask"):
-        load_v2_npz(path)
+        load_selfplay_npz(path)
 
 
 def test_legal_mask_includes_unvisited_legal_moves(tmp_path: Path):
@@ -142,7 +170,7 @@ def test_legal_mask_includes_unvisited_legal_moves(tmp_path: Path):
     """
     path = tmp_path / "sample.npz"
     _write_synthetic_npz(path, n=4, num_moves=11)
-    batch = load_v2_npz(path)
+    batch = load_selfplay_npz(path)
     assert batch.legal_mask.dtype == bool
     visit_mask = batch.policy > 0.0
     # Every visited move is legal.
@@ -156,7 +184,7 @@ def test_legal_mask_includes_unvisited_legal_moves(tmp_path: Path):
 def test_build_targets_dict_shape_keys(tmp_path: Path):
     path = tmp_path / "s.npz"
     _write_synthetic_npz(path, n=4, num_moves=9)
-    batch = load_v2_npz(path)
+    batch = load_selfplay_npz(path)
     targets = build_targets_dict(batch)
     assert set(targets) == {"policy", "wdl", "mlh", "stv", "aux_policy"}
     assert targets["policy"].shape == (4, 9)
@@ -164,3 +192,20 @@ def test_build_targets_dict_shape_keys(tmp_path: Path):
     assert targets["mlh"].shape == (4,)
     assert targets["stv"].shape == (4, 3)
     assert targets["aux_policy"].shape == (4, 9)
+
+
+def test_load_imitation_npz_preserves_true_legal_mask(tmp_path: Path):
+    path = tmp_path / "imit.npz"
+    _write_imitation_npz(path)
+    batch = load_imitation_npz(path)
+    visit_mask = batch.policy > 0.0
+    assert batch.legal_mask.dtype == bool
+    assert (batch.legal_mask | ~visit_mask).all()
+    assert ((batch.legal_mask & ~visit_mask).sum(axis=1) > 0).all()
+
+
+def test_load_imitation_npz_raises_on_missing_legal_masks(tmp_path: Path):
+    path = tmp_path / "stale.npz"
+    _write_imitation_npz(path, include_legal_masks=False)
+    with pytest.raises(KeyError, match="legal_masks"):
+        load_imitation_npz(path)
