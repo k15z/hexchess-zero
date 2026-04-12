@@ -847,11 +847,16 @@ def run_trainer(cfg: AsyncConfig) -> None:
     def reload_buffer() -> tuple[ReplayBufferV2, DataLoader, int]:
         n_total = storage.count_positions(storage.SELFPLAY_PREFIX)
         window = sublinear_window_size(n_total)
+        # Imitation mix is decayed against the *current* model version
+        # (captured from the enclosing scope, which advances on promotion)
+        # so the teacher signal fades as self-play matures — see
+        # AsyncConfig.imitation_mix_for_version.
+        mix = cfg.imitation_mix_for_version(current_version)
         ds = ReplayBufferV2(
             cfg.data_cache_dir / "selfplay",
             window_size=window,
             s3_prefix=storage.SELFPLAY_PREFIX,
-            imitation_mix=cfg.imitation_mix,
+            imitation_mix=mix,
         )
         dl = DataLoader(
             ds, batch_size=cfg.batch_size, num_workers=0,
@@ -888,8 +893,10 @@ def run_trainer(cfg: AsyncConfig) -> None:
                     logger.info("  Still waiting... bucket={:.0f} tokens, {:,} cumulative",
                                 bucket.tokens, bucket._cumulative_positions)
 
-        logger.info("Replay buffer: {} files, {:,} positions (window={:,})",
-                    len(dataset.files), dataset.total_positions, dataset.window_size)
+        logger.info("Replay buffer: {} files, {:,} positions (window={:,}) "
+                    "| imitation_mix={:.2f} ({} imitation files)",
+                    len(dataset.files), dataset.total_positions, dataset.window_size,
+                    dataset.imitation_mix, len(dataset.imitation_files))
         logger.info("Train bucket: {:.0f} tokens available ({:,} new, +{:.0f} tokens)",
                     bucket.tokens, bucket._last_new, bucket._last_added)
 
