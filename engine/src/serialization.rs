@@ -18,25 +18,54 @@ pub const NUM_CHANNELS: usize = 22;
 pub const BOARD_DIM: usize = 11;
 pub const TENSOR_SIZE: usize = NUM_CHANNELS * BOARD_DIM * BOARD_DIM;
 
-/// Encode a game state as a flat f32 tensor in CHW layout.
+/// Encode a game state as a flat f32 tensor in CHW layout, in **side-to-move
+/// frame**.
 ///
 /// The 91-cell hex grid is embedded into an 11x11 rectangular array using
 /// `col = q + 5`, `row = r + 5`. Invalid cells are zero-padded.
 ///
+/// ## Side-to-move frame
+///
+/// The position is always encoded from the perspective of the player whose
+/// turn it is ("STM"):
+///
+/// - Piece planes 0-5 are **STM pieces** (my side), planes 6-11 are **opponent
+///   pieces**. When white is to move this matches the absolute layout; when
+///   black is to move the color roles are swapped.
+/// - When black is to move, every spatial coordinate is additionally passed
+///   through the central-inversion involution `(q, r) → (-q, -r)` before
+///   embedding into the 11x11 grid. This is the unique hex symmetry that
+///   maps white pawn directions to black pawn directions and white promotion
+///   cells to black promotion cells (see `mirror_coord`). Combined with the
+///   color swap, the result is a board where the network always sees "my
+///   pawns moving in +r toward my promotion edge", regardless of absolute
+///   color.
+///
+/// This means the encoder absorbs the entire color symmetry of the game —
+/// the network does not need to learn that white and black are equivalent,
+/// and mirror augmentation becomes unnecessary (the symmetry is already
+/// baked into the encoding).
+///
+/// Policy vector semantics are defined in the same frame: see
+/// [`stm_policy_index`] for converting an absolute `Move` to its STM-relative
+/// move index.
+///
 /// Channels:
-///  0: White Pawn    1: White Knight   2: White Bishop
-///  3: White Rook    4: White Queen    5: White King
-///  6: Black Pawn    7: Black Knight   8: Black Bishop
-///  9: Black Rook   10: Black Queen   11: Black King
-/// 12: Side to move (1.0 = white, 0.0 = black; constant plane)
+///  0: STM Pawn      1: STM Knight     2: STM Bishop
+///  3: STM Rook      4: STM Queen      5: STM King
+///  6: Opp Pawn      7: Opp Knight     8: Opp Bishop
+///  9: Opp Rook     10: Opp Queen     11: Opp King
+/// 12: Absolute side-to-move (1.0 = white, 0.0 = black; constant plane).
+///     Redundant in STM frame but kept as a cheap signal for the network.
 /// 13: Move count (fullmove_number / 100.0; constant plane)
 /// 14: Halfmove clock (halfmove_clock / 100.0; constant plane)
-/// 15: En passant target (1.0 on the target cell, 0.0 elsewhere)
+/// 15: En passant target (1.0 on the target cell, 0.0 elsewhere; STM-framed)
 /// 16: Repetition count (0.0 / 1.0 / 2.0; constant plane)
-/// 17: Validity mask (1.0 on 91 valid hex cells, 0.0 on padding)
+/// 17: Validity mask (1.0 on 91 valid hex cells, 0.0 on padding). Invariant
+///     under central inversion, so identical in both frames.
 /// 18: In check (1.0 if side to move is in check; constant plane)
-/// 19: Last move from-square (1.0 at source of most recent move, else 0)
-/// 20: Last move to-square (1.0 at destination of most recent move, else 0)
+/// 19: Last move from-square (1.0 at source of most recent move; STM-framed)
+/// 20: Last move to-square (1.0 at destination of most recent move; STM-framed)
 /// 21: Plies-since-pawn-move (halfmove_clock / 50, clamped to [0, 1]; constant
 ///     plane). NOTE: we reuse the board's halfmove clock, which in this engine
 ///     resets on pawn moves OR captures (standard halfmove-clock semantics).
@@ -46,10 +75,20 @@ pub const TENSOR_SIZE: usize = NUM_CHANNELS * BOARD_DIM * BOARD_DIM;
 pub fn encode_board(state: &GameState) -> [f32; TENSOR_SIZE] {
     let board = &state.board;
     let mut tensor = [0.0f32; TENSOR_SIZE];
+    let stm = board.side_to_move;
 
     // Helper: index into the flat CHW tensor.
     let idx = |channel: usize, col: usize, row: usize| -> usize {
         channel * BOARD_DIM * BOARD_DIM + row * BOARD_DIM + col
+    };
+
+    // Helper: transform an absolute hex coord into STM frame.
+    // Identity for white-to-move; central inversion for black-to-move.
+    let to_stm = |c: HexCoord| -> HexCoord {
+        match stm {
+            Color::White => c,
+            Color::Black => mirror_coord(c),
+        }
     };
 
     // Piece planes (channels 0-11) and validity mask (channel 17).
@@ -59,21 +98,24 @@ pub fn encode_board(state: &GameState) -> [f32; TENSOR_SIZE] {
             if !coord.is_valid() {
                 continue;
             }
-            let col = (q + 5) as usize;
-            let row = (r + 5) as usize;
+            let stm_coord = to_stm(coord);
+            let col = (stm_coord.q + 5) as usize;
+            let row = (stm_coord.r + 5) as usize;
 
-            // Validity mask
+            // Validity mask (channel 17). Central inversion preserves
+            // is_valid() for every cell, so this is identical in both frames.
             tensor[idx(17, col, row)] = 1.0;
 
             if let Some(piece) = board.get(coord) {
-                let channel = piece_channel(piece.color, piece.kind);
+                let channel = stm_piece_channel(piece.color, piece.kind, stm);
                 tensor[idx(channel, col, row)] = 1.0;
             }
         }
     }
 
-    // Side to move (channel 12): constant plane.
-    let side_val = match board.side_to_move {
+    // Absolute side-to-move (channel 12): constant plane. Redundant in STM
+    // frame but kept as a cheap signal — 1.0 for white-to-move, 0.0 for black.
+    let side_val = match stm {
         Color::White => 1.0f32,
         Color::Black => 0.0f32,
     };
@@ -99,12 +141,13 @@ pub fn encode_board(state: &GameState) -> [f32; TENSOR_SIZE] {
         }
     }
 
-    // En passant (channel 15): single cell.
+    // En passant (channel 15): single cell, mapped through STM frame.
     if let Some(ep) = board.en_passant
         && ep.is_valid()
     {
-        let col = (ep.q + 5) as usize;
-        let row = (ep.r + 5) as usize;
+        let stm_ep = to_stm(ep);
+        let col = (stm_ep.q + 5) as usize;
+        let row = (stm_ep.r + 5) as usize;
         tensor[idx(15, col, row)] = 1.0;
     }
 
@@ -118,8 +161,10 @@ pub fn encode_board(state: &GameState) -> [f32; TENSOR_SIZE] {
         }
     }
 
-    // In check (channel 18): constant plane.
-    if movegen::is_in_check(board, board.side_to_move) {
+    // In check (channel 18): constant plane. "STM in check" is invariant
+    // under the STM-frame transformation (both kings and attackers are
+    // inverted and color-swapped together).
+    if movegen::is_in_check(board, stm) {
         for row in 0..BOARD_DIM {
             for col in 0..BOARD_DIM {
                 tensor[idx(18, col, row)] = 1.0;
@@ -127,16 +172,18 @@ pub fn encode_board(state: &GameState) -> [f32; TENSOR_SIZE] {
         }
     }
 
-    // Last-move from/to (channels 19, 20).
+    // Last-move from/to (channels 19, 20), mapped through STM frame.
     if let Some(mv) = state.last_move() {
         if mv.from.is_valid() {
-            let col = (mv.from.q + 5) as usize;
-            let row = (mv.from.r + 5) as usize;
+            let stm_from = to_stm(mv.from);
+            let col = (stm_from.q + 5) as usize;
+            let row = (stm_from.r + 5) as usize;
             tensor[idx(19, col, row)] = 1.0;
         }
         if mv.to.is_valid() {
-            let col = (mv.to.q + 5) as usize;
-            let row = (mv.to.r + 5) as usize;
+            let stm_to = to_stm(mv.to);
+            let col = (stm_to.q + 5) as usize;
+            let row = (stm_to.r + 5) as usize;
             tensor[idx(20, col, row)] = 1.0;
         }
     }
@@ -156,9 +203,12 @@ pub fn encode_board(state: &GameState) -> [f32; TENSOR_SIZE] {
     tensor
 }
 
-/// Map (color, piece_kind) to a channel index 0..11.
-fn piece_channel(color: Color, kind: PieceKind) -> usize {
-    color.index() * 6 + kind.index()
+/// Map `(piece_color, piece_kind, side_to_move)` to a channel index 0..11
+/// in STM frame: channels 0-5 are "my" pieces (same color as `stm`), 6-11
+/// are opponent pieces.
+fn stm_piece_channel(piece_color: Color, kind: PieceKind, stm: Color) -> usize {
+    let rel = if piece_color == stm { 0 } else { 1 };
+    rel * 6 + kind.index()
 }
 
 // ---------------------------------------------------------------------------
@@ -395,8 +445,11 @@ pub fn mirror_coord(c: HexCoord) -> HexCoord {
 /// Move-index → mirrored move-index lookup table.
 ///
 /// Built once at startup from `MOVE_INDEX`: each entry `MIRROR_INDEX[i]` is
-/// the index of the move obtained by reflecting move `i` across the r-axis
-/// (both `from` and `to` cells mirrored, promotion piece unchanged).
+/// the index of the move obtained by applying central inversion
+/// `(q, r) → (-q, -r)` to both the `from` and `to` cells of move `i`, with
+/// the promotion piece unchanged. See [`mirror_coord`] for why central
+/// inversion (rather than a pure reflection) is the correct involution
+/// here.
 static MIRROR_INDEX: LazyLock<Vec<usize>> = LazyLock::new(|| {
     let n = MOVE_INDEX.entries.len();
     let mut out = vec![0usize; n];
@@ -426,6 +479,24 @@ pub fn mirror_move_index(idx: usize) -> usize {
 /// Return the full mirror-index lookup table as a slice.
 pub fn mirror_indices() -> &'static [usize] {
     &MIRROR_INDEX
+}
+
+/// Return the **STM-relative** policy-vector index for a move in a position
+/// with the given side-to-move.
+///
+/// This is the correct helper to pair with [`encode_board`], which produces
+/// tensors in STM frame. When white is to move the result is identical to
+/// [`move_to_index`]; when black is to move the result is the mirrored
+/// index, so that a black pawn push `(q, r) → (q, r-1)` lands on the same
+/// policy slot as the corresponding white pawn push under central inversion.
+///
+/// Returns `None` if the absolute move is not in the move-index table.
+pub fn stm_policy_index(mv: &Move, stm: Color) -> Option<usize> {
+    let abs = move_to_index(mv)?;
+    Some(match stm {
+        Color::White => abs,
+        Color::Black => MIRROR_INDEX[abs],
+    })
 }
 
 /// Convert a policy-vector index back to `(from, to, promotion)`.
@@ -580,20 +651,24 @@ mod tests {
         let to = pawn_move.to;
         state.apply_move(pawn_move);
 
+        // After white's pawn move it is black-to-move, so encode_board
+        // centrally inverts all spatial coordinates for the STM frame.
         let tensor = encode_board(&state);
-        let from_col = (from.q + 5) as usize;
-        let from_row = (from.r + 5) as usize;
-        let to_col = (to.q + 5) as usize;
-        let to_row = (to.r + 5) as usize;
+        let stm_from = mirror_coord(from);
+        let stm_to = mirror_coord(to);
+        let from_col = (stm_from.q + 5) as usize;
+        let from_row = (stm_from.r + 5) as usize;
+        let to_col = (stm_to.q + 5) as usize;
+        let to_row = (stm_to.r + 5) as usize;
         assert_eq!(
             tensor[19 * BOARD_DIM * BOARD_DIM + from_row * BOARD_DIM + from_col],
             1.0,
-            "last-move from-plane should mark source cell"
+            "last-move from-plane should mark STM-framed source cell"
         );
         assert_eq!(
             tensor[20 * BOARD_DIM * BOARD_DIM + to_row * BOARD_DIM + to_col],
             1.0,
-            "last-move to-plane should mark destination cell"
+            "last-move to-plane should mark STM-framed destination cell"
         );
         // Exactly one 1.0 in each plane.
         assert_eq!(plane_sum(&tensor, 19), 1.0);
@@ -1065,6 +1140,185 @@ mod tests {
         let n = num_move_indices();
         let expected = (TENSOR_SIZE + n + 3) * 4;
         assert_eq!(TrainingRecord::record_size(), expected);
+    }
+
+    #[test]
+    fn test_encode_board_en_passant_plane_black_to_move_is_stm_framed() {
+        // Place an EP target at an asymmetric cell and encode both as
+        // white-to-move and black-to-move. The EP plane must move to
+        // the centrally-inverted coord in the black-to-move encoding,
+        // proving channel 15 is STM-framed rather than absolute.
+        let ep = HexCoord::new(2, -1); // asymmetric under (q,r) → (-q,-r)
+        let mut board = Board::starting_position();
+        board.en_passant = Some(ep);
+
+        let mut board_w = board.clone();
+        board_w.side_to_move = Color::White;
+        let t_w = encode_board(&GameState::from_board(board_w));
+
+        let mut board_b = board.clone();
+        board_b.side_to_move = Color::Black;
+        let t_b = encode_board(&GameState::from_board(board_b));
+
+        let ch = 15;
+        // White STM: cell at absolute coord.
+        let w_col = (ep.q + 5) as usize;
+        let w_row = (ep.r + 5) as usize;
+        assert_eq!(
+            t_w[ch * BOARD_DIM * BOARD_DIM + w_row * BOARD_DIM + w_col],
+            1.0
+        );
+        // Black STM: cell at centrally-inverted coord.
+        let inv = mirror_coord(ep);
+        let b_col = (inv.q + 5) as usize;
+        let b_row = (inv.r + 5) as usize;
+        assert_eq!(
+            t_b[ch * BOARD_DIM * BOARD_DIM + b_row * BOARD_DIM + b_col],
+            1.0
+        );
+        // No leakage: exactly one 1.0 in each encoding's EP plane.
+        assert_eq!(plane_sum(&t_w, ch), 1.0);
+        assert_eq!(plane_sum(&t_b, ch), 1.0);
+        // And the two single-cell locations differ (asymmetric coord).
+        assert_ne!((w_col, w_row), (b_col, b_row));
+    }
+
+    #[test]
+    fn test_encode_board_stm_frame_piece_swap_and_invert() {
+        // Place two pieces on a board and encode it twice: once with white
+        // to move, once with black to move. Verify that flipping STM:
+        //   (a) swaps piece channels 0-5 ↔ 6-11,
+        //   (b) centrally inverts spatial coordinates.
+        // This is the core invariant that makes the STM frame consistent
+        // with the MIRROR_INDEX policy remap used by MCTS.
+        let mut board = Board::empty();
+        // White pawn at (0, -4): q=0, r=-4 → col=5, row=1.
+        board.set(
+            HexCoord::new(0, -4),
+            Some(Piece::new(PieceKind::Pawn, Color::White)),
+        );
+        // Black knight at (2, 3): q=2, r=3 → col=7, row=8.
+        board.set(
+            HexCoord::new(2, 3),
+            Some(Piece::new(PieceKind::Knight, Color::Black)),
+        );
+        // Kings to keep the position well-formed; park them at the edges.
+        board.set(
+            HexCoord::new(-5, 0),
+            Some(Piece::new(PieceKind::King, Color::White)),
+        );
+        board.white_king = HexCoord::new(-5, 0);
+        board.set(
+            HexCoord::new(5, 0),
+            Some(Piece::new(PieceKind::King, Color::Black)),
+        );
+        board.black_king = HexCoord::new(5, 0);
+
+        let mut board_w = board.clone();
+        board_w.side_to_move = Color::White;
+        let t_white = encode_board(&GameState::from_board(board_w));
+
+        let mut board_b = board.clone();
+        board_b.side_to_move = Color::Black;
+        let t_black = encode_board(&GameState::from_board(board_b));
+
+        let idx =
+            |c: usize, col: usize, row: usize| c * BOARD_DIM * BOARD_DIM + row * BOARD_DIM + col;
+
+        // White-to-move: white pawn in STM pawn plane (ch 0) at (0,-4),
+        // black knight in opponent knight plane (ch 7) at (2, 3).
+        assert_eq!(t_white[idx(0, 5, 1)], 1.0, "white pawn in ch 0 (STM pawn)");
+        assert_eq!(
+            t_white[idx(7, 7, 8)],
+            1.0,
+            "black knight in ch 7 (opp knight)"
+        );
+        assert_eq!(plane_sum(&t_white, 0), 1.0);
+        assert_eq!(plane_sum(&t_white, 7), 1.0);
+
+        // Black-to-move: channels swap and coords invert centrally.
+        //   white pawn (0,-4) → ch 6 (opp pawn) at (0,+4) → col=5, row=9
+        //   black knight (2,3) → ch 1 (STM knight) at (-2,-3) → col=3, row=2
+        assert_eq!(
+            t_black[idx(6, 5, 9)],
+            1.0,
+            "white pawn swaps to opp channel and inverts to (0,+4)"
+        );
+        assert_eq!(
+            t_black[idx(1, 3, 2)],
+            1.0,
+            "black knight swaps to STM channel and inverts to (-2,-3)"
+        );
+        assert_eq!(plane_sum(&t_black, 1), 1.0);
+        assert_eq!(plane_sum(&t_black, 6), 1.0);
+        // Kings must also obey the swap: black king was in ch 11 (absolute),
+        // and in the black-to-move STM frame lands in ch 5 (STM king).
+        assert_eq!(plane_sum(&t_black, 5), 1.0, "STM king plane");
+        assert_eq!(plane_sum(&t_black, 11), 1.0, "opponent king plane");
+        // Opponent non-king, non-pawn planes stay empty (nothing leaks).
+        assert_eq!(plane_sum(&t_black, 7), 0.0);
+        assert_eq!(plane_sum(&t_black, 8), 0.0);
+    }
+
+    #[test]
+    fn test_stm_policy_index_white_is_identity_black_is_mirror() {
+        // White to move: stm_policy_index == move_to_index (identity).
+        // Black to move: stm_policy_index == mirror_move_index(move_to_index).
+        // Exercise this for every move in the table to catch any drift
+        // between the helper and the MIRROR_INDEX table.
+        let n = num_move_indices();
+        for i in 0..n {
+            let (from, to, promo) = index_to_move(i);
+            let mv = Move::new(from, to, None).with_promotion_opt(promo);
+
+            let white_idx = stm_policy_index(&mv, Color::White)
+                .expect("every table move must map under stm_policy_index");
+            assert_eq!(
+                white_idx, i,
+                "white STM index must equal the absolute move index for move {i}"
+            );
+
+            let black_idx = stm_policy_index(&mv, Color::Black)
+                .expect("every table move must map under stm_policy_index");
+            assert_eq!(
+                black_idx,
+                mirror_move_index(i),
+                "black STM index must equal mirror_move_index(i) for move {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_encode_board_stm_frame_validity_and_constants() {
+        // Validity mask is invariant under central inversion, and the
+        // "absolute" STM plane (ch 12) differs between white and black
+        // encodings of the same board while all other constant planes
+        // (fullmove / halfmove / etc.) stay the same.
+        let mut board = Board::starting_position();
+        board.fullmove_number = 42;
+        board.halfmove_clock = 10;
+        let mut w = board.clone();
+        w.side_to_move = Color::White;
+        let t_w = encode_board(&GameState::from_board(w));
+        let mut b = board.clone();
+        b.side_to_move = Color::Black;
+        let t_b = encode_board(&GameState::from_board(b));
+
+        // Validity mask identical.
+        for i in 0..BOARD_DIM * BOARD_DIM {
+            let base = 17 * BOARD_DIM * BOARD_DIM;
+            assert_eq!(t_w[base + i], t_b[base + i]);
+        }
+        // Fullmove / halfmove / pspm identical.
+        for ch in [13usize, 14, 21] {
+            for i in 0..BOARD_DIM * BOARD_DIM {
+                let base = ch * BOARD_DIM * BOARD_DIM;
+                assert_eq!(t_w[base + i], t_b[base + i]);
+            }
+        }
+        // Channel 12 differs: 1.0 when white to move, 0.0 when black.
+        assert_eq!(t_w[12 * BOARD_DIM * BOARD_DIM], 1.0);
+        assert_eq!(t_b[12 * BOARD_DIM * BOARD_DIM], 0.0);
     }
 
     #[test]

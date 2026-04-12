@@ -392,17 +392,21 @@ def _move_to_str(mv) -> str:
         return f"{mv.from_q},{mv.from_r}->{mv.to_q},{mv.to_r}"
 
 
-def legal_mask_from_moves(legal_moves, num_move_indices: int) -> np.ndarray:
+def legal_mask_from_moves(game, legal_moves, num_move_indices: int) -> np.ndarray:
     """Build a ``(num_move_indices,) bool`` mask for a list of legal moves.
 
-    Iterates the move list and sets the per-move index to True via
-    ``hexchess.move_to_index``. Promotion variants occupy distinct indices
-    so each shows up as its own legal move in the source list.
+    Indexes each move via ``game.policy_index`` so the mask lives in the
+    **STM frame** — the same frame the board tensor and the policy target
+    are in. Using ``hexchess.move_to_index`` (absolute frame) here would
+    put the mask at absolute indices while the policy sits at STM indices,
+    silently corrupting every black-to-move sample. Promotion variants
+    occupy distinct indices so each shows up as its own legal move in the
+    source list.
     """
     assert hexchess is not None
     mask = np.zeros(num_move_indices, dtype=bool)
     for mv in legal_moves:
-        idx = hexchess.move_to_index(
+        idx = game.policy_index(
             mv.from_q, mv.from_r, mv.to_q, mv.to_r, mv.promotion
         )
         mask[idx] = True
@@ -449,11 +453,13 @@ def _play_one_game_pcr(
 
         if was_full and policy_target is not None:
             policy_np = np.asarray(policy_target, dtype=np.float32)
-            legal_mask_np = legal_mask_from_moves(legal, num_moves)
+            legal_mask_np = legal_mask_from_moves(game, legal, num_moves)
 
             # Opponent-reply visit distribution from the MCTS tree. Falls
             # back to uniform-over-legal if the best child is unexpanded
-            # (e.g. terminal position or very small search).
+            # (e.g. terminal position or very small search). Indexed in the
+            # game's current STM frame via `game.policy_index` to match the
+            # NN's output frame (see engine::serialization::encode_board).
             aux_opp_raw = search.aux_opponent_policy()
             if aux_opp_raw is not None:
                 aux_opp = np.asarray(aux_opp_raw, dtype=np.float32)
@@ -462,7 +468,7 @@ def _play_one_game_pcr(
                 if legal_count > 0:
                     inv = 1.0 / legal_count
                     for mv in legal:
-                        idx = hexchess.move_to_index(
+                        idx = game.policy_index(
                             mv.from_q, mv.from_r, mv.to_q, mv.to_r, mv.promotion
                         )
                         aux_opp[idx] = inv

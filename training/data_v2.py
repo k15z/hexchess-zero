@@ -30,22 +30,18 @@ torch tensors at dataloader collate time.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
-# Mirror move-index table from the Rust engine. The mirror used is central
-# inversion (q,r) → (-q,-r) — the only hex involution that preserves Glinski's
-# pawn directions and promotion edges. See engine/src/serialization.rs.
-try:
-    import hexchess as _hexchess
-
-    MIRROR_INDICES: np.ndarray | None = np.asarray(
-        _hexchess.mirror_indices_array(), dtype=np.int64
-    )
-except (ImportError, AttributeError):  # binding not built or pre-mirror
-    MIRROR_INDICES = None
+# NOTE: mirror augmentation was removed when the encoder switched to the
+# side-to-move frame (engine::serialization::encode_board). In STM frame,
+# the "mirrored" version of any position is encoded identically to the
+# original — the color symmetry is baked in, so the 2x data multiplier is
+# no longer needed (and the previous absolute-frame implementation was
+# silently corrupting pawn/promotion targets — see the original
+# mirror_batch bug, commit history).
 
 
 @dataclass
@@ -192,51 +188,6 @@ def load_v2_npz(path: str | Path) -> V2Batch:
         legal_mask=legal_mask,
         ply=ply,
     )
-
-
-def mirror_batch(batch: V2Batch, *, apply_to_boards: bool = True) -> V2Batch:
-    """Horizontally mirror a v2 batch via central hex inversion.
-
-    Mirrors policy and aux_policy via the precomputed Rust ``MIRROR_INDICES``
-    table. Mirrors boards by flipping both row and column axes of the
-    11x11 grid embedding (central inversion `(q,r)→(-q,-r)` corresponds to
-    flipping both axes since the encoder uses `col=q+5, row=r+5`).
-
-    The board mirror is enabled by default — central inversion preserves
-    `is_valid()` for all 91 cells trivially, and the encoder pre-flips by
-    side-to-move so piece-plane indices need no swap. WDL and MLH targets
-    are unchanged.
-
-    Raises if `MIRROR_INDICES` is unavailable (binding not rebuilt).
-    """
-    if MIRROR_INDICES is None:
-        raise RuntimeError(
-            "mirror_indices_array() not available — rebuild the Python "
-            "binding with `make setup` to enable mirror augmentation."
-        )
-
-    new_policy = batch.policy[:, MIRROR_INDICES]
-    new_aux = batch.aux_policy[:, MIRROR_INDICES]
-    new_legal = batch.legal_mask[:, MIRROR_INDICES]
-    new_boards = batch.boards
-    if apply_to_boards:
-        new_boards = batch.boards[:, :, ::-1, ::-1].copy()
-    return replace(
-        batch,
-        boards=new_boards,
-        policy=new_policy,
-        aux_policy=new_aux,
-        legal_mask=new_legal,
-    )
-
-
-def maybe_mirror_batch(batch: V2Batch, p: float, rng: np.random.Generator) -> V2Batch:
-    """With probability `p`, return `mirror_batch(batch)`; else `batch`."""
-    if MIRROR_INDICES is None or p <= 0.0:
-        return batch
-    if rng.random() < p:
-        return mirror_batch(batch)
-    return batch
 
 
 def build_targets_dict(batch: V2Batch) -> dict:

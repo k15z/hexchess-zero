@@ -38,9 +38,17 @@ def _softmax_probs(move_scores, temperature: float) -> np.ndarray:
 
 
 def _scores_to_policy_and_mask(
-    move_scores, temperature: float
+    game, move_scores, temperature: float
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Convert minimax move scores to a softmax policy vector + legal mask.
+    """Convert minimax move scores to an STM-frame softmax policy + legal mask.
+
+    Both outputs are indexed via ``game.policy_index`` so the frame matches
+    the board tensor produced by ``hexchess.encode_board(game)``: identity
+    for white-to-move, mirrored via ``MIRROR_INDEX`` for black-to-move.
+    See engine::serialization::encode_board for the frame convention —
+    using ``hexchess.move_to_index`` here would put the mask in absolute
+    frame while the policy and board tensor sit in STM frame, silently
+    corrupting every black-to-move imitation sample.
 
     The minimax search returns every legal move with its score, so the
     full legal-move set is available here without a separate enumeration.
@@ -52,7 +60,7 @@ def _scores_to_policy_and_mask(
     legal_mask = np.zeros(NUM_MOVES, dtype=bool)
     for entry, p in zip(move_scores, probs):
         mv = entry.move
-        idx = hexchess.move_to_index(mv.from_q, mv.from_r, mv.to_q, mv.to_r, mv.promotion)
+        idx = game.policy_index(mv.from_q, mv.from_r, mv.to_q, mv.to_r, mv.promotion)
         policy[idx] = p
         legal_mask[idx] = True
     return policy, legal_mask
@@ -130,7 +138,7 @@ def play_imitation_game(cfg: AsyncConfig, log_interval: int = 50) -> list[dict]:
 
         board_tensor = np.array(hexchess.encode_board(game), dtype=np.float32)
         policy, legal_mask = _scores_to_policy_and_mask(
-            result.moves, cfg.imitation_temperature
+            game, result.moves, cfg.imitation_temperature
         )
         best_score = result.best_score
         side = game.side_to_move()

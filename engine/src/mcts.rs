@@ -269,11 +269,12 @@ impl Evaluator for HeuristicEvaluator {
         let moves = state.legal_moves();
         let num_indices = serialization::num_move_indices();
         let mut policy = vec![0.0f32; num_indices];
+        let stm = state.board.side_to_move;
 
         if !moves.is_empty() {
             let prob = 1.0 / moves.len() as f32;
             for mv in &moves {
-                if let Some(idx) = serialization::move_to_index(mv) {
+                if let Some(idx) = serialization::stm_policy_index(mv, stm) {
                     policy[idx] = prob;
                 }
             }
@@ -315,6 +316,7 @@ impl Evaluator for WeightedHeuristicEvaluator {
         let moves = state.legal_moves();
         let num_indices = serialization::num_move_indices();
         let mut policy = vec![0.0f32; num_indices];
+        let stm = state.board.side_to_move;
 
         if !moves.is_empty() {
             // Score each move: apply, evaluate from opponent's perspective, negate.
@@ -323,7 +325,7 @@ impl Evaluator for WeightedHeuristicEvaluator {
             let mut state_clone = state.clone();
 
             for mv in &moves {
-                if let Some(idx) = serialization::move_to_index(mv) {
+                if let Some(idx) = serialization::stm_policy_index(mv, stm) {
                     state_clone.apply_move(*mv);
                     let score =
                         -eval::evaluate_board_weighted(&state_clone.board, &self.weights) as f32;
@@ -955,9 +957,15 @@ impl MctsSearch {
 
         let mut children_info: Vec<(Move, usize, f32)> = Vec::with_capacity(legal_moves.len());
         let mut prior_sum = 0.0f32;
+        let stm = state.board.side_to_move;
 
         for mv in &legal_moves {
-            if let Some(idx) = serialization::move_to_index(mv) {
+            // STM-frame policy index: the NN (and the heuristic evaluator)
+            // both emit policies in STM frame, so children's action_index
+            // is STM-relative. This propagates through extract_result /
+            // policy_target_pruned / aux_opponent_policy so the emitted
+            // training target is also STM-relative by construction.
+            if let Some(idx) = serialization::stm_policy_index(mv, stm) {
                 let p = if idx < policy.len() { policy[idx] } else { 0.0 };
                 prior_sum += p;
                 children_info.push((*mv, idx, p));
@@ -1299,6 +1307,16 @@ impl MctsSearch {
     /// in eval mode, otherwise falls back to visit-max. Returns `None` if
     /// the root has no children, or the selected child is unexpanded / has
     /// no visits.
+    ///
+    /// Frame: the returned vector is indexed in the **root's STM frame**,
+    /// matching the main policy target emitted by [`Self::extract_result`]
+    /// and the board tensor produced by [`serialization::encode_board`] at
+    /// the root. The grandchildren were expanded in the opponent's STM
+    /// frame (since `expand_nodes` uses `state.board.side_to_move`), so
+    /// each `gc.action_index` is remapped through `mirror_move_index` to
+    /// reach the root frame — the two STM frames differ by exactly one
+    /// color swap, and `MIRROR_INDEX` is an involution, so a single
+    /// application converts between them.
     pub fn aux_opponent_policy(&self) -> Option<Vec<f32>> {
         if self.nodes.is_empty() {
             return None;
@@ -1340,10 +1358,14 @@ impl MctsSearch {
         let inv = 1.0 / total as f32;
         for &gi in &best_child.children {
             let gc = &self.nodes[gi];
-            if let Some(mv_idx) = gc.action_index
-                && mv_idx < num_indices
+            if let Some(opp_stm_idx) = gc.action_index
+                && opp_stm_idx < num_indices
             {
-                out[mv_idx] = gc.visit_count as f32 * inv;
+                // Grandchildren were indexed in the opponent's STM frame;
+                // remap to the root's frame so main and aux targets share
+                // a coordinate system.
+                let root_stm_idx = serialization::mirror_move_index(opp_stm_idx);
+                out[root_stm_idx] = gc.visit_count as f32 * inv;
             }
         }
         Some(out)
@@ -2479,13 +2501,23 @@ mod tests {
 
         // Give c_a and c_b disjoint sets of grandchildren so the aux
         // distribution uniquely identifies which child was selected.
-        // action_index 10 lives under c_a; action_index 20 lives under c_b.
-        let mut gc_a = MctsNode::new(Some(legal[0]), Some(10), 1.0);
+        // Grandchild action_index is stored in the opponent's STM frame
+        // (see expand_nodes / stm_policy_index), and aux_opponent_policy
+        // remaps it back to the root's frame via `mirror_move_index`.
+        // We therefore pick two indices a/b that stay distinct after the
+        // remap, and assert aux mass lands at `mirror_move_index(b)`.
+        let idx_a = 10usize;
+        let idx_b = 20usize;
+        let root_idx_a = serialization::mirror_move_index(idx_a);
+        let root_idx_b = serialization::mirror_move_index(idx_b);
+        assert_ne!(root_idx_a, root_idx_b);
+
+        let mut gc_a = MctsNode::new(Some(legal[0]), Some(idx_a), 1.0);
         gc_a.visit_count = 50;
         search.nodes.push(gc_a);
         search.nodes[1].children.push(3);
 
-        let mut gc_b = MctsNode::new(Some(legal[1]), Some(20), 1.0);
+        let mut gc_b = MctsNode::new(Some(legal[1]), Some(idx_b), 1.0);
         gc_b.visit_count = 50;
         search.nodes.push(gc_b);
         search.nodes[2].children.push(4);
@@ -2496,16 +2528,17 @@ mod tests {
         assert_eq!(result.best_move.to, legal[1].to);
 
         // aux_opponent_policy must expose grandchildren of c_b, so mass
-        // belongs on index 20, not 10.
+        // belongs at `mirror_move_index(idx_b)` (root STM frame), not at
+        // `mirror_move_index(idx_a)`.
         let aux = search
             .aux_opponent_policy()
             .expect("aux should be available");
         assert_eq!(
-            aux[10], 0.0,
+            aux[root_idx_a], 0.0,
             "aux should NOT describe visit-max (c_a) grandchildren"
         );
         assert!(
-            aux[20] > 0.0,
+            aux[root_idx_b] > 0.0,
             "aux should describe LCB-selected (c_b) grandchildren"
         );
     }
@@ -2541,12 +2574,21 @@ mod tests {
         search.nodes.push(c_b);
         search.nodes[0].children.push(2);
 
-        let mut gc_a = MctsNode::new(Some(legal[0]), Some(10), 1.0);
+        // Same disjoint-grandchildren setup as the LCB test. Aux remaps
+        // the stored opp-STM indices to root-STM via `mirror_move_index`,
+        // so we look up mass at the remapped slots.
+        let idx_a = 10usize;
+        let idx_b = 20usize;
+        let root_idx_a = serialization::mirror_move_index(idx_a);
+        let root_idx_b = serialization::mirror_move_index(idx_b);
+        assert_ne!(root_idx_a, root_idx_b);
+
+        let mut gc_a = MctsNode::new(Some(legal[0]), Some(idx_a), 1.0);
         gc_a.visit_count = 50;
         search.nodes.push(gc_a);
         search.nodes[1].children.push(3);
 
-        let mut gc_b = MctsNode::new(Some(legal[1]), Some(20), 1.0);
+        let mut gc_b = MctsNode::new(Some(legal[1]), Some(idx_b), 1.0);
         gc_b.visit_count = 50;
         search.nodes.push(gc_b);
         search.nodes[2].children.push(4);
@@ -2557,10 +2599,189 @@ mod tests {
             .aux_opponent_policy()
             .expect("aux should be available");
         assert!(
-            aux[10] > 0.0,
+            aux[root_idx_a] > 0.0,
             "training mode should expose visit-max (c_a) grandchildren"
         );
-        assert_eq!(aux[20], 0.0, "c_b grandchildren must not appear");
+        assert_eq!(aux[root_idx_b], 0.0, "c_b grandchildren must not appear");
+    }
+
+    #[test]
+    fn aux_opponent_policy_is_in_root_stm_frame() {
+        // The aux target must live in the ROOT's STM frame, not the
+        // opponent's. For every visited grandchild, verify that aux
+        // places the *exact* normalized visit mass (visits / total_visits)
+        // at the root-STM index for its move. Also assert that slots at
+        // indices which correspond to no visited grandchild are zero,
+        // catching "wrong-frame mass leaked into a different slot" bugs
+        // that a positivity-only check would miss.
+        let state = GameState::new();
+        let root_stm = state.board.side_to_move;
+
+        let mut s = MctsSearch::new(Box::new(HeuristicEvaluator));
+        s.config_mut().batch_size = 1;
+        s.set_rng_seed(13);
+        let _ = s.search(&state, 256);
+
+        let aux = s.aux_opponent_policy().expect("should have aux");
+
+        let root_children = s.nodes[0].children.clone();
+        let best_child_idx = *root_children
+            .iter()
+            .max_by_key(|&&i| s.nodes[i].visit_count)
+            .unwrap();
+        let best_child = &s.nodes[best_child_idx];
+
+        let total_visits: u32 = best_child
+            .children
+            .iter()
+            .map(|&gi| s.nodes[gi].visit_count)
+            .sum();
+        assert!(total_visits > 0, "expected visited grandchildren");
+
+        let mut expected_mass_by_idx: std::collections::HashMap<usize, f32> =
+            std::collections::HashMap::new();
+        for &gi in &best_child.children {
+            let gc = &s.nodes[gi];
+            if gc.visit_count == 0 {
+                continue;
+            }
+            let mv = gc.action.expect("grandchild must have a move");
+            let root_idx = serialization::stm_policy_index(&mv, root_stm)
+                .expect("grandchild move must be in the table");
+            *expected_mass_by_idx.entry(root_idx).or_insert(0.0) +=
+                gc.visit_count as f32 / total_visits as f32;
+        }
+
+        // Every index we expect must match within fp tolerance.
+        for (&idx, &expected) in &expected_mass_by_idx {
+            assert!(
+                (aux[idx] - expected).abs() < 1e-5,
+                "aux[{idx}] = {} but expected {} (root-STM visit mass)",
+                aux[idx],
+                expected
+            );
+        }
+        // And every aux entry must be zero unless it's one of the expected
+        // indices — if a wrong-frame impl parked mass at a different slot,
+        // this catches it.
+        for (i, &p) in aux.iter().enumerate() {
+            if p == 0.0 {
+                continue;
+            }
+            assert!(
+                expected_mass_by_idx.contains_key(&i),
+                "aux[{i}] = {p} but no visited grandchild maps to that root-STM index"
+            );
+        }
+    }
+
+    #[test]
+    fn mcts_policy_frames_match_side_to_move() {
+        // Run a short search from a black-to-move position and verify
+        // EXACT normalized visit mass at every expected STM index for
+        // both main and aux policies. This exercises the root-black case
+        // which under the old absolute-frame code was indistinguishable
+        // from root-white — in STM frame the indices actually differ via
+        // MIRROR_INDEX, so a "forgot to remap" regression would surface
+        // as mass landing at the wrong slot.
+        let mut state = GameState::new();
+        let white_move = state.legal_moves()[0];
+        state.apply_move(white_move);
+        let root_stm = state.board.side_to_move;
+        assert_eq!(root_stm, Color::Black);
+
+        let mut s = MctsSearch::new(Box::new(HeuristicEvaluator));
+        s.config_mut().batch_size = 1;
+        s.set_rng_seed(21);
+        let result = s.search_with_temperature(&state, 128, 0.0);
+
+        // ---- Main policy: exact mass check on every root child. ----
+        let root_children = s.nodes[0].children.clone();
+        let total_root_visits: u32 = root_children
+            .iter()
+            .map(|&ci| s.nodes[ci].visit_count)
+            .sum();
+        assert!(total_root_visits > 0);
+
+        // Under temperature = 0, extract_result normalizes raw visit counts
+        // directly (see extract_result). Build the expected vector the same
+        // way and assert exact match — this both validates the frame AND
+        // catches any re-normalization drift.
+        let mut expected_main: std::collections::HashMap<usize, f32> =
+            std::collections::HashMap::new();
+        for &ci in &root_children {
+            let child = &s.nodes[ci];
+            if child.visit_count == 0 {
+                continue;
+            }
+            let mv = child.action.expect("child must have a move");
+            let idx =
+                serialization::stm_policy_index(&mv, root_stm).expect("move must be in the table");
+            *expected_main.entry(idx).or_insert(0.0) +=
+                child.visit_count as f32 / total_root_visits as f32;
+        }
+        for (&idx, &expected) in &expected_main {
+            assert!(
+                (result.policy[idx] - expected).abs() < 1e-5,
+                "main policy[{idx}] = {} expected {} (root-STM black)",
+                result.policy[idx],
+                expected
+            );
+        }
+        for (i, &p) in result.policy.iter().enumerate() {
+            if p == 0.0 {
+                continue;
+            }
+            assert!(
+                expected_main.contains_key(&i),
+                "main policy[{i}] = {p} but no root child maps to that STM index"
+            );
+        }
+
+        // ---- Aux policy: exact mass check on every visited grandchild. ----
+        let aux = s.aux_opponent_policy().expect("should have aux");
+        let best_child_idx = *root_children
+            .iter()
+            .max_by_key(|&&i| s.nodes[i].visit_count)
+            .unwrap();
+        let best_child = &s.nodes[best_child_idx];
+        let total_grandchild_visits: u32 = best_child
+            .children
+            .iter()
+            .map(|&gi| s.nodes[gi].visit_count)
+            .sum();
+        assert!(total_grandchild_visits > 0);
+
+        let mut expected_aux: std::collections::HashMap<usize, f32> =
+            std::collections::HashMap::new();
+        for &gi in &best_child.children {
+            let gc = &s.nodes[gi];
+            if gc.visit_count == 0 {
+                continue;
+            }
+            let mv = gc.action.expect("grandchild must have a move");
+            let idx =
+                serialization::stm_policy_index(&mv, root_stm).expect("move must be in the table");
+            *expected_aux.entry(idx).or_insert(0.0) +=
+                gc.visit_count as f32 / total_grandchild_visits as f32;
+        }
+        for (&idx, &expected) in &expected_aux {
+            assert!(
+                (aux[idx] - expected).abs() < 1e-5,
+                "aux[{idx}] = {} expected {} (root-STM black)",
+                aux[idx],
+                expected
+            );
+        }
+        for (i, &p) in aux.iter().enumerate() {
+            if p == 0.0 {
+                continue;
+            }
+            assert!(
+                expected_aux.contains_key(&i),
+                "aux[{i}] = {p} but no visited grandchild maps to that STM index"
+            );
+        }
     }
 
     #[test]

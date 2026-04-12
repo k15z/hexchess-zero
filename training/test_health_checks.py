@@ -76,13 +76,39 @@ def test_move_encoding_round_trip_passes():
 
 
 # ---------------------------------------------------------------------------
-# 2. Mirror table (deferred)
+# 2. Mirror table — STM-frame policy indexing consistency
 # ---------------------------------------------------------------------------
 
 
-def test_mirror_table_raises_not_implemented():
-    with pytest.raises(NotImplementedError):
-        check_mirror_table()
+def test_mirror_table_passes_on_live_moves():
+    # White-to-move identity + black-to-move mirror remap must both hold.
+    pytest.importorskip("hexchess")
+    r = check_mirror_table()
+    assert r.passed, r.message
+
+
+def test_mirror_table_black_to_move_actually_remaps():
+    # Sanity: when the encoder is STM-framed, at least some moves from a
+    # black-to-move position must have game.policy_index != move_to_index.
+    # (If someone silently reverts the encoder to absolute frame, this
+    # catches it.)
+    hexchess = pytest.importorskip("hexchess")
+
+    game = hexchess.Game()
+    game.apply(game.legal_moves()[0])
+    assert game.side_to_move() == "black"
+    any_remap = False
+    for mv in game.legal_moves():
+        absolute = hexchess.move_to_index(
+            mv.from_q, mv.from_r, mv.to_q, mv.to_r, mv.promotion
+        )
+        stm = game.policy_index(
+            mv.from_q, mv.from_r, mv.to_q, mv.to_r, mv.promotion
+        )
+        if absolute != stm:
+            any_remap = True
+            break
+    assert any_remap, "black-to-move policy_index is always identity — STM frame inactive"
 
 
 # ---------------------------------------------------------------------------
@@ -334,12 +360,16 @@ def test_run_all_invariants_clean_run_passes():
     # is tested in isolation above with a masked model.
     batch = {"boards": _valid_board_batch(batch=2)}
     report = run_all_invariants(m, batch, strict=False, tt_hit_rate=0.5)
-    # Move-encoding round-trip and repetition detection require the hexchess
-    # binding (built via maturin develop). CI doesn't build the wheel, so
-    # those two are expected to fail-with-message there. Locally with the
-    # binding installed, all checks pass. Tolerate the binding-related
-    # failures explicitly.
-    binding_required = {"move_encoding_round_trip", "repetition_detection"}
+    # Move-encoding round-trip, repetition detection, and mirror table all
+    # require the hexchess binding (built via maturin develop). CI doesn't
+    # build the wheel, so these are expected to fail-with-message there.
+    # Locally with the binding installed, all checks pass. Tolerate the
+    # binding-related failures explicitly.
+    binding_required = {
+        "move_encoding_round_trip",
+        "repetition_detection",
+        "mirror_table",
+    }
     failures = [
         r for r in report.failures()
         if r.name not in binding_required

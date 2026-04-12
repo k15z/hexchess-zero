@@ -3,10 +3,11 @@
 Any failure here should crash the trainer (CrashLoopBackoff) on startup.
 A cheaper subset (`run_runtime_checks`) is safe to run every N steps.
 
-All 11 hard invariants from the plan are implemented or stubbed:
+All 11 hard invariants from the plan are implemented:
 
 1.  Move encoding round-trip (hexchess binding).
-2.  Mirror table — DEFERRED (raises NotImplementedError on the stub).
+2.  Mirror table — STM-frame policy indexing consistency (white identity +
+    black mirror remap via ``Game.policy_index``).
 3.  Initial loss bounds — delegates to ``losses.assert_healthy_initial_losses``.
 4.  No NaN/Inf in loss or grads.
 5.  No illegal-move probability mass after softmax.
@@ -127,12 +128,75 @@ def check_move_encoding_round_trip(num_samples: int = 1000,
 
 
 def check_mirror_table() -> HealthCheckResult:
-    """Invariant 2: mirrored board has mirrored policy. **DEFERRED.**
+    """Invariant 2: STM-frame policy indexing is consistent with the move
+    table's color symmetry.
 
-    Needs a mirror symmetry implementation (hex-board reflection + move-index
-    remap). Tracked for a later chunk.
+    Since encoding is now in side-to-move frame
+    (engine::serialization::encode_board), the "mirrored board has mirrored
+    policy" invariant is baked into the encoder by construction: for black
+    to move, ``game.policy_index(mv)`` is the mirrored index of the
+    absolute ``move_to_index(mv)``, and for white to move it is the
+    identity. This check verifies both halves on real legal moves from a
+    live game state — regressions in the binding or the move-index table
+    will surface here before they corrupt training targets.
     """
-    raise NotImplementedError("deferred — needs mirror symmetry impl")
+    if not _HAS_HEXCHESS:
+        return HealthCheckResult(
+            "mirror_table", False, "hexchess binding not available"
+        )
+    game = hexchess.Game()
+    # White-to-move half: identity.
+    for mv in game.legal_moves():
+        absolute = hexchess.move_to_index(
+            mv.from_q, mv.from_r, mv.to_q, mv.to_r, mv.promotion
+        )
+        stm = game.policy_index(
+            mv.from_q, mv.from_r, mv.to_q, mv.to_r, mv.promotion
+        )
+        if absolute != stm:
+            return HealthCheckResult(
+                "mirror_table",
+                False,
+                f"white-STM identity broken: mv={mv}, abs={absolute}, stm={stm}",
+            )
+    # Black-to-move half: flip STM by playing one move and walking the
+    # legal moves in the resulting (black) position. At least one legal
+    # move must remap through the mirror table (absolute != stm), and
+    # every STM index must round-trip back to absolute via a second pass
+    # through a white-STM position — we do the lighter check here and
+    # leave the exhaustive round-trip to the Rust test suite.
+    first = game.legal_moves()[0]
+    game.apply(first)
+    assert game.side_to_move() == "black"
+    saw_remap = False
+    for mv in game.legal_moves():
+        absolute = hexchess.move_to_index(
+            mv.from_q, mv.from_r, mv.to_q, mv.to_r, mv.promotion
+        )
+        stm = game.policy_index(
+            mv.from_q, mv.from_r, mv.to_q, mv.to_r, mv.promotion
+        )
+        if absolute != stm:
+            saw_remap = True
+        # Sanity: both must be valid indices in the policy vector.
+        if stm < 0 or stm >= hexchess.num_move_indices():
+            return HealthCheckResult(
+                "mirror_table",
+                False,
+                f"black-STM index out of range: mv={mv}, stm={stm}",
+            )
+    if not saw_remap:
+        return HealthCheckResult(
+            "mirror_table",
+            False,
+            "black-to-move STM indexing never differed from absolute — "
+            "mirror remap appears inactive",
+        )
+    return HealthCheckResult(
+        "mirror_table",
+        True,
+        "white identity + black mirror remap both verified on live moves",
+    )
 
 
 def check_initial_loss_bounds(breakdown: LossBreakdown,
@@ -429,21 +493,17 @@ def run_all_invariants(
     ``legal_mask`` (B, num_moves) bool. If not provided, the batch-dependent
     checks (#5, #6, #7) are skipped.
 
-    Invariant 2 (mirror table) is always skipped here — it raises
-    ``NotImplementedError`` if called directly. Invariant 3 (initial losses)
-    is only checked if the caller passes ``batch['loss_breakdown']``.
-    Invariant 4 (NaN/Inf grads) is only checked if the caller passes
-    ``batch['loss']``.
+    Invariant 3 (initial losses) is only checked if the caller passes
+    ``batch['loss_breakdown']``. Invariant 4 (NaN/Inf grads) is only
+    checked if the caller passes ``batch['loss']``.
     """
     report = HealthCheckReport()
 
     # 1. Move encoding round-trip.
     _add(report, check_move_encoding_round_trip(), strict=strict)
 
-    # 2. Mirror table (deferred).
-    report.add(HealthCheckResult(
-        "mirror_table", True, "deferred — see check_mirror_table docstring"
-    ))
+    # 2. Mirror table — STM-frame policy indexing consistency.
+    _add(report, check_mirror_table(), strict=strict)
 
     # 9. Output shape (also exercises the model).
     _add(report, check_model_output_shape(model), strict=strict)
