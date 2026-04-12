@@ -361,10 +361,8 @@ def test_run_all_invariants_clean_run_passes():
     batch = {"boards": _valid_board_batch(batch=2)}
     report = run_all_invariants(m, batch, strict=False, tt_hit_rate=0.5)
     # Move-encoding round-trip, repetition detection, and mirror table all
-    # require the hexchess binding (built via maturin develop). CI doesn't
-    # build the wheel, so these are expected to fail-with-message there.
-    # Locally with the binding installed, all checks pass. Tolerate the
-    # binding-related failures explicitly.
+    # require the hexchess binding. CI now installs it via ``uv sync``, but
+    # keep tolerating binding-less environments for local/unit-only runs.
     binding_required = {
         "move_encoding_round_trip",
         "repetition_detection",

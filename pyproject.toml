@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "AlphaZero-style training pipeline for hexagonal chess"
 requires-python = ">=3.11,<3.14"
 dependencies = [
+    "hexchess-zero",
     "torch>=2.0",
     "numpy>=1.24",
     "onnx>=1.14",
@@ -28,7 +29,7 @@ extra-index-url = ["https://download.pytorch.org/whl/cpu"]
 
 [tool.uv.sources]
 # hexchess bindings are built from local Rust source via maturin
-hexchess = { path = "bindings/python", editable = true }
+hexchess-zero = { path = "bindings/python", editable = true }
 
 [build-system]
 requires = ["setuptools>=68"]
