@@ -55,12 +55,21 @@ class _BaseConfig:
     promote_every_new_positions: int = 300_000
     runtime_health_check_every_steps: int = 500
 
-    # --- Imitation mix ---
-    # Fraction of training batches sourced from minimax imitation data vs
-    # self-play. Anchors the policy to the teacher signal during early
-    # training when self-play is noisy. Observed: without this, v2 was
-    # WORSE than heuristic. 0.3 = 30% imitation, 70% self-play.
-    imitation_mix: float = 0.3
+    # --- Imitation mix (bootstrap → decay → off) ---
+    # Fraction of training batches sourced from minimax imitation data
+    # vs self-play. Anchors the policy to the teacher signal during early
+    # training when self-play is noisy — observed: without this, v2 was
+    # WORSE than heuristic. But holding the mix permanently at a fixed
+    # value pins the policy to the minimax teacher long after self-play
+    # has overtaken it; notes/13 calls for a "bootstrap then switch"
+    # schedule. We linearly decay from ``imitation_mix_start`` at v1 to
+    # ``imitation_mix_end`` by ``imitation_mix_decay_end_version``, after
+    # which the trainer is pure self-play. The decay horizon matches
+    # ``gating_enabled_first_n_versions`` so "bootstrap" and "gated early
+    # versions" stay in lockstep.
+    imitation_mix_start: float = 0.3
+    imitation_mix_end: float = 0.0
+    imitation_mix_decay_end_version: int = 5
 
     # --- Replay window (sublinear KataGo formula, plan §4.1) ---
     window_c: int = 25_000
@@ -168,6 +177,24 @@ class AsyncConfig(_BaseConfig):
         self.model_cache_dir.mkdir(parents=True, exist_ok=True)
         self.data_cache_dir.mkdir(parents=True, exist_ok=True)
 
+    def imitation_mix_for_version(self, version: int) -> float:
+        """Return the imitation-mix fraction for the given model version.
+
+        Linearly interpolates from ``imitation_mix_start`` at v1 down to
+        ``imitation_mix_end`` by ``imitation_mix_decay_end_version``; held
+        constant outside that interval so callers can pass any version
+        without clamping at the call site.
+        """
+        start = self.imitation_mix_start
+        end = self.imitation_mix_end
+        end_v = self.imitation_mix_decay_end_version
+        if end_v <= 1 or version >= end_v:
+            return end
+        if version <= 1:
+            return start
+        t = (version - 1) / (end_v - 1)
+        return start + (end - start) * t
+
     def validate(self) -> None:
         """Sanity-check config values; raise ``ValueError`` on bad input."""
         errors: list[str] = []
@@ -217,6 +244,15 @@ class AsyncConfig(_BaseConfig):
 
         _check(self.max_train_steps_per_new_data > 0,
                "max_train_steps_per_new_data must be > 0")
+        _check(0.0 <= self.imitation_mix_start <= 1.0,
+               "imitation_mix_start must be in [0, 1]")
+        _check(0.0 <= self.imitation_mix_end <= 1.0,
+               "imitation_mix_end must be in [0, 1]")
+        _check(self.imitation_mix_start >= self.imitation_mix_end,
+               "imitation_mix_start must be >= imitation_mix_end "
+               "(schedule is a decay, not a ramp)")
+        _check(self.imitation_mix_decay_end_version >= 1,
+               "imitation_mix_decay_end_version must be >= 1")
         _check(bool(self.run_id), "run_id must be non-empty")
 
         if errors:
