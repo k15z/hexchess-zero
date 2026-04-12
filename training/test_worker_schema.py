@@ -17,12 +17,16 @@ import pytest
 from training.worker import (
     GameRecord,
     PositionSample,
+    ResignTracker,
     compute_opening_hash,
     finalize_game_targets,
     legal_mask_from_moves,
     write_samples_to_npz,
     write_trace_json,
+    _resign_calibration_correct,
+    _resigned_outcome,
     _root_q_to_wdl,
+    _value_to_p_win,
 )
 
 
@@ -312,3 +316,114 @@ def test_legal_mask_from_moves_is_stm_framed_black() -> None:
         "asymmetric position — the STM remap silently reverted to identity"
     )
 
+
+# ---------------------------------------------------------------------------
+# Resignation tracker + calibration helpers
+# ---------------------------------------------------------------------------
+
+
+def test_value_to_p_win_endpoints_and_mid():
+    assert _value_to_p_win(-1.0) == pytest.approx(0.0)
+    assert _value_to_p_win(0.0) == pytest.approx(0.5)
+    assert _value_to_p_win(1.0) == pytest.approx(1.0)
+    # Clamps out-of-range inputs (safety net; MCTS shouldn't emit these).
+    assert _value_to_p_win(-2.0) == pytest.approx(0.0)
+    assert _value_to_p_win(2.0) == pytest.approx(1.0)
+
+
+def test_resign_tracker_fires_after_k_consecutive_low():
+    t = ResignTracker(v_resign=0.05, k=3)
+    assert t.record("white", 0.01) is False
+    assert t.record("white", 0.02) is False
+    assert t.record("white", 0.01) is True
+
+
+def test_resign_tracker_resets_on_above_threshold():
+    t = ResignTracker(v_resign=0.05, k=3)
+    t.record("white", 0.01)
+    t.record("white", 0.01)
+    # One above-threshold value inside the window prevents firing.
+    assert t.record("white", 0.50) is False
+    assert t.record("white", 0.01) is False
+    assert t.record("white", 0.01) is False
+    # Now the sliding window is [0.50, 0.01, 0.01] — still blocked by 0.50.
+    # The next low push evicts 0.50 and we have [0.01, 0.01, 0.01].
+    assert t.record("white", 0.01) is True
+
+
+def test_resign_tracker_is_per_side():
+    """White's streak must not fire when it's black that has been losing."""
+    t = ResignTracker(v_resign=0.05, k=3)
+    assert t.record("black", 0.01) is False
+    assert t.record("white", 0.99) is False  # white doing fine
+    assert t.record("black", 0.01) is False
+    assert t.record("white", 0.99) is False
+    # Third low-from-black push: black's window is full and all low → fires.
+    assert t.record("black", 0.01) is True
+    # White has never been below threshold, so its window is empty-ish and
+    # pushing a low value doesn't fire (only one below-threshold entry).
+    assert t.record("white", 0.01) is False
+
+
+def test_resign_tracker_disabled_returns_false():
+    # Any non-positive k or v_resign disables the tracker entirely.
+    t = ResignTracker(v_resign=0.0, k=3)
+    assert t.record("white", 0.0) is False
+    t2 = ResignTracker(v_resign=0.05, k=0)
+    assert t2.record("white", 0.0) is False
+
+
+def test_resigned_outcome_white_loses():
+    result, termination, wdl_white = _resigned_outcome("white")
+    assert result == "black_win"
+    assert termination == "resignation"
+    assert wdl_white == [0.0, 0.0, 1.0]
+
+
+def test_resigned_outcome_black_loses():
+    result, termination, wdl_white = _resigned_outcome("black")
+    assert result == "white_win"
+    assert termination == "resignation"
+    assert wdl_white == [1.0, 0.0, 0.0]
+
+
+def test_resign_calibration_correct_cases():
+    # Never fired — None.
+    assert _resign_calibration_correct(None, "white_win") is None
+    assert _resign_calibration_correct(None, "draw") is None
+
+    # White would-resign is correct iff white actually lost.
+    assert _resign_calibration_correct("white", "black_win") is True
+    assert _resign_calibration_correct("white", "white_win") is False
+    assert _resign_calibration_correct("white", "draw") is False
+
+    # Black would-resign is correct iff black actually lost.
+    assert _resign_calibration_correct("black", "white_win") is True
+    assert _resign_calibration_correct("black", "black_win") is False
+    assert _resign_calibration_correct("black", "draw") is False
+
+
+def test_npz_meta_includes_resignation_fields(tmp_path: Path) -> None:
+    """The per-game meta sidecar must carry the resignation audit fields so
+    the false-positive rate can be computed offline from S3."""
+    rec = _fake_record(game_len=4, wdl_white=[0.0, 0.0, 1.0])
+    rec.resign_fired = True
+    rec.resign_would_fire_ply = 3
+    rec.resign_would_fire_side = "white"
+    rec.resign_calibration_correct = True
+    rec.termination = "resignation"
+    rec.result = "black_win"
+    finalize_game_targets(rec)
+    npz_path = tmp_path / "resigned.npz"
+    meta = write_samples_to_npz(npz_path, rec, num_move_indices=NUM_MOVES)
+    loaded = json.loads(npz_path.with_suffix(".meta.json").read_text())
+    for key in (
+        "resign_fired", "resign_would_fire_ply", "resign_would_fire_side",
+        "resign_calibration_correct",
+    ):
+        assert key in loaded, f"meta sidecar missing {key}"
+    assert loaded["resign_fired"] is True
+    assert loaded["resign_would_fire_ply"] == 3
+    assert loaded["resign_would_fire_side"] == "white"
+    assert loaded["resign_calibration_correct"] is True
+    assert meta == loaded

@@ -112,6 +112,16 @@ class GameRecord:
     num_total_positions: int     # full + fast combined
     wdl_terminal_white: list[float]  # [W, D, L] from WHITE perspective
     game_len_plies: int
+    # Resignation audit fields. ``resign_fired`` is True iff the game ended
+    # early via Python-side resignation. ``resign_would_fire_{ply,side}``
+    # record the first ply at which the tracker would have fired even
+    # when resignation was skipped for calibration (``resigned_skipped=True``).
+    # ``resign_calibration_correct`` is None if the tracker never fired;
+    # otherwise True iff the would-be-resigning side actually lost.
+    resign_fired: bool = False
+    resign_would_fire_ply: int | None = None
+    resign_would_fire_side: str | None = None
+    resign_calibration_correct: bool | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +191,81 @@ def _entropy(p: np.ndarray) -> float:
     if not mask.any():
         return 0.0
     return float(-(p[mask] * np.log(p[mask])).sum())
+
+
+# ---------------------------------------------------------------------------
+# Resignation (Python-side KataGo-style tracker)
+# ---------------------------------------------------------------------------
+#
+# The engine exposes ``record_and_check_resign`` / ``reset_resign_history``
+# on ``MctsSearch`` (engine/src/mcts.rs:1423) but does NOT call it from
+# inside ``run_pcr`` and the Python binding does not expose it either. The
+# worker previously toggled ``set_resign_enabled`` and did nothing else, so
+# every game played out to natural termination — a major throughput miss
+# for a variant with mean ~244-ply games and a long tail. This class is a
+# pure-Python reimplementation of the engine's sliding-window tracker that
+# runs in the worker after each ``run_pcr`` call, so ``_play_one_game_pcr``
+# can actually break the loop early. Kept side-by-side with the engine
+# version (rather than wiring it through the binding) so the logic is
+# testable from Python and doesn't require a binding rebuild.
+
+@dataclass
+class ResignTracker:
+    """Sliding-window STM-POV resignation tracker, per side.
+
+    Mirrors ``engine::mcts::record_and_check_resign``: at every move, push
+    the STM's win probability onto that side's history; keep at most ``k``
+    entries; fire when the window is full and every entry is below
+    ``v_resign``. A single above-threshold value anywhere in the window
+    prevents firing — equivalent to "last k consecutive moves all below".
+    """
+    v_resign: float
+    k: int
+    _white: list[float] = field(default_factory=list)
+    _black: list[float] = field(default_factory=list)
+
+    def record(self, side: str, p_win: float) -> bool:
+        """Record an observation for ``side``. Returns True iff fired."""
+        if self.k <= 0 or self.v_resign <= 0.0:
+            return False
+        hist = self._white if side == "white" else self._black
+        hist.append(float(p_win))
+        while len(hist) > self.k:
+            hist.pop(0)
+        return len(hist) == self.k and all(p < self.v_resign for p in hist)
+
+
+def _value_to_p_win(value: float) -> float:
+    """Map root Q in [-1, 1] (STM POV) to a win probability in [0, 1]."""
+    q = max(-1.0, min(1.0, float(value)))
+    return (q + 1.0) * 0.5
+
+
+def _resigned_outcome(resigning_side: str) -> tuple[str, str, list[float]]:
+    """Return ``(result, termination, wdl_white)`` when a side resigns."""
+    if resigning_side == "white":
+        return "black_win", "resignation", [0.0, 0.0, 1.0]
+    if resigning_side == "black":
+        return "white_win", "resignation", [1.0, 0.0, 0.0]
+    raise ValueError(f"unknown resigning side: {resigning_side!r}")
+
+
+def _resign_calibration_correct(
+    would_fire_side: str | None, result: str
+) -> bool | None:
+    """Was a would-resign decision correct?
+
+    The would-resigning side predicted it would lose; the decision is
+    correct iff the final result shows it losing. Returns None if the
+    tracker never fired.
+    """
+    if would_fire_side is None:
+        return None
+    if would_fire_side == "white":
+        return result == "black_win"
+    if would_fire_side == "black":
+        return result == "white_win"
+    raise ValueError(f"unknown would_fire_side: {would_fire_side!r}")
 
 
 def compute_opening_hash(move_strings: list[str]) -> str:
@@ -326,6 +411,10 @@ def write_samples_to_npz(
         "result": record.result,
         "termination": record.termination,
         "resigned_skipped": bool(record.resigned_skipped),
+        "resign_fired": bool(record.resign_fired),
+        "resign_would_fire_ply": record.resign_would_fire_ply,
+        "resign_would_fire_side": record.resign_would_fire_side,
+        "resign_calibration_correct": record.resign_calibration_correct,
         "openings_hash": record.opening_hash,
         "git_sha": record.git_sha,
         "rng_seed": int(record.rng_seed),
@@ -412,11 +501,19 @@ def _play_one_game_pcr(
     assert hexchess is not None
     num_moves = hexchess.num_move_indices()
 
-    # Per-game seed + resign-skip coin.
+    # Per-game seed + resign-skip coin. The engine-side ``set_resign_enabled``
+    # flag is a dead no-op (``record_and_check_resign`` is never called from
+    # ``run_pcr``); actual resignation is handled below by ``ResignTracker``.
     seed = py_rng.getrandbits(64)
     search.set_rng_seed(seed)
-    resigned_skipped = py_rng.random() < 0.1
-    search.set_resign_enabled(not resigned_skipped)
+    resigned_skipped = py_rng.random() < cfg.resign_skip_prob
+    resign_tracker = ResignTracker(
+        v_resign=cfg.resign_threshold, k=cfg.resign_streak
+    )
+    resign_fired = False
+    resign_side: str | None = None
+    resign_would_fire_ply: int | None = None
+    resign_would_fire_side: str | None = None
 
     game = hexchess.Game()
     positions: list[PositionSample] = []
@@ -482,6 +579,20 @@ def _play_one_game_pcr(
             )
             positions.append(pos)
 
+        # Resignation check. Runs on every ply (full and fast PCR alike) so
+        # the sliding window matches the engine's per-move tracker. When
+        # ``resigned_skipped=True`` we always play on but remember the first
+        # would-fire event so the false-positive rate can be measured.
+        p_win = _value_to_p_win(value)
+        would_fire = resign_tracker.record(side, p_win)
+        if would_fire and resign_would_fire_side is None:
+            resign_would_fire_side = side
+            resign_would_fire_ply = total_ply
+        if would_fire and not resigned_skipped:
+            resign_fired = True
+            resign_side = side
+            break
+
         if total_ply < 6:
             opening_moves.append(_move_to_str(best_move))
 
@@ -489,8 +600,15 @@ def _play_one_game_pcr(
         total_ply += 1
 
     duration = time.time() - t0
-    status = game.status()
-    result, termination, wdl_white = _status_to_result_termination(status)
+
+    if resign_fired:
+        assert resign_side is not None
+        result, termination, wdl_white = _resigned_outcome(resign_side)
+        game_len = total_ply + 1  # STM at the resign position loses this ply
+    else:
+        status = game.status()
+        result, termination, wdl_white = _status_to_result_termination(status)
+        game_len = total_ply
 
     record = GameRecord(
         positions=positions,
@@ -508,9 +626,15 @@ def _play_one_game_pcr(
         num_simulations=cfg.num_simulations,
         worker=_worker_name(),
         git_sha=_git_sha(),
-        num_total_positions=total_ply,
+        num_total_positions=game_len,
         wdl_terminal_white=wdl_white,
-        game_len_plies=total_ply,
+        game_len_plies=game_len,
+        resign_fired=resign_fired,
+        resign_would_fire_ply=resign_would_fire_ply,
+        resign_would_fire_side=resign_would_fire_side,
+        resign_calibration_correct=_resign_calibration_correct(
+            resign_would_fire_side, result
+        ),
     )
     finalize_game_targets(record)
     return record
