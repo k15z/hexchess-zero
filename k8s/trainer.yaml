@@ -23,13 +23,13 @@ spec:
             - secretRef:
                 name: hexchess-env
           resources:
-            # GPU training: ~94ms/step vs ~1.1s/step on CPU. Reduced CPU/memory
-            # since GPU handles compute; nvidia.com/gpu enables CUDA.
+            # GPU training: ~94ms/step vs ~1.1s/step on CPU. 8Gi prevents OOMKill
+            # (CUDA has additional pinned memory overhead).
             requests:
               cpu: "2"
-              memory: "4Gi"
+              memory: "8Gi"
               nvidia.com/gpu: "1"
             limits:
               cpu: "4"
-              memory: "4Gi"
+              memory: "8Gi"
               nvidia.com/gpu: "1"
