@@ -312,7 +312,7 @@ fn run_value_function_tests() {
     assert_eq!(score2, 900);
 
     // Test 3: HeuristicEvaluator value for same position
-    let eval = HeuristicEvaluator;
+    let eval = HeuristicEvaluator::default();
     let result = eval.evaluate(&state2);
     let value = result.wdl[0] - result.wdl[2];
     println!(
@@ -392,7 +392,7 @@ fn run_mcts_tactical_tests() {
     );
 
     let state = GameState::from_board(board);
-    let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+    let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
     let result = search.search(&state, 500);
 
     let captures_queen =
@@ -446,7 +446,7 @@ fn run_heuristic_vs_random_moves() {
 
     for i in 0..num_games {
         let mut state = GameState::new();
-        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
 
         for _ in 0..100 {
             // 100 full moves = 200 ply
@@ -522,7 +522,7 @@ fn run_heuristic_vs_random_moves() {
 
     for i in 0..num_games {
         let mut state = GameState::new();
-        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
 
         for _ in 0..100 {
             if state.is_game_over() {
@@ -688,7 +688,7 @@ fn run_mcts_winning_positions() {
         board.black_king = HexCoord::new(5, -5);
 
         let state = GameState::from_board(board);
-        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
         let result = search.search(&state, sims);
         println!(
             "  Q+R vs K value: {:.3} (should be strongly positive)",
@@ -725,7 +725,7 @@ fn run_mcts_winning_positions() {
         );
 
         let state = GameState::from_board(board);
-        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
         let result = search.search(&state, sims);
         println!(
             "  Lone K vs Q+R (Black to move) value: {:.3} (should be negative)",
@@ -741,7 +741,7 @@ fn run_mcts_winning_positions() {
     // Test 3: Equal position should have value near zero
     {
         let state = GameState::new();
-        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
         let result = search.search(&state, sims);
         println!(
             "  Starting position value: {:.3} (should be near 0)",
@@ -790,7 +790,7 @@ fn run_mcts_forced_tactics() {
         );
 
         let state = GameState::from_board(board);
-        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
         let result = search.search(&state, sims);
 
         let moves_queen = result.best_move.from == HexCoord::new(0, 0);
@@ -829,7 +829,7 @@ fn run_mcts_forced_tactics() {
         );
 
         let state = GameState::from_board(board);
-        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
         let result = search.search(&state, sims);
 
         let captures = result.best_move.from == HexCoord::new(0, 0)
@@ -865,8 +865,8 @@ fn run_simulation_scaling() {
     print!("  High(W) vs Low(B): ");
     for _ in 0..games_per_side {
         let mut state = GameState::new();
-        let mut search_high = MctsSearch::new(Box::new(HeuristicEvaluator));
-        let mut search_low = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut search_high = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
+        let mut search_low = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
 
         for _ in 0..100 {
             if state.is_game_over() {
@@ -897,8 +897,8 @@ fn run_simulation_scaling() {
     print!("  Low(W) vs High(B): ");
     for _ in 0..games_per_side {
         let mut state = GameState::new();
-        let mut search_high = MctsSearch::new(Box::new(HeuristicEvaluator));
-        let mut search_low = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut search_high = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
+        let mut search_low = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
 
         for _ in 0..100 {
             if state.is_game_over() {
@@ -1014,11 +1014,11 @@ fn run_value_monotonicity() {
     let state_b = GameState::from_board(board_b);
     let state_c = GameState::from_board(board_c);
 
-    let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+    let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
     let va = search.search(&state_a, sims).value;
-    let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+    let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
     let vb = search.search(&state_b, sims).value;
-    let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+    let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
     let vc = search.search(&state_c, sims).value;
 
     println!("  K+Q+R vs K: {:.3}", va);
@@ -1061,7 +1061,7 @@ fn run_mcts_state_immutability() {
     let ep_before = state.board.en_passant;
     let hmc_before = state.board.halfmove_clock;
 
-    let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+    let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
     let _result = search.search(&state, 500);
 
     assert_eq!(
@@ -1109,7 +1109,7 @@ fn run_mcts_state_immutability() {
         let ep_before = setup_state.board.en_passant;
         let hmc_before = setup_state.board.halfmove_clock;
 
-        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
         let _result = search.search(&setup_state, 200);
 
         assert_eq!(
@@ -1390,7 +1390,7 @@ fn run_sequential_mcts_stability() {
             i
         );
 
-        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
         let _result = search.search(&state, 200);
     }
 
@@ -1428,7 +1428,7 @@ fn run_sequential_mcts_stability() {
                 "Mid-game iter {}: hash drifted",
                 i
             );
-            let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+            let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
             let _result = search.search(&mid_state, 200);
         }
 
@@ -1481,7 +1481,7 @@ fn run_mcts_play_undo() {
         let bk_orig = state.board.black_king;
 
         // MCTS search #1 -> apply suggested move
-        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
         let result1 = search.search(&state, 100);
         state.apply_move(result1.best_move);
 
@@ -1600,7 +1600,7 @@ fn run_mcts_checkmate_in_one() {
             "There should be at least one mating move in this position"
         );
 
-        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
         let result = search.search(&state, 5000);
 
         println!("  Test 1 - Queen mates on corner:");
@@ -1667,7 +1667,7 @@ fn run_mcts_checkmate_in_one() {
         });
         assert!(has_mate, "There should be at least one rook mating move");
 
-        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+        let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
         let result = search.search(&state, 5000);
 
         println!("  Test 2 - Rook delivers back-rank mate:");
@@ -1736,7 +1736,7 @@ fn run_kq_vs_k_endgame() {
             } else {
                 black_sims
             };
-            let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+            let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
             let result = search.search(&game, sims);
             game.apply_move(result.best_move);
             if ply % 10 == 0 {
@@ -1800,7 +1800,7 @@ fn run_kq_vs_k_endgame() {
             } else {
                 black_sims
             };
-            let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+            let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
             let result = search.search(&game, sims);
             game.apply_move(result.best_move);
             if ply % 10 == 0 {

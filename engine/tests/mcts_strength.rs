@@ -52,7 +52,7 @@ fn mcts_captures_free_queen() {
         "queen capture must be a legal move in this position",
     );
 
-    let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+    let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
     let result = search.search(&game, 500);
 
     assert_eq!(
@@ -93,7 +93,7 @@ fn mcts_finds_checkmate_in_1() {
         "position must have at least one mate-in-1"
     );
 
-    let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+    let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
     // Strict tactical test → use eval config (no Dirichlet noise, no shuffling).
     // The training default injects noise into the root prior which makes
     // mate-finding probabilistic at low sim counts; eval config is what
@@ -124,7 +124,7 @@ fn mcts_value_reflects_material_advantage() {
         (0, 4, PieceKind::King, Color::Black),
     ]);
     let game = GameState::from_board(board);
-    let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+    let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
     let result = search.search(&game, 200);
     assert!(
         result.value > 0.0,
@@ -141,7 +141,7 @@ fn mcts_value_negative_when_losing() {
         (0, 3, PieceKind::Queen, Color::Black),
     ]);
     let game = GameState::from_board(board);
-    let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+    let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
     let result = search.search(&game, 200);
     assert!(
         result.value < 0.0,
@@ -164,7 +164,7 @@ fn root_qvalue_perspective_is_side_to_move() {
     ]);
     board.side_to_move = Color::White;
     let game = GameState::from_board(board);
-    let mut search = MctsSearch::new(Box::new(HeuristicEvaluator));
+    let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
     let result = search.search(&game, 200);
     assert!(
         result.value > 0.0,
@@ -180,7 +180,7 @@ fn root_qvalue_perspective_is_side_to_move() {
     ]);
     board2.side_to_move = Color::Black;
     let game2 = GameState::from_board(board2);
-    let mut search2 = MctsSearch::new(Box::new(HeuristicEvaluator));
+    let mut search2 = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
     let result2 = search2.search(&game2, 200);
     assert!(
         result2.value > 0.0,

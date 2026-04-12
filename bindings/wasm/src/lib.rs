@@ -300,7 +300,7 @@ impl AiPlayer {
     #[wasm_bindgen(constructor)]
     pub fn new(simulations: u32) -> AiPlayer {
         AiPlayer {
-            search: MctsSearch::new(Box::new(HeuristicEvaluator)),
+            search: MctsSearch::new(Box::new(HeuristicEvaluator::default())),
             simulations,
         }
     }

@@ -92,7 +92,7 @@ fn pick_move(state: &mut GameState, strategy: Strategy, rng: &mut StdRng) -> Opt
             minimax::search(state, 2, &EvalWeights::material_only()).map(|r| r.best_move)
         }
         Strategy::Mcts50 => {
-            let mut mcts = MctsSearch::new(Box::new(HeuristicEvaluator));
+            let mut mcts = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
             let mut config = SearchConfig::eval();
             config.rng_seed = Some(rng.random::<u64>());
             mcts.set_config(config);
