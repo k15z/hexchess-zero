@@ -123,13 +123,20 @@ Position count is encoded in each `.npz` filename (`_n{count}`) so the trainer c
 
 Two k8s clusters: `kevz-infra` (public Hetzner k3s) and `kevz-gpu` (private, behind Tailscale). Manifests live in `k8s/`.
 
-**Image tags:** The Docker workflow publishes both floating tags (`cpu`, `cuda`) and SHA-pinned tags using 7-char short SHAs (`cpu-<sha7>`, `cuda-<sha7>`). When deploying, always use SHA-pinned tags in `k8s/*.yaml` manifests (e.g. `ghcr.io/k15z/hexchess-zero/training:cuda-47e2984`), not floating tags. This ensures reproducible deploys and consistent images across both clusters. Find available SHA tags via:
+**Image tags:** The Docker workflow publishes both floating tags (`cpu`, `cuda`) and SHA-pinned tags using 7-char short SHAs (`cpu-<sha7>`, `cuda-<sha7>`). The manifests in `k8s/` use the floating tags as defaults, but deploys should pin to a specific SHA tag at apply time for reproducibility:
 ```bash
+# Find available SHA tags
 gh api /users/k15z/packages/container/hexchess-zero%2Ftraining/versions \
   --jq '.[].metadata.container.tags[]' | grep -E '^(cpu|cuda)-'
-```
 
-**Applying:** Deploys are manual. After updating image tags in the manifests, apply with `kubectl apply -f k8s/` against each cluster context.
+# Deploy with a specific SHA tag
+TAG=47e2984
+kubectl set image deployment/trainer trainer=ghcr.io/k15z/hexchess-zero/training:cuda-$TAG -n hexchess
+kubectl set image deployment/worker worker=ghcr.io/k15z/hexchess-zero/training:cpu-$TAG -n hexchess
+kubectl set image deployment/dashboard dashboard=ghcr.io/k15z/hexchess-zero/training:cpu-$TAG \
+  tunnel=ghcr.io/k15z/hexchess-zero/training:cpu-$TAG -n hexchess
+kubectl set image deployment/elo-service elo=ghcr.io/k15z/hexchess-zero/training:cpu-$TAG -n hexchess
+```
 
 ## Key Conventions
 

@@ -18,7 +18,8 @@ spec:
       runtimeClassName: nvidia
       containers:
         - name: trainer
-          image: ghcr.io/k15z/hexchess-zero/training:cuda-47e2984
+          image: ghcr.io/k15z/hexchess-zero/training:cuda
+          imagePullPolicy: Always
           args: ["trainer"]
           envFrom:
             - secretRef:
