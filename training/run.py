@@ -43,8 +43,8 @@ def cmd_trainer(args) -> None:
     from .trainer_loop import run_trainer
 
     cfg = AsyncConfig()
-    if args.steps is not None:
-        cfg.steps_per_cycle = args.steps
+    if args.summary_interval_steps is not None:
+        cfg.summary_interval_steps = args.summary_interval_steps
     if args.batch_size is not None:
         cfg.batch_size = args.batch_size
 
@@ -70,7 +70,14 @@ def main() -> None:
 
     # --- Trainer ---
     trainer_parser = subparsers.add_parser("trainer", help="Run continuous trainer loop")
-    trainer_parser.add_argument("--steps", type=int, default=None, help="Training steps per cycle")
+    trainer_parser.add_argument(
+        "--summary-interval-steps",
+        "--steps",
+        dest="summary_interval_steps",
+        type=int,
+        default=None,
+        help="Training steps between trainer summaries",
+    )
     trainer_parser.add_argument("--batch-size", type=int, default=None, help="Training batch size")
 
     # --- Status & progress ---

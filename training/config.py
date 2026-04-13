@@ -45,7 +45,7 @@ class _BaseConfig:
 
     # --- Training ---
     batch_size: int = 256
-    # Observed: at 1e-3 the policy oscillates 3.1–3.5 across cycles without
+    # Observed: at 1e-3 the policy oscillates 3.1–3.5 across trainer summaries without
     # converging. Halving to 5e-4 for smoother optimization on the large
     # (~4200-output) policy FC. KataGo's per-sample LR was 6e-5 ≈ 1.5e-2
     # at batch 256; our 5e-4 is more conservative but safer for a model
@@ -55,9 +55,9 @@ class _BaseConfig:
     l2_regularization: float = 3e-5  # KataGo weight decay (plan §4.3)
     grad_clip_norm: float = 5.0  # plan §4.3
     lr_warmup_steps: int = 2_000  # plan §4.3
-    # Pipeline validated through v4. Now prioritize training depth over
-    # iteration speed: 300k gives each version ~3× more self-play data
-    # and the trainer 3× more steps before the next promotion disrupts.
+    # Pipeline validated through v4. 300k fresh positions keeps version churn
+    # slower than the worker poll cadence without forcing promotion to wait for
+    # an arbitrary trainer chunk boundary.
     promote_every_new_positions: int = 300_000
     runtime_health_check_every_steps: int = 500
 
@@ -97,7 +97,7 @@ class _BaseConfig:
     # --- Playout Cap Randomization (plan §1.4/§5.4) ---
     # Plan targets 800/160 for production. Observed on kevz-infra at kickoff:
     # 800-sim self-play yields ~64 pos/min across 4 CPU workers, making the
-    # v2 cycle multi-day. Dropping to 200/50 in early training gives ~4x
+    # early promotion cadence multi-day. Dropping to 200/50 in early training gives ~4x
     # throughput; the learned policy manifests fine at 200 sims for a near-
     # random-init v1. Ratchet back to 800 once the NN is strong enough that
     # sim depth limits performance.
@@ -107,7 +107,7 @@ class _BaseConfig:
     # material) because the search can't find winning tactics at low depth.
     # At 800 sims the NN's learned prior compounds over the search tree,
     # producing sharper visit distributions that the network can learn from.
-    # Throughput drops to ~90 pos/min with 22 workers — v7 cycle ~2 days.
+    # Throughput drops to ~90 pos/min with 22 workers — v7 promotion cadence ~2 days.
     pcr_n_full: int = 800
     pcr_n_fast: int = 160
 
@@ -147,8 +147,8 @@ class AsyncConfig(_BaseConfig):
     worker_batch_size: int = (
         2  # games per flush (small so bootstrap data lands quickly)
     )
-    steps_per_cycle: int = 3000  # 3× more training per version (was 1000; each cycle now converges before next promotion)
-    reload_interval: int = 1000  # reload buffer from disk every N steps for fresh data
+    summary_interval_steps: int = 3000  # steps between trainer summaries; not a promotion gate
+    reload_interval: int = 1000  # reload replay data and re-check promotion eligibility every N steps
     max_train_steps_per_new_data: float = (
         4.0  # target passes per data point (KataGo-style bucket)
     )
@@ -159,7 +159,7 @@ class AsyncConfig(_BaseConfig):
     # --- Imitation bootstrap ---
     # Depth 5 is prohibitively slow on Glinski (>10 min per game observed).
     # Depth 3 produces still-reasonable targets (captures, obvious tactics)
-    # and is ~30x faster, which lets us cycle through bootstrap in hours
+    # and is ~30x faster, which lets us get through bootstrap in hours
     # instead of days.
     imitation_depth: int = 3
     imitation_exploration_plies: int = 30  # plies using softmax sampling for diversity
@@ -191,6 +191,15 @@ class AsyncConfig(_BaseConfig):
     def ensure_cache_dirs(self) -> None:
         self.model_cache_dir.mkdir(parents=True, exist_ok=True)
         self.data_cache_dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def steps_per_cycle(self) -> int:
+        """Backward-compatible alias for the old cadence name."""
+        return self.summary_interval_steps
+
+    @steps_per_cycle.setter
+    def steps_per_cycle(self, value: int) -> None:
+        self.summary_interval_steps = value
 
     def imitation_mix_for_version(self, version: int) -> float:
         """Return the imitation-mix fraction for the given model version.
@@ -259,6 +268,10 @@ class AsyncConfig(_BaseConfig):
         _check(
             self.max_train_steps_per_new_data > 0,
             "max_train_steps_per_new_data must be > 0",
+        )
+        _check(
+            self.summary_interval_steps > 0,
+            "summary_interval_steps must be > 0",
         )
         _check(
             0.0 <= self.imitation_mix_start <= 1.0,

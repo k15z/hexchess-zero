@@ -62,7 +62,7 @@ AlphaZero-style self-play training loop. All shared state lives in S3 (DigitalOc
 
 - **storage.py** - S3 abstraction layer. Key constants, upload/download helpers, position counting from filenames. All shared I/O goes through this module.
 - **worker.py** - Continuous self-play loop. Polls S3 for model updates, plays games using MCTS, flushes `.npz` batches to S3. During bootstrap (no model), generates minimax imitation data with process-pool parallelism.
-- **trainer_loop.py** - Continuous trainer. Samples from a sliding-window replay buffer (downloads from S3), trains for N steps per cycle, exports ONNX, promotes to S3. KataGo-style token bucket throttles training to match data production rate.
+- **trainer_loop.py** - Continuous trainer. Samples from a sliding-window replay buffer (downloads from S3), emits periodic trainer summaries for observability, and promotes as soon as the fresh-position threshold is met at a reload/poll boundary. KataGo-style token bucket throttles training to match data production rate.
 - **model.py** - `HexChessNet`: 8 SE residual blocks (144 filters) with KataGo-style global pooling at blocks 2 and 5. Input `(22, 11, 11)` in STM frame. Heads: main policy, terminal WDL value, moves-left (MLH), short-term value (STV), and auxiliary opponent policy.
 - **export.py** - PyTorch -> ONNX export.
 - **elo.py** - Shared Elo types: `Player` protocol, `MinimaxPlayer`, `MctsPlayer`, game play with per-player timing, OpenSkill (Plackett-Luce / Weng-Lin) rating math rescaled to look Elo-like, `predict_draw`, table formatting.

@@ -78,8 +78,8 @@ All parameters live in `training/config.py`. Key dials:
 | `learning_rate` | 5e-4 | SGD learning rate after warmup. |
 | `l2_regularization` | 3e-5 | Weight decay. |
 | `window_c` / `window_alpha` / `window_beta` | 25,000 / 0.75 / 0.4 | KataGo-style sublinear replay-window parameters. |
-| `steps_per_cycle` | 3,000 | Trainer steps per cycle before reloading metrics, buffers, and promotion state. |
-| `reload_interval` | 1,000 | Re-scan S3 every N steps within a cycle to pick up fresh worker output. |
+| `summary_interval_steps` | 3,000 | Trainer summary cadence. It controls how often metrics and Slack summaries are emitted, not promotion. |
+| `reload_interval` | 1,000 | Re-scan S3 every N steps to pick up fresh worker output and re-check promotion eligibility. |
 | `max_train_steps_per_new_data` | 4.0 | KataGo-style token bucket: target training passes per new data point. Throttles the trainer when workers fall behind. |
 | `min_positions_to_start` | 200,000 | Bootstrap gate: self-play training won't start until this many positions exist. |
 | `promote_every_new_positions` | 300,000 | Minimum fresh self-play positions required between promotions. |
@@ -113,11 +113,11 @@ These only apply to the initial bootstrap phase when no model exists yet:
 
 ### Key Dynamics
 
-**Worker throughput vs training speed.** Workers produce positions at a rate determined by `num_simulations` and CPU count. The trainer consumes them at a rate determined by `steps_per_cycle`, `batch_size`, and GPU speed. The token bucket (`max_train_steps_per_new_data`) keeps them in lockstep — if the trainer outpaces data production, it sleeps instead of overfitting on stale data.
+**Worker throughput vs training speed.** Workers produce positions at a rate determined by `num_simulations` and CPU count. The trainer consumes them at a rate determined by `batch_size`, GPU speed, and the token bucket target (`max_train_steps_per_new_data`). `summary_interval_steps` only controls how often the trainer emits summaries.
 
-**Replay window vs cycle length.** The trainer no longer uses a fixed-size replay buffer. Instead it computes a KataGo-style sublinear window from the cumulative self-play count, so early training emphasizes recency while later training keeps more historical coverage without growing linearly forever.
+**Replay window vs summary cadence.** The trainer no longer uses a fixed-size replay buffer. Instead it computes a KataGo-style sublinear window from the cumulative self-play count, so early training emphasizes recency while later training keeps more historical coverage without growing linearly forever.
 
-**Model version turnover.** The trainer only promotes after both conditions hold: it has completed a training cycle, and at least `promote_every_new_positions` new self-play positions have landed since the last promotion. Early versions can also be gated against the incumbent before `models/latest.meta.json` is advanced.
+**Model version turnover.** Promotion is driven by fresh self-play volume, not by the end of an arbitrary trainer interval. Once at least `promote_every_new_positions` new positions have landed since the last promotion, the trainer will try to promote at the next fresh-data poll (`reload_interval` reloads, data-starvation polls, or the end-of-summary check). Early versions can still be gated against the incumbent before `models/latest.meta.json` is advanced.
 
 ## S3 Layout
 

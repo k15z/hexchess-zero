@@ -201,7 +201,7 @@ def test_production_config():
     12000 tokens = ~47 training steps. This correctly throttles the
     trainer to prevent overfitting on limited data.
     """
-    max_tokens = 5000 * 256  # steps_per_cycle * batch_size
+    max_tokens = 5000 * 256  # summary_interval_steps * batch_size
     bucket = TrainBucket(target_passes=4.0, batch_size=256,
                          max_seed=max_tokens, max_tokens=float(max_tokens))
 

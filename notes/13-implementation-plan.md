@@ -260,7 +260,7 @@ The selection is by *recent positions* (parse timestamps from S3 filenames as th
 |---|---|---|
 | Optimizer | SGD + momentum 0.9 | KataGo / AZ standard (notes/01) |
 | Weight decay | 3e-5 | KataGo (notes/07) |
-| Batch size | 256 | small game, faster wall-clock per cycle |
+| Batch size | 256 | small game, faster wall-clock between trainer summaries |
 | LR | constant 1e-3, drop to 1e-4 after policy entropy plateaus or after a fixed step budget | (notes/06 §LR) |
 | Gradient clip | global norm 5.0 | notes/10 §6 |
 | Mixed precision | bf16 if cuda; fp32 on MPS | guarantee value/policy softmax in fp32 |
@@ -274,7 +274,12 @@ Snapshot weights every 250k *training samples* (= every ~1000 batches at bs=256)
 
 ### 4.5 Promotion frequency
 
-Promote a new model **every 500k self-play positions** (notes/06 §promotion, notes/10 §15). Workers poll meta.json every 60s; the existing pull pattern is already correct — only change is to make promotion granularity match the replay window growth rate so the worker model never lags by more than ~one window slice.
+Promote a new model every fixed quantum of fresh self-play positions. In the
+live trainer, this is implemented as a `promote_every_new_positions` watermark
+plus continuous checks at fresh-data polls, rather than "wait for the current
+trainer chunk to end and then decide." Workers poll `meta.json` every 60s, so
+the goal is to keep rollout lag tied to data availability and poll cadence, not
+to an arbitrary trainer chunk boundary.
 
 ### 4.6 Gating
 
@@ -291,14 +296,14 @@ Imitation from minimax (notes/06 §bootstrap, notes/12 §10). Plan:
 
 CI gate before declaring bootstrap done: v1 must beat material-only-depth-1 minimax in ≥80% of a 50-game match (this is a *very* low bar — failing it means encoding/training is broken).
 
-### 4.8 Concrete cycle
+### 4.8 Concrete cadence
 
 ```
-[trainer] cycle = 1000 steps × bs 256 = 256k samples
-[workers] generate ~64k new positions per cycle (4× target reuse)
-[trainer] reload window every 1000 steps (existing reload_interval is fine)
-[promote] every 2 cycles ≈ 500k samples
-[snapshot for SWA] every cycle
+[trainer] summary interval = summary_interval_steps × batch_size samples
+[workers] generate fresh positions continuously
+[trainer] reload window every reload_interval steps (and while waiting on data)
+[promote] as soon as promote_every_new_positions is met at one of those polls
+[snapshot for SWA] by sample count, independent of chunk boundaries
 ```
 
 ---

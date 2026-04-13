@@ -662,8 +662,9 @@ function buildOverview(data) {
   const activeWorkers = workers.filter(w => freshness(w.timestamp) === 'fresh').length;
   const staleWorkers = workers.filter(w => freshness(w.timestamp) === 'stale').length;
   const totalPositions = (sp.total_positions || 0) + (im.total_positions || 0);
-  const cycles = ((data.trainer_metrics || {}).cycles || []);
-  const latestCycle = cycles.length ? cycles[cycles.length - 1] : null;
+  const summaries = (((data.trainer_metrics || {}).summaries) || ((data.trainer_metrics || {}).cycles) || []);
+  const latestSummary = summaries.length ? summaries[summaries.length - 1] : null;
+  const latestSummaryId = latestSummary ? (latestSummary.summary ?? latestSummary.cycle) : null;
 
   const items = [
     {
@@ -686,8 +687,8 @@ function buildOverview(data) {
     {
       label: 'Evaluation',
       value: fmt(e.total_games || 0),
-      meta: latestCycle
-        ? `cycle ${latestCycle.cycle} · ${fmt(latestCycle.total_steps)} total steps`
+      meta: latestSummary
+        ? `summary ${latestSummaryId} · ${fmt(latestSummary.total_steps)} total steps`
         : `${fmt((e.active_players || []).length)} tracked players`,
     },
   ];
@@ -989,11 +990,11 @@ function buildDataPage(data) {
 
 function buildModelBehavior(data) {
   const tm = data.trainer_metrics || {};
-  const cycles = (tm.cycles || []).slice(-100);
+  const summaries = (tm.summaries || tm.cycles || []).slice(-100);
 
-  if (!cycles.length) {
+  if (!summaries.length) {
     return panelHtml('model-behavior', 'Page 3 / Model Behavior', 'waiting', `
-      <div class="empty">awaiting first training cycle</div>
+      <div class="empty">awaiting first trainer summary</div>
       <ul style="margin:8px 0 0 18px;font-size:12px;opacity:0.5">
         <li>WDL calibration — not yet instrumented (needs per-step value predictions logged)</li>
         <li>NN argmax vs MCTS argmax agreement — needs trainer instrumentation</li>
@@ -1001,7 +1002,8 @@ function buildModelBehavior(data) {
       </ul>`);
   }
 
-  const latest = cycles[cycles.length - 1];
+  const latest = summaries[summaries.length - 1];
+  const latestSummary = latest.summary ?? latest.cycle;
   const lossDefs = [
     {name: 'policy', key: 'loss_policy', color: '#3aa'},
     {name: 'value',  key: 'loss_value',  color: '#5b6'},
@@ -1011,13 +1013,13 @@ function buildModelBehavior(data) {
   ];
 
   let html = '';
-  html += `<div class="kv-row"><span class="k">latest cycle</span><span class="v">${latest.cycle} &middot; v${latest.version} &middot; ${latest.steps} steps</span></div>`;
+  html += `<div class="kv-row"><span class="k">latest summary</span><span class="v">${latestSummary} &middot; v${latest.version} &middot; ${latest.steps} steps</span></div>`;
   html += `<div class="kv-row"><span class="k">total steps</span><span class="v">${fmt(latest.total_steps)}</span></div>`;
   html += `<div class="kv-row"><span class="k">N_total</span><span class="v">${fmt(latest.n_total)} positions</span></div>`;
 
-  html += `<table style="margin-top:8px"><tr><th>loss</th><th class="r">current</th><th class="r">best</th><th style="width:110px;padding-left:8px">trend (${cycles.length}c)</th></tr>`;
+  html += `<table style="margin-top:8px"><tr><th>loss</th><th class="r">current</th><th class="r">best</th><th style="width:110px;padding-left:8px">trend (${summaries.length} summaries)</th></tr>`;
   for (const {name, key, color} of lossDefs) {
-    const vals = cycles.map(c => c[key]).filter(v => v != null);
+    const vals = summaries.map(c => c[key]).filter(v => v != null);
     const cur = vals[vals.length - 1];
     const best = Math.min(...vals);
     html += `<tr>
@@ -1035,7 +1037,7 @@ function buildModelBehavior(data) {
     <li>KL(old \u2192 new) per promotion — not yet instrumented</li>
   </ul>`;
 
-  return panelHtml('model-behavior', 'Page 3 / Model Behavior', `cycle ${latest.cycle}`, html);
+  return panelHtml('model-behavior', 'Page 3 / Model Behavior', `summary ${latestSummary}`, html);
 }
 
 function buildSearch(data) {

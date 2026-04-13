@@ -41,9 +41,11 @@ Sigma regimes at a glance:
 ### 2. Model versions
 
 ```python
-meta = storage.get_json(storage.LATEST_META)  # {"version": N, "timestamp": "..."}
+meta = storage.get_json(storage.LATEST_META)  # {"version": N, "timestamp": "...", "positions_at_promote": M}
 version_keys = storage.ls(storage.VERSIONS_PREFIX)  # models/versions/*.onnx
 ```
+
+`meta["positions_at_promote"]` is the promotion watermark. Comparing the current cumulative self-play count to that field tells you how close the run is to the next eligible promotion. Promotion is checked at trainer fresh-data polls, not only after a full trainer summary chunk.
 
 ### 3. Data volume
 

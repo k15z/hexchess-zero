@@ -13,7 +13,7 @@ primitive available:
     - ``state/elo_games/``: LIST the prefix, fetch only newly-seen keys. The
       per-game object layout replaced the old append-only jsonl so multiple
       elo-service replicas can write concurrently.
-    - ``data/selfplay/`` and ``data/imitation/``: full LIST each cycle, but
+    - ``data/selfplay/`` and ``data/imitation/``: full LIST each refresh pass, but
       aggregates are maintained incrementally — new keys only are parsed, and
       the aggregate dict is rebuilt only when the file set actually changes.
     - ``heartbeats/``: LIST with LastModified, GET only workers whose modified
@@ -123,7 +123,16 @@ class DashboardStore:
         self._trainer_metrics = self._sync_etagged_json(
             storage.TRAINER_METRICS,
             "_etag_trainer",
-            lambda d: d,
+            lambda d: {
+                **{k: v for k, v in d.items() if k not in {"cycles", "summaries"}},
+                "summaries": [
+                    {
+                        **{kk: vv for kk, vv in entry.items() if kk != "cycle"},
+                        "summary": entry.get("summary", entry.get("cycle")),
+                    }
+                    for entry in d.get("summaries", d.get("cycles", []))
+                ],
+            },
             fallback=self._trainer_metrics,
         )
         self._sync_games()
