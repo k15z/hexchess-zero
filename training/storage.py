@@ -4,8 +4,10 @@ All shared state goes through this module. Uses S3-compatible object storage
 (DigitalOcean Spaces, Cloudflare R2, AWS S3, MinIO, etc.).
 
 Bucket layout:
-    models/latest.onnx              Current model for inference
+    models/latest.onnx              Latest trainer-exported candidate
     models/latest.meta.json         {"version": N, "timestamp": "..."}
+    models/approved.onnx            Model currently approved for self-play
+    models/approved.meta.json       {"version": N, "timestamp": "..."}
     models/checkpoint.pt            PyTorch training checkpoint
     models/versions/{N}.onnx        Immutable version snapshots
 
@@ -36,6 +38,8 @@ from botocore.exceptions import ClientError
 
 LATEST_ONNX = "models/latest.onnx"
 LATEST_META = "models/latest.meta.json"
+APPROVED_ONNX = "models/approved.onnx"
+APPROVED_META = "models/approved.meta.json"
 CHECKPOINT_PT = "models/checkpoint.pt"
 VERSIONS_PREFIX = "models/versions/"
 SELFPLAY_PREFIX = "data/selfplay/"
@@ -43,6 +47,7 @@ SELFPLAY_TRACES_PREFIX = "data/selfplay_traces/"
 IMITATION_PREFIX = "data/imitation/"
 ELO_STATE = "state/elo.json"
 ELO_GAMES_PREFIX = "state/elo_games/"  # one object per game, race-free writes
+GATE_STATE = "state/gate.json"
 HEARTBEATS_PREFIX = "heartbeats/"
 TRAINER_METRICS = "state/trainer_metrics.json"
 BENCHMARK_RESULTS_PREFIX = "benchmarks/results/"

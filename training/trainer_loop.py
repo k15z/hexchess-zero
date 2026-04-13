@@ -491,7 +491,13 @@ def _run_bootstrap(cfg: AsyncConfig, model: torch.nn.Module,
     # Export and promote v1. Self-play hasn't started yet, so positions = 0.
     new_version = 1
     bootstrap_selfplay_positions = storage.count_positions(storage.SELFPLAY_PREFIX)
-    _promote_model(cfg, model, new_version, positions_at_promote=bootstrap_selfplay_positions)
+    _promote_model(
+        cfg,
+        model,
+        new_version,
+        positions_at_promote=bootstrap_selfplay_positions,
+        publish_approved=True,
+    )
 
     logger.info("Promoted bootstrap model to v{} ({:,} steps, {:.0f}s)",
                 new_version, total_steps, train_elapsed)
@@ -509,6 +515,7 @@ def _promote_model(
     *,
     state_dict: dict[str, torch.Tensor] | None = None,
     positions_at_promote: int | None = None,
+    publish_approved: bool = False,
 ) -> None:
     """Export ``model`` (or an override ``state_dict``) and publish as latest.
 
@@ -539,6 +546,15 @@ def _promote_model(
     if positions_at_promote is not None:
         meta["positions_at_promote"] = positions_at_promote
     storage.put_json(storage.LATEST_META, meta)
+    if publish_approved:
+        storage.copy(f"{storage.VERSIONS_PREFIX}{version}.onnx", storage.APPROVED_ONNX)
+        storage.put_json(
+            storage.APPROVED_META,
+            {
+                "version": version,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
 
 
 # ---------------------------------------------------------------------------

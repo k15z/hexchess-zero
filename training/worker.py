@@ -583,23 +583,30 @@ def flush_game_record(record: GameRecord, model_version: int) -> str | None:
 
 
 def _read_model_version(cfg: AsyncConfig) -> tuple[int, str | None]:
-    try:
-        meta = storage.get_json(storage.LATEST_META)
-        version = meta.get("version", 0)
-    except KeyError:
-        return 0, None
+    pointers = (
+        (storage.APPROVED_META, storage.APPROVED_ONNX, "approved"),
+        (storage.LATEST_META, storage.LATEST_ONNX, "latest"),
+    )
+    for meta_key, model_key, stem in pointers:
+        try:
+            meta = storage.get_json(meta_key)
+            version = meta.get("version", 0)
+        except KeyError:
+            continue
 
-    local_path = cfg.model_cache_dir / "latest.onnx"
-    local_meta = cfg.model_cache_dir / "latest.meta.json"
+        local_path = cfg.model_cache_dir / f"{stem}.onnx"
+        local_meta = cfg.model_cache_dir / f"{stem}.meta.json"
 
-    if local_meta.exists() and local_path.exists():
-        cached = json.loads(local_meta.read_text())
-        if cached.get("version") == version:
-            return version, str(local_path)
+        if local_meta.exists() and local_path.exists():
+            cached = json.loads(local_meta.read_text())
+            if cached.get("version") == version:
+                return version, str(local_path)
 
-    storage.get_file(storage.LATEST_ONNX, local_path)
-    local_meta.write_text(json.dumps(meta))
-    return version, str(local_path)
+        storage.get_file(model_key, local_path)
+        local_meta.write_text(json.dumps(meta))
+        return version, str(local_path)
+
+    return 0, None
 
 
 def _write_heartbeat(
