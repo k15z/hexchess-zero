@@ -6,52 +6,39 @@
 <title>hexchess training</title>
 <link rel="icon" type="image/png" href="/icon.png">
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=DM+Sans:wght@400;500;600;700&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 
   :root {
-    --bg-deep: #07080b;
-    --bg-base: #0d1015;
-    --bg-raised: #141923;
-    --bg-surface: #191f2a;
-    --bg-overlay: rgba(12, 16, 23, 0.82);
-    --border-dim: rgba(160, 175, 198, 0.08);
-    --border-mid: rgba(184, 196, 214, 0.16);
-    --border-strong: rgba(225, 182, 90, 0.28);
-    --text-primary: #edf1f7;
-    --text-secondary: #b2bdcc;
-    --text-dim: #6d7889;
-    --accent: #e1b65a;
-    --accent-soft: rgba(225, 182, 90, 0.14);
-    --accent-dim: #8e7850;
-    --green: #42c78b;
-    --amber: #f0be64;
-    --red: #f07178;
-    --teal: #5cc7c6;
-    --shadow-soft: 0 18px 40px rgba(0, 0, 0, 0.22);
-    --mono: 'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
-    --sans: 'DM Sans', -apple-system, sans-serif;
+    --bg: #ffffff;
+    --bg-subtle: #fafafa;
+    --bg-muted: #f4f4f4;
+    --bg-invert: #111111;
+    --border: #e4e4e4;
+    --border-strong: #d0d0d0;
+    --text: #111111;
+    --text-secondary: #555555;
+    --text-muted: #999999;
+    --text-invert: #ffffff;
+    --color: 'IBM Plex Mono', 'SF Mono', 'Consolas', monospace;
+    --sans: 'Instrument Sans', -apple-system, 'Segoe UI', sans-serif;
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
   body {
     font-family: var(--mono);
-    background: var(--bg-deep);
-    color: var(--text-primary);
+    background: var(--bg);
+    color: var(--text);
     font-size: 12px;
-    line-height: 1.5;
+    line-height: 1.55;
     min-height: 100vh;
-    background-image:
-      radial-gradient(circle at top left, rgba(92, 199, 198, 0.12), transparent 32%),
-      radial-gradient(circle at top right, rgba(225, 182, 90, 0.14), transparent 28%),
-      linear-gradient(180deg, #0b0d12 0%, #07080b 55%, #06070a 100%);
+    -webkit-font-smoothing: antialiased;
   }
 
   .container {
-    position: relative;
-    max-width: 1280px;
+    max-width: 1080px;
     margin: 0 auto;
-    padding: 0 20px 56px;
+    padding: 0 24px 64px;
   }
 
   /* --- Header --- */
@@ -59,168 +46,124 @@
     position: sticky;
     top: 0;
     z-index: 100;
-    background: linear-gradient(180deg, rgba(7, 8, 11, 0.96), rgba(7, 8, 11, 0.8));
-    backdrop-filter: blur(16px);
-    border-bottom: 1px solid var(--border-dim);
-    padding: 18px 0 16px;
-    margin-bottom: 18px;
+    background: rgba(255,255,255,0.92);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    padding: 20px 0 16px;
+    margin-bottom: 24px;
   }
 
   .header-row {
     display: flex;
     justify-content: space-between;
-    align-items: flex-start;
+    align-items: flex-end;
     gap: 16px;
   }
 
   .header-left {
     display: flex;
-    align-items: flex-start;
-    gap: 16px;
-  }
-
-  .brand-lockup {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
+    align-items: center;
+    gap: 14px;
   }
 
   .logo {
     font-family: var(--sans);
-    font-size: 30px;
+    font-size: 20px;
     font-weight: 700;
-    line-height: 0.95;
-    letter-spacing: -1.4px;
-    color: var(--text-primary);
+    letter-spacing: -0.5px;
+    color: var(--text);
   }
 
-  .logo span { color: var(--accent); font-weight: 500; }
-
-  .header-subtitle {
-    max-width: 420px;
+  .logo span {
+    font-weight: 400;
     color: var(--text-secondary);
-    font-size: 11px;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
   }
 
   .model-badge {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    background: linear-gradient(180deg, rgba(225, 182, 90, 0.18), rgba(225, 182, 90, 0.08));
-    border: 1px solid var(--border-strong);
-    padding: 7px 12px;
-    border-radius: 999px;
+    background: var(--bg-invert);
+    color: var(--text-invert);
+    padding: 4px 10px;
+    border-radius: 4px;
     font-size: 11px;
     font-weight: 600;
-    color: var(--text-primary);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    letter-spacing: 0.02em;
   }
 
   .header-meta {
     display: flex;
-    flex-direction: column;
-    gap: 3px;
+    gap: 16px;
     font-size: 11px;
-    color: var(--text-secondary);
-    text-align: right;
+    color: var(--text-muted);
   }
 
   .header-meta strong {
-    color: var(--text-primary);
+    color: var(--text);
     font-weight: 600;
   }
 
+  /* --- Overview cards --- */
   .overview {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 12px;
-    margin-bottom: 22px;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 32px;
   }
 
   .snapshot {
-    position: relative;
-    min-height: 88px;
-    padding: 14px 16px;
-    border: 1px solid var(--border-dim);
-    border-radius: 18px;
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0)),
-      var(--bg-overlay);
-    box-shadow: var(--shadow-soft);
-    overflow: hidden;
-  }
-
-  .snapshot::before {
-    content: '';
-    position: absolute;
-    inset: 0 auto 0 0;
-    width: 2px;
-    background: linear-gradient(180deg, rgba(92, 199, 198, 0.15), rgba(225, 182, 90, 0.9));
+    padding: 16px 18px;
+    background: var(--bg);
   }
 
   .snapshot-label {
     display: block;
-    margin-bottom: 14px;
-    color: var(--text-dim);
+    margin-bottom: 8px;
+    color: var(--text-muted);
     font-size: 10px;
     font-family: var(--sans);
-    font-weight: 700;
-    letter-spacing: 0.18em;
+    font-weight: 600;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
   }
 
   .snapshot-value {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
     font-family: var(--sans);
-    font-size: 28px;
-    line-height: 0.95;
-    letter-spacing: -0.06em;
+    font-size: 26px;
     font-weight: 700;
-    color: var(--text-primary);
+    letter-spacing: -0.04em;
+    line-height: 1;
+    color: var(--text);
   }
 
   .snapshot-meta {
-    margin-top: 8px;
-    color: var(--text-secondary);
+    margin-top: 6px;
+    color: var(--text-muted);
     font-size: 11px;
   }
 
   .snapshot-status {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
     color: var(--text-secondary);
     font-size: 11px;
   }
 
-  .snapshot-status .dot {
-    margin-right: 0;
-  }
+  .snapshot-status .dot { margin-right: 0; }
 
-  /* --- Section panels --- */
+  /* --- Panels --- */
   .panel {
-    position: relative;
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.015), rgba(255, 255, 255, 0)),
-      rgba(13, 16, 21, 0.88);
-    border: 1px solid var(--border-dim);
-    border-radius: 20px;
-    margin-bottom: 14px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 12px;
     overflow: hidden;
-    box-shadow: var(--shadow-soft);
-  }
-
-  .panel::before {
-    content: '';
-    position: absolute;
-    inset: 0 auto 0 0;
-    width: 1px;
-    background: linear-gradient(180deg, rgba(92, 199, 198, 0), rgba(225, 182, 90, 0.5), rgba(92, 199, 198, 0));
-    opacity: 0.9;
+    background: var(--bg);
   }
 
   .panel-header {
@@ -229,25 +172,23 @@
     align-items: center;
     justify-content: space-between;
     width: 100%;
-    padding: 14px 16px 13px;
-    background: linear-gradient(180deg, rgba(25, 31, 42, 0.72), rgba(20, 25, 35, 0.36));
+    padding: 12px 16px;
+    background: var(--bg-subtle);
     border: 0;
-    border-bottom: 1px solid var(--border-dim);
+    border-bottom: 1px solid var(--border);
     cursor: pointer;
     user-select: none;
-    transition: background 0.18s ease, transform 0.18s ease, border-color 0.18s ease;
+    transition: background 0.15s ease;
     text-align: left;
     color: inherit;
     font: inherit;
   }
 
-  .panel-header:hover {
-    background: linear-gradient(180deg, rgba(30, 37, 48, 0.86), rgba(22, 29, 40, 0.55));
-  }
+  .panel-header:hover { background: var(--bg-muted); }
 
   .panel-header:focus-visible {
     outline: none;
-    box-shadow: inset 0 0 0 1px rgba(225, 182, 90, 0.55);
+    box-shadow: inset 0 0 0 2px var(--text);
   }
 
   .panel-header > * { pointer-events: none; }
@@ -255,113 +196,99 @@
   .panel-title {
     font-family: var(--sans);
     font-size: 12px;
-    font-weight: 700;
+    font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.16em;
-    color: var(--text-secondary);
+    letter-spacing: 0.08em;
+    color: var(--text);
   }
 
   .panel-badge {
     font-size: 10px;
-    color: var(--accent);
+    color: var(--text-secondary);
     font-weight: 600;
-    padding: 3px 8px;
-    background: var(--accent-soft);
-    border-radius: 999px;
-    border: 1px solid rgba(225, 182, 90, 0.18);
+    padding: 2px 7px;
+    background: var(--bg-muted);
+    border-radius: 4px;
+    border: 1px solid var(--border);
   }
 
   .panel-chevron {
-    color: var(--accent);
+    color: var(--text-muted);
     font-size: 10px;
-    transition: transform 0.22s ease;
+    transition: transform 0.2s ease;
   }
 
   .panel.collapsed .panel-chevron { transform: rotate(-90deg); }
   .panel.collapsed .panel-body { display: none; }
+  .panel.collapsed .panel-header { border-bottom-color: transparent; }
 
-  .panel-body { padding: 14px 16px 16px; }
+  .panel-body { padding: 16px; }
 
-  /* --- Two-column grid for bottom panels --- */
+  /* --- Two-column grid --- */
   .two-col {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 14px;
+    gap: 12px;
   }
-
   .two-col .panel { margin-bottom: 0; }
 
-  @media (max-width: 640px) {
-    .two-col { grid-template-columns: 1fr; }
-  }
-
   /* --- Tables --- */
-  table {
-    width: 100%;
-    border-collapse: collapse;
-  }
+  table { width: 100%; border-collapse: collapse; }
 
   th {
     text-align: left;
     font-size: 10px;
     font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.12em;
-    color: var(--text-dim);
-    padding: 6px 8px 8px;
-    border-bottom: 1px solid var(--border-dim);
-    white-space: nowrap;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    padding: 8px 8px;
+    border-bottom: 2px solid var(--text);
   }
 
   th.r, td.r { text-align: right; }
   th.c, td.c { text-align: center; }
 
-  /* --- Evaluated / provisional badge --- */
+  td {
+    padding: 7px 8px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    border-bottom: 1px solid var(--bg-muted);
+  }
+
+  tr:last-child td { border-bottom: none; }
+  tbody tr:hover td { background: var(--bg-subtle); }
+
+  /* --- Eval badges --- */
   .eval-badge {
     display: inline-block;
     font-size: 9px;
     font-weight: 600;
     padding: 1px 5px;
-    border-radius: 2px;
+    border-radius: 3px;
     letter-spacing: 0.5px;
     text-transform: uppercase;
     border: 1px solid transparent;
   }
   .eval-badge.eval {
-    color: var(--green);
-    border-color: rgba(34, 197, 94, 0.35);
-    background: rgba(34, 197, 94, 0.08);
+    color: var(--text);
+    border-color: var(--text);
+    background: transparent;
   }
   .eval-badge.prov {
-    color: var(--amber);
-    border-color: rgba(234, 179, 8, 0.35);
-    background: rgba(234, 179, 8, 0.08);
+    color: var(--text-muted);
+    border-color: var(--border-strong);
+    background: transparent;
   }
 
-  /* Dim provisional rows, but leave the CI bar cell at full opacity so
-     the already-subtle (--rating-bar-ci: opacity 0.2) bar remains legible. */
-  tr.provisional td { opacity: 0.55; }
+  tr.provisional td { opacity: 0.45; }
   tr.provisional td:last-child { opacity: 1; }
-
-  td {
-    padding: 7px 8px;
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-    border-bottom: 1px solid rgba(160, 175, 198, 0.08);
-  }
-
-  tr:last-child td { border-bottom: none; }
-
-  tbody tr:hover td,
-  table tr:hover td {
-    background: rgba(255, 255, 255, 0.02);
-  }
 
   /* --- Rating bars --- */
   .rating-bar-track {
     flex: 1;
-    height: 14px;
-    background: rgba(7, 8, 11, 0.75);
+    height: 12px;
+    background: var(--bg-muted);
     border-radius: 2px;
     position: relative;
     overflow: hidden;
@@ -380,7 +307,7 @@
     position: absolute;
     top: 2px; bottom: 2px;
     border-radius: 1px;
-    opacity: 0.2;
+    opacity: 0.25;
   }
 
   /* --- Worker dots --- */
@@ -390,12 +317,11 @@
     border-radius: 50%;
     margin-right: 4px;
   }
+  .dot.fresh { background: var(--text); }
+  .dot.stale { background: var(--text-muted); }
+  .dot.dead { background: var(--border-strong); }
 
-  .dot.fresh { background: var(--green); box-shadow: 0 0 4px var(--green); }
-  .dot.stale { background: var(--amber); }
-  .dot.dead { background: var(--red); }
-
-  /* --- Head-to-head matrix --- */
+  /* --- H2H --- */
   .h2h-wrap { overflow-x: auto; }
 
   .h2h-table th, .h2h-table td {
@@ -413,8 +339,8 @@
   }
 
   .h2h-table td.self {
-    background: rgba(255, 255, 255, 0.035);
-    color: var(--text-dim);
+    background: var(--bg-muted);
+    color: var(--text-muted);
   }
 
   .h2h-cell {
@@ -423,70 +349,59 @@
     font-size: 10px;
     font-weight: 500;
   }
-
-  .h2h-cell.dominant { color: var(--green); }
-  .h2h-cell.losing { color: var(--red); }
-  .h2h-cell.even { color: var(--text-dim); }
-  .h2h-cell.none { color: var(--text-dim); opacity: 0.3; }
+  .h2h-cell.dominant { color: var(--text); font-weight: 700; }
+  .h2h-cell.losing { color: var(--text-muted); }
+  .h2h-cell.even { color: var(--text-secondary); }
+  .h2h-cell.none { color: var(--text-muted); opacity: 0.3; }
 
   /* --- Game log --- */
-  .game-outcome {
-    font-weight: 600;
-    font-size: 11px;
-  }
+  .game-outcome { font-weight: 600; font-size: 11px; }
+  .game-outcome.w { color: var(--text); }
+  .game-outcome.b { color: var(--text-muted); }
+  .game-outcome.d { color: var(--text-secondary); }
 
-  .game-outcome.w { color: var(--green); }
-  .game-outcome.b { color: var(--red); }
-  .game-outcome.d { color: var(--text-dim); }
-
-  /* --- KV pairs --- */
+  /* --- KV rows --- */
   .kv-row {
     display: flex;
     justify-content: space-between;
     gap: 16px;
     padding: 4px 0;
   }
-
-  .kv-row .k { color: var(--text-dim); }
-  .kv-row .v { color: var(--text-primary); font-weight: 500; text-align: right; }
+  .kv-row .k { color: var(--text-muted); }
+  .kv-row .v { color: var(--text); font-weight: 500; text-align: right; }
 
   /* --- Misc --- */
-  .empty { color: var(--text-dim); font-style: italic; padding: 12px 0; }
-  .muted { color: var(--text-dim); }
+  .empty { color: var(--text-muted); font-style: italic; padding: 12px 0; }
+  .muted { color: var(--text-muted); }
 
-  /* --- Fade in --- */
+  /* --- Animations --- */
   @keyframes fadeUp {
-    from { opacity: 0; transform: translateY(6px); }
+    from { opacity: 0; transform: translateY(4px); }
     to { opacity: 1; transform: translateY(0); }
   }
+  .initial .panel { animation: fadeUp 0.25s ease both; }
+  .initial .panel:nth-child(2) { animation-delay: 0.03s; }
+  .initial .panel:nth-child(3) { animation-delay: 0.06s; }
+  .initial .panel:nth-child(4) { animation-delay: 0.09s; }
+  .initial .two-col .panel { animation: fadeUp 0.25s ease both; animation-delay: 0.12s; }
+  .initial .two-col .panel:nth-child(2) { animation-delay: 0.15s; }
 
-  .initial .panel { animation: fadeUp 0.3s ease both; }
-  .initial .panel:nth-child(2) { animation-delay: 0.04s; }
-  .initial .panel:nth-child(3) { animation-delay: 0.08s; }
-  .initial .panel:nth-child(4) { animation-delay: 0.12s; }
-  .initial .two-col .panel { animation: fadeUp 0.3s ease both; animation-delay: 0.16s; }
-  .initial .two-col .panel:nth-child(2) { animation-delay: 0.20s; }
-
+  /* --- Responsive --- */
   @media (max-width: 960px) {
-    .overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .header-row,
-    .header-left {
-      flex-direction: column;
-      align-items: flex-start;
-    }
-    .header-meta { text-align: left; }
+    .overview { grid-template-columns: repeat(2, 1fr); }
+    .header-row { flex-direction: column; align-items: flex-start; }
+    .header-meta { flex-direction: column; gap: 2px; }
   }
 
   @media (max-width: 640px) {
     body { font-size: 11px; }
-    .container { padding: 0 14px 42px; }
-    .header { padding-top: 16px; }
-    .logo { font-size: 24px; }
+    .container { padding: 0 16px 48px; }
+    .header { padding: 16px 0 12px; }
+    .logo { font-size: 17px; }
     .overview { grid-template-columns: 1fr; }
-    .snapshot { min-height: 76px; }
-    .snapshot-value { font-size: 24px; }
-    .panel-header,
-    .panel-body { padding-left: 14px; padding-right: 14px; }
+    .snapshot-value { font-size: 22px; }
+    .panel-header, .panel-body { padding-left: 12px; padding-right: 12px; }
+    .two-col { grid-template-columns: 1fr; }
   }
 </style>
 </head>
@@ -496,10 +411,7 @@
 <div class="header">
   <div class="header-row">
     <div class="header-left">
-      <div class="brand-lockup">
-        <div class="logo">hexchess <span>training</span></div>
-        <div class="header-subtitle">Live model promotion, worker health, replay growth, and evaluation drift in one operating surface.</div>
-      </div>
+      <div class="logo">hexchess <span>training</span></div>
       <span class="model-badge" id="model-badge">&mdash;</span>
     </div>
     <div class="header-meta">
@@ -517,13 +429,21 @@
 <script>
 const REFRESH_MS = 60000;
 const CONSERVATIVE_Z = 2.0;
-// Sigma posterior tight enough that mu is meaningful. Must match
-// EVALUATED_SIGMA_THRESHOLD in training/elo.py.
 const EVALUATED_SIGMA_THRESHOLD = 2.5;
 const BASELINES = new Set(['Minimax-2', 'Minimax-3', 'Minimax-4', 'Heuristic']);
 
 function conservRating(mu, sigma) { return mu - CONSERVATIVE_Z * sigma; }
 function isEvaluated(sigma) { return sigma <= EVALUATED_SIGMA_THRESHOLD; }
+
+// Sublinear KataGo replay window: c=25_000, alpha=0.75, beta=0.4.
+// Mirrors training/replay_window.py.
+const _WC = 25000, _WA = 0.75, _WB = 0.4;
+function windowSize(n) {
+  if (n <= 0) return 0;
+  if (n <= _WC) return n;
+  const t = Math.pow(n / _WC, _WA);
+  return Math.round(_WC * (1 + _WB * (t - 1) / _WA));
+}
 
 function ago(ts) {
   if (!ts) return '';
@@ -551,7 +471,6 @@ function freshness(ts) {
 function pairKey(a, b) { return [a, b].sort().join(':'); }
 function shorten(s) { return s.length > 7 ? s.slice(0, 6) + '\u2026' : s; }
 
-// --- Panel collapse state ---
 const panelState = {};
 const panelDefaults = {};
 function togglePanel(id) {
@@ -564,7 +483,6 @@ function togglePanel(id) {
 let lastData = null;
 let firstRender = true;
 
-// --- Render helpers ---
 function panelHtml(id, title, badge, body, defaultOpen = true) {
   panelDefaults[id] = defaultOpen;
   const collapsed = panelState[id] !== undefined ? panelState[id] : !defaultOpen;
@@ -599,7 +517,6 @@ function renderRatingTable(players, ratings, playerStats) {
 
   if (!items.length) return '';
 
-  // Bar is centered on `cr` so the tick aligns with the "rating" column.
   const minCr = Math.min(...items.map(i => i.cr - i.sigma));
   const maxCr = Math.max(...items.map(i => i.cr + i.sigma));
   const range = Math.max(maxCr - minCr, 1);
@@ -618,15 +535,15 @@ function renderRatingTable(players, ratings, playerStats) {
     const barCenter = (it.cr - base) / span * 100;
 
     const isBaseline = BASELINES.has(it.name);
-    const barColor = isBaseline ? 'var(--accent-dim)' : 'var(--accent)';
+    const barColor = isBaseline ? '#ccc' : '#111';
     const rowClass = it.evaluated ? '' : 'provisional';
     const stateBadge = it.evaluated
-      ? `<span class="eval-badge eval" title="sigma \u2264 ${EVALUATED_SIGMA_THRESHOLD} — posterior tight, mu meaningful">eval</span>`
-      : `<span class="eval-badge prov" title="sigma > ${EVALUATED_SIGMA_THRESHOLD} — provisional, mu not yet trustworthy">prov</span>`;
+      ? `<span class="eval-badge eval" title="sigma \u2264 ${EVALUATED_SIGMA_THRESHOLD}">eval</span>`
+      : `<span class="eval-badge prov" title="sigma > ${EVALUATED_SIGMA_THRESHOLD}">prov</span>`;
 
     html += `<tr class="${rowClass}">
       <td class="r muted">${i + 1}</td>
-      <td style="${isBaseline ? 'color:var(--text-dim)' : ''}">${it.name}</td>
+      <td style="${isBaseline ? 'color:var(--text-muted)' : ''}">${it.name}</td>
       <td class="r" style="font-weight:600">${it.cr >= 0 ? '+' : ''}${it.cr.toFixed(2)}</td>
       <td class="r muted">${it.mu.toFixed(2)}</td>
       <td class="r muted">${it.sigma.toFixed(2)}</td>
@@ -649,7 +566,7 @@ function renderHeader(data) {
   document.getElementById('model-badge').textContent = m.version ? `v${m.version}` : 'no model';
   document.getElementById('promoted-at').innerHTML = m.promoted_at
     ? `promoted <strong>${ago(m.promoted_at)}</strong>`
-    : '<strong>bootstrap</strong> phase';
+    : '<strong>bootstrap</strong>';
   document.getElementById('last-refresh').innerHTML = `refreshed <strong>${ago(data.timestamp)}</strong>`;
 }
 
@@ -671,24 +588,24 @@ function buildOverview(data) {
       label: 'Promotion',
       value: data.model && data.model.version ? `v${data.model.version}` : 'none',
       meta: data.model && data.model.positions_at_promote != null
-        ? `${fmt(data.model.positions_at_promote)} positions at promote`
+        ? `${fmt(data.model.positions_at_promote)} pos at promote`
         : 'waiting for first promotion',
     },
     {
       label: 'Replay',
       value: fmt(totalPositions),
-      meta: `${fmt(sp.total_positions || 0)} self-play · ${fmt(im.total_positions || 0)} imitation`,
+      meta: `${fmt(sp.total_positions || 0)} self-play &middot; ${fmt(im.total_positions || 0)} imitation`,
     },
     {
       label: 'Workers',
       value: fmt(workers.length),
-      meta: `<span class="snapshot-status"><span class="dot fresh"></span>${activeWorkers} fresh</span>${staleWorkers ? ` · <span class="snapshot-status"><span class="dot stale"></span>${staleWorkers} stale</span>` : ''}`,
+      meta: `<span class="snapshot-status"><span class="dot fresh"></span>${activeWorkers} active</span>${staleWorkers ? ` &middot; <span class="snapshot-status"><span class="dot stale"></span>${staleWorkers} stale</span>` : ''}`,
     },
     {
       label: 'Evaluation',
       value: fmt(e.total_games || 0),
       meta: latestSummary
-        ? `summary ${latestSummaryId} · ${fmt(latestSummary.total_steps)} total steps`
+        ? `summary ${latestSummaryId} &middot; ${fmt(latestSummary.total_steps)} steps`
         : `${fmt((e.active_players || []).length)} tracked players`,
     },
   ];
@@ -866,7 +783,7 @@ function buildRetired(data) {
   return panelHtml('retired', 'Retired', `${retired.length}`, body);
 }
 
-// --- Plan §7.6 pages 1-7 ---
+// --- Pages 1-7 ---
 
 function _sparkline(values, width, height, color) {
   const finite = values.filter(v => isFinite(v));
@@ -883,16 +800,18 @@ function _sparkline(values, width, height, color) {
 }
 
 function _stackedBar(parts, total) {
-  // parts: [{label, value, color}]; total: denominator for widths.
   if (!total) return '<div class="empty">no data</div>';
-  let bar = '<div style="display:flex;height:14px;border-radius:3px;overflow:hidden;background:#222;">';
-  let legend = '<div style="display:flex;gap:10px;font-size:11px;margin-top:4px;opacity:0.8;">';
-  for (const p of parts) {
+  const grays = ['#111', '#555', '#999', '#bbb', '#ddd'];
+  let bar = '<div style="display:flex;height:12px;border-radius:3px;overflow:hidden;background:var(--bg-muted);">';
+  let legend = '<div style="display:flex;gap:10px;font-size:11px;margin-top:4px;color:var(--text-secondary);">';
+  for (let idx = 0; idx < parts.length; idx++) {
+    const p = parts[idx];
     const pct = (100 * p.value) / total;
+    const c = p.color ?? grays[idx % grays.length];
     if (pct > 0) {
-      bar += `<div style="width:${pct.toFixed(2)}%;background:${p.color};" title="${p.label}: ${p.value}"></div>`;
+      bar += `<div style="width:${pct.toFixed(2)}%;background:${c};" title="${p.label}: ${p.value}"></div>`;
     }
-    legend += `<span><span style="display:inline-block;width:8px;height:8px;background:${p.color};margin-right:3px;"></span>${p.label} ${p.value}</span>`;
+    legend += `<span><span style="display:inline-block;width:8px;height:8px;background:${c};margin-right:3px;border-radius:1px;"></span>${p.label} ${p.value}</span>`;
   }
   bar += '</div>';
   legend += '</div>';
@@ -903,12 +822,9 @@ function buildRunHealth(data) {
   const games = data.recent_games || [];
   let html = '';
 
-  // W/D/L breakdown over the recent-game tail.
   let w = 0, l = 0, d = 0;
   let lengths = [];
   for (const g of games) {
-    // Elo-game records now store "outcome" ("white" | "black" | "draw").
-    // Keep old-field fallbacks for historic records.
     const winner = g.outcome || g.winner || g.result;
     if (winner === 'draw' || winner === 'd') d++;
     else if (winner === 'white' || winner === 'w') w++;
@@ -919,12 +835,11 @@ function buildRunHealth(data) {
   const total = w + d + l;
   html += `<div class="kv-row"><span class="k">recent W/D/L</span><span class="v">${total} games</span></div>`;
   html += _stackedBar([
-    {label: 'W', value: w, color: '#3aa'},
-    {label: 'D', value: d, color: '#888'},
-    {label: 'L', value: l, color: '#a44'},
+    {label: 'W', value: w, color: '#111'},
+    {label: 'D', value: d, color: '#999'},
+    {label: 'L', value: l, color: '#ddd'},
   ], total);
 
-  // Game length summary.
   if (lengths.length) {
     lengths.sort((a, b) => a - b);
     const median = lengths[Math.floor(lengths.length / 2)];
@@ -934,7 +849,6 @@ function buildRunHealth(data) {
     html += `<div class="kv-row" style="margin-top:8px"><span class="k">game length (plies)</span><span class="v">mean ${mean} &middot; median ${median} &middot; p5 ${p5} &middot; p95 ${p95}</span></div>`;
   }
 
-  // Workers: games per worker (cumulative — rate would need a time series).
   const workers = Object.entries(data.workers || {});
   if (workers.length) {
     html += '<table style="margin-top:6px;font-size:12px;"><tr><th>worker</th><th class="r">games</th><th class="r">positions</th></tr>';
@@ -946,20 +860,10 @@ function buildRunHealth(data) {
   }
 
   if (!html) html = '<div class="empty">awaiting first games</div>';
-  return panelHtml('run-health', 'Page 1 / Run Health', `${total}`, html);
+  return panelHtml('run-health', 'Run Health', `${total}`, html);
 }
 
 function buildDataPage(data) {
-  // Sublinear KataGo replay window: c=25_000, alpha=0.75, beta=0.4.
-  // Mirrors training/replay_window.py — recompute client-side from N_total.
-  const C = 25000, A = 0.75, B = 0.4;
-  function windowSize(n) {
-    if (n <= 0) return 0;
-    if (n <= C) return n;
-    const t = Math.pow(n / C, A);
-    return Math.round(C * (1 + B * (t - 1) / A));
-  }
-
   const sp = (data.data && data.data.selfplay) || {};
   const im = (data.data && data.data.imitation) || {};
   const nTotal = (sp.total_positions || 0) + (im.total_positions || 0);
@@ -970,22 +874,19 @@ function buildDataPage(data) {
   html += `<div class="kv-row"><span class="k">N_total</span><span class="v">${fmt(nTotal)} positions</span></div>`;
   html += `<div class="kv-row"><span class="k">replay window</span><span class="v">${fmt(window)} (${(100 * reuse).toFixed(1)}% of N_total)</span></div>`;
 
-  // Per-version contribution stacked bar.
   const byVer = sp.by_version || {};
   const entries = Object.entries(byVer).sort((a, b) => Number(a[0]) - Number(b[0]));
   if (entries.length) {
     const total = entries.reduce((s, [, v]) => s + (v.positions || 0), 0);
-    const palette = ['#3aa', '#5b6', '#cc6', '#c84', '#a44', '#849', '#469', '#666'];
     const parts = entries.map(([ver, info], i) => ({
       label: `v${ver}`,
       value: info.positions || 0,
-      color: palette[i % palette.length],
     }));
     html += '<div class="kv-row" style="margin-top:8px"><span class="k">per-version contribution</span></div>';
     html += _stackedBar(parts, total);
   }
 
-  return panelHtml('data-page', 'Page 2 / Data', `${fmt(nTotal)}`, html);
+  return panelHtml('data-page', 'Data', `${fmt(nTotal)}`, html);
 }
 
 function buildModelBehavior(data) {
@@ -993,23 +894,19 @@ function buildModelBehavior(data) {
   const summaries = (tm.summaries || tm.cycles || []).slice(-100);
 
   if (!summaries.length) {
-    return panelHtml('model-behavior', 'Page 3 / Model Behavior', 'waiting', `
-      <div class="empty">awaiting first trainer summary</div>
-      <ul style="margin:8px 0 0 18px;font-size:12px;opacity:0.5">
-        <li>WDL calibration — not yet instrumented (needs per-step value predictions logged)</li>
-        <li>NN argmax vs MCTS argmax agreement — needs trainer instrumentation</li>
-        <li>KL(old \u2192 new) per promotion — needs consecutive ONNX comparison</li>
-      </ul>`);
+    return panelHtml('model-behavior', 'Model Behavior', 'waiting',
+      '<div class="empty">awaiting first trainer summary</div>');
   }
 
   const latest = summaries[summaries.length - 1];
   const latestSummary = latest.summary ?? latest.cycle;
+  const grays = ['#111', '#444', '#777', '#aaa', '#ccc'];
   const lossDefs = [
-    {name: 'policy', key: 'loss_policy', color: '#3aa'},
-    {name: 'value',  key: 'loss_value',  color: '#5b6'},
-    {name: 'mlh',    key: 'loss_mlh',    color: '#cc6'},
-    {name: 'stv',    key: 'loss_stv',    color: '#c84'},
-    {name: 'aux',    key: 'loss_aux',    color: '#849'},
+    {name: 'policy', key: 'loss_policy', color: grays[0]},
+    {name: 'value',  key: 'loss_value',  color: grays[1]},
+    {name: 'mlh',    key: 'loss_mlh',    color: grays[2]},
+    {name: 'stv',    key: 'loss_stv',    color: grays[3]},
+    {name: 'aux',    key: 'loss_aux',    color: grays[4]},
   ];
 
   let html = '';
@@ -1017,7 +914,7 @@ function buildModelBehavior(data) {
   html += `<div class="kv-row"><span class="k">total steps</span><span class="v">${fmt(latest.total_steps)}</span></div>`;
   html += `<div class="kv-row"><span class="k">N_total</span><span class="v">${fmt(latest.n_total)} positions</span></div>`;
 
-  html += `<table style="margin-top:8px"><tr><th>loss</th><th class="r">current</th><th class="r">best</th><th style="width:110px;padding-left:8px">trend (${summaries.length} summaries)</th></tr>`;
+  html += `<table style="margin-top:8px"><tr><th>loss</th><th class="r">current</th><th class="r">best</th><th style="width:110px;padding-left:8px">trend (${summaries.length})</th></tr>`;
   for (const {name, key, color} of lossDefs) {
     const vals = summaries.map(c => c[key]).filter(v => v != null);
     const cur = vals[vals.length - 1];
@@ -1031,13 +928,8 @@ function buildModelBehavior(data) {
   }
   html += '</table>';
 
-  html += `<ul style="margin:10px 0 0 18px;font-size:11px;opacity:0.45">
-    <li>WDL calibration — not yet instrumented</li>
-    <li>NN argmax vs MCTS argmax agreement — not yet instrumented</li>
-    <li>KL(old \u2192 new) per promotion — not yet instrumented</li>
-  </ul>`;
 
-  return panelHtml('model-behavior', 'Page 3 / Model Behavior', `summary ${latestSummary}`, html);
+  return panelHtml('model-behavior', 'Model Behavior', `summary ${latestSummary}`, html);
 }
 
 function buildSearch(data) {
@@ -1063,13 +955,9 @@ function buildSearch(data) {
     html += '<div class="empty">awaiting worker heartbeats</div>';
   }
 
-  html += `<ul style="margin:8px 0 0 18px;font-size:11px;opacity:0.4">
-    <li>TT hit rate — needs Rust MCTS to expose tt_stats (not yet instrumented)</li>
-    <li>LCB vs argmax-visit divergence — needs eval-game accounting</li>
-  </ul>`;
 
   const badge = withStats.length ? `${withStats.length} worker${withStats.length > 1 ? 's' : ''}` : 'waiting';
-  return panelHtml('search', 'Page 4 / Search', badge, html);
+  return panelHtml('search', 'Search', badge, html);
 }
 
 function buildBenchmarks(data) {
@@ -1077,17 +965,12 @@ function buildBenchmarks(data) {
   const br = data.benchmark_results || {};
 
   if (!bvs.length) {
-    return panelHtml('benchmarks', 'Page 5 / Benchmarks', 'waiting', `
-      <div class="empty">awaiting first benchmark run</div>
-      <div style="font-size:11px;opacity:0.6;margin-top:6px">
-        Run after each promotion: <code>uv run python -m training.benchmark_runner</code>
-      </div>`);
+    return panelHtml('benchmarks', 'Benchmarks', 'waiting',
+      '<div class="empty">awaiting first benchmark run</div>');
   }
 
-  // Precompute version keys once to avoid repeated string operations in loops.
   const vkeys = bvs.map(vs => vs.name.slice(0, -5));
 
-  // Collect all position IDs (in order of first appearance).
   const posOrder = [];
   const posMeta = {};
   for (const vk of vkeys) {
@@ -1100,10 +983,9 @@ function buildBenchmarks(data) {
   }
 
   if (!posOrder.length) {
-    return panelHtml('benchmarks', 'Page 5 / Benchmarks', `${bvs.length}v`, '<div class="empty">no position results found</div>');
+    return panelHtml('benchmarks', 'Benchmarks', `${bvs.length}v`, '<div class="empty">no position results found</div>');
   }
 
-  // Build lookup: versionKey -> posId -> result
   const lkp = {};
   for (const vk of vkeys) {
     lkp[vk] = {};
@@ -1123,7 +1005,8 @@ function buildBenchmarks(data) {
       const r = lkp[vk][posId];
       if (!r) { html += '<td class="muted" style="opacity:0.3">\u2014</td>'; continue; }
       const t = Math.max(0, Math.min(1, (r.value + 1) / 2));
-      const bg = `rgba(${Math.round(160 * (1 - t))},${Math.round(160 * t)},30,0.45)`;
+      const g = Math.round(40 + 180 * (1 - t));
+      const bg = `rgba(${g},${g},${g},0.35)`;
       const flag = r.best_move !== refMove ? '\u26a1' : '';
       html += `<td style="background:${bg};font-size:9px;white-space:nowrap" title="${r.best_move} (val=${r.value.toFixed(3)})">${r.best_move}${flag}</td>`;
     }
@@ -1131,7 +1014,7 @@ function buildBenchmarks(data) {
   }
   html += '</table></div>';
 
-  return panelHtml('benchmarks', 'Page 5 / Benchmarks', `${bvs.length}v \u00d7 ${posOrder.length}pos`, html);
+  return panelHtml('benchmarks', 'Benchmarks', `${bvs.length}v \u00d7 ${posOrder.length}pos`, html);
 }
 
 function buildDiffViewer(data) {
@@ -1139,7 +1022,7 @@ function buildDiffViewer(data) {
   const br = data.benchmark_results || {};
 
   if (bvs.length < 2) {
-    return panelHtml('diff-viewer', 'Page 6 / Diff Viewer', 'waiting', '<div class="empty">awaiting \u22652 benchmark runs</div>');
+    return panelHtml('diff-viewer', 'Diff Viewer', 'waiting', '<div class="empty">awaiting \u22652 benchmark runs</div>');
   }
 
   const prev = bvs[bvs.length - 2];
@@ -1150,7 +1033,7 @@ function buildDiffViewer(data) {
   const currRes = (br[ck] || {}).results || [];
 
   if (!prevRes.length || !currRes.length) {
-    return panelHtml('diff-viewer', 'Page 6 / Diff Viewer', `${pk} \u2192 ${ck}`, '<div class="empty">results not yet loaded</div>');
+    return panelHtml('diff-viewer', 'Diff Viewer', `${pk} \u2192 ${ck}`, '<div class="empty">results not yet loaded</div>');
   }
 
   const pm = Object.fromEntries(prevRes.map(r => [r.id, r]));
@@ -1168,24 +1051,24 @@ function buildDiffViewer(data) {
   let html = `<div class="kv-row" style="margin-bottom:8px"><span class="k">comparing</span><span class="v">${pk} \u2192 ${ck}</span></div>`;
 
   if (!diffs.length) {
-    html += '<div style="color:var(--green);font-size:12px">\u2714 no changes \u2014 all positions stable</div>';
+    html += '<div style="color:var(--text);font-size:12px">\u2714 no changes \u2014 all positions stable</div>';
   } else {
-    html += `<div style="margin-bottom:6px;font-size:11px;opacity:0.7">${diffs.length} position${diffs.length !== 1 ? 's' : ''} changed</div>`;
+    html += `<div style="margin-bottom:6px;font-size:11px;color:var(--text-muted)">${diffs.length} position${diffs.length !== 1 ? 's' : ''} changed</div>`;
     html += '<table><tr><th>position</th><th>cat</th><th>prev move</th><th>curr move</th><th class="r">\u0394value</th></tr>';
     for (const {id, p, c, moveChanged, dv} of diffs) {
-      const dc = dv > 0.01 ? 'var(--green)' : dv < -0.01 ? 'var(--red)' : 'var(--text-dim)';
+      const dc = dv > 0.01 ? 'var(--text)' : dv < -0.01 ? 'var(--text-muted)' : 'var(--text-secondary)';
       html += `<tr>
         <td style="font-size:10px;max-width:80px;overflow:hidden;text-overflow:ellipsis" title="${id}">${id}</td>
         <td class="muted">${p.category.slice(0, 4)}</td>
-        <td style="${moveChanged ? 'color:var(--amber)' : ''}">${p.best_move}</td>
-        <td style="${moveChanged ? 'color:var(--green);font-weight:600' : ''}">${c.best_move}</td>
+        <td style="${moveChanged ? 'color:var(--text-secondary)' : ''}">${p.best_move}</td>
+        <td style="${moveChanged ? 'font-weight:600' : ''}">${c.best_move}</td>
         <td class="r" style="color:${dc}">${dv > 0 ? '+' : ''}${dv.toFixed(3)}</td>
       </tr>`;
     }
     html += '</table>';
   }
 
-  return panelHtml('diff-viewer', 'Page 6 / Diff Viewer', `${pk} \u2192 ${ck}`, html);
+  return panelHtml('diff-viewer', 'Diff Viewer', `${pk} \u2192 ${ck}`, html);
 }
 
 function buildReplayAudit(data) {
@@ -1198,16 +1081,7 @@ function buildReplayAudit(data) {
   });
 
   if (!entries.length) {
-    return panelHtml('replay-audit', 'Page 7 / Replay Audit', 'waiting', '<div class="empty">awaiting self-play data</div>');
-  }
-
-  // Replicate client-side window formula from buildDataPage.
-  const C = 25000, A = 0.75, B = 0.4;
-  function windowSize(n) {
-    if (n <= 0) return 0;
-    if (n <= C) return n;
-    const t = Math.pow(n / C, A);
-    return Math.round(C * (1 + B * (t - 1) / A));
+    return panelHtml('replay-audit', 'Replay Audit', 'waiting', '<div class="empty">awaiting self-play data</div>');
   }
 
   const nTotal = sp.total_positions || 0;
@@ -1228,12 +1102,12 @@ function buildReplayAudit(data) {
       <td class="r muted">${fmt(info.count)}</td>
       <td class="r">${fmt(pos)}</td>
       <td class="r muted">${pct.toFixed(1)}%</td>
-      <td><div style="height:8px;background:var(--bg-deep);border-radius:2px;overflow:hidden"><div style="width:${bw}%;height:100%;background:#3aa;border-radius:2px"></div></div></td>
+      <td><div style="height:8px;background:var(--bg-muted);border-radius:2px;overflow:hidden"><div style="width:${bw}%;height:100%;background:var(--text);border-radius:2px"></div></div></td>
     </tr>`;
   }
   html += '</table>';
 
-  return panelHtml('replay-audit', 'Page 7 / Replay Audit', `${entries.length}v`, html);
+  return panelHtml('replay-audit', 'Replay Audit', `${entries.length}v`, html);
 }
 
 function render(data) {
