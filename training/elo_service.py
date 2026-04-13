@@ -15,6 +15,7 @@ means more samples on a matchup we already care about.
 
 from __future__ import annotations
 
+import math
 import os
 import random
 import time
@@ -43,8 +44,10 @@ from .elo import (
 # equality checks (frozenset iteration order is stable within a process but
 # a hidden invariant we'd rather make explicit).
 BASELINE_NAMES: tuple[str, ...] = ("Heuristic", "Minimax-2", "Minimax-3", "Minimax-4")
-GATE_REQUIRED_GAMES = 100
+GATE_MIN_GAMES = 20
+GATE_MAX_GAMES = 100
 GATE_PASS_SCORE = 0.55
+GATE_Z_VALUE = 1.96
 
 
 # ---------------------------------------------------------------------------
@@ -426,6 +429,43 @@ def _gate_pair_result(
     return wins, losses, draws
 
 
+def _gate_score_stats(wins: int, losses: int, draws: int) -> tuple[int, float, float]:
+    """Return ``(games, score, ci_half_width)`` for candidate gate results."""
+    total = wins + losses + draws
+    if total <= 0:
+        return 0, 0.0, 1.0
+
+    score = (wins + 0.5 * draws) / total
+    if total == 1:
+        return total, score, 1.0
+
+    sum_sq = wins * 1.0 + draws * 0.25
+    sample_var = max(0.0, (sum_sq - total * score * score) / (total - 1))
+    half_width = GATE_Z_VALUE * math.sqrt(sample_var / total)
+    return total, score, half_width
+
+
+def _gate_decision(wins: int, losses: int, draws: int) -> tuple[str | None, int, float, float]:
+    """Return ``(decision, games, score, ci_half_width)`` for the current gate.
+
+    ``decision`` is ``approved``, ``rejected``, or ``None`` if the sequential
+    test is still inconclusive.
+    """
+    total, score, half_width = _gate_score_stats(wins, losses, draws)
+    if total < GATE_MIN_GAMES:
+        return None, total, score, half_width
+
+    lower = score - half_width
+    upper = score + half_width
+    if lower >= GATE_PASS_SCORE:
+        return "approved", total, score, half_width
+    if upper < GATE_PASS_SCORE:
+        return "rejected", total, score, half_width
+    if total >= GATE_MAX_GAMES:
+        return ("approved" if score >= GATE_PASS_SCORE else "rejected"), total, score, half_width
+    return None, total, score, half_width
+
+
 def _maybe_resolve_gate(
     state: dict,
     version_keys: dict[str, str],
@@ -440,13 +480,11 @@ def _maybe_resolve_gate(
         return gate_state, False
 
     wins, losses, draws = _gate_pair_result(state, approved_name, candidate_name)
-    total = wins + losses + draws
-    if total < GATE_REQUIRED_GAMES:
+    status, total, score, half_width = _gate_decision(wins, losses, draws)
+    if status is None:
         return gate_state, False
 
-    score = (wins + 0.5 * draws) / total
     resolved_at = datetime.now(timezone.utc).isoformat()
-    status = "approved" if score >= GATE_PASS_SCORE else "rejected"
     gate_state["decisions"][candidate_name] = {
         "status": status,
         "approved_against": approved_name,
@@ -455,6 +493,7 @@ def _maybe_resolve_gate(
         "draws": draws,
         "games": total,
         "score": score,
+        "ci_half_width": half_width,
         "resolved_at": resolved_at,
     }
     if status == "approved":
@@ -471,8 +510,8 @@ def _maybe_resolve_gate(
 
     storage.put_json(storage.GATE_STATE, gate_state)
     logger.info(
-        "Gate resolved: {} {} vs {} (wins={} losses={} draws={} score={:.3f})",
-        candidate_name, status, approved_name, wins, losses, draws, score,
+        "Gate resolved: {} {} vs {} (wins={} losses={} draws={} score={:.3f} +/- {:.3f})",
+        candidate_name, status, approved_name, wins, losses, draws, score, half_width,
     )
     return gate_state, True
 
@@ -506,7 +545,7 @@ def _select_pair(
         and gate_candidate is not None
         and approved_name in players
         and gate_candidate in players
-        and _pair_game_count(state, approved_name, gate_candidate) < GATE_REQUIRED_GAMES
+        and _pair_game_count(state, approved_name, gate_candidate) < GATE_MAX_GAMES
     ):
         return (approved_name, gate_candidate)
 
@@ -654,7 +693,7 @@ def run_elo_service(
         nonlocal state, approved_name, gate_candidate, gate_state, active, version_keys
         if approved_name is None or gate_candidate is None:
             return
-        if _pair_game_count(state, approved_name, gate_candidate) < GATE_REQUIRED_GAMES:
+        if _pair_game_count(state, approved_name, gate_candidate) < GATE_MIN_GAMES:
             return
         _sync_peer_records()
         (

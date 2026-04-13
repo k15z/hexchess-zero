@@ -6,6 +6,7 @@ from training import storage
 from training.elo_service import (
     BASELINE_NAMES,
     _build_state,
+    _gate_decision,
     _desired_active,
     _maybe_resolve_gate,
     _select_pair,
@@ -99,6 +100,33 @@ def test_select_pair_prefers_gate_matchup():
     assert _select_pair(state, approved_name="v3", gate_candidate="v4") == ("v3", "v4")
 
 
+def test_gate_decision_approves_early_for_clear_winner():
+    decision, games, score, half_width = _gate_decision(18, 2, 0)
+
+    assert decision == "approved"
+    assert games == 20
+    assert score == 0.9
+    assert half_width < (score - 0.55)
+
+
+def test_gate_decision_rejects_early_for_clear_loser():
+    decision, games, score, half_width = _gate_decision(2, 18, 0)
+
+    assert decision == "rejected"
+    assert games == 20
+    assert score == 0.1
+    assert score + half_width < 0.55
+
+
+def test_gate_decision_waits_when_inconclusive():
+    decision, games, score, half_width = _gate_decision(12, 8, 0)
+
+    assert decision is None
+    assert games == 20
+    assert 0.0 < half_width
+    assert score - half_width < 0.55 < score + half_width
+
+
 def test_maybe_resolve_gate_approves_candidate(monkeypatch):
     copied: list[tuple[str, str]] = []
     writes: list[tuple[str, dict]] = []
@@ -109,11 +137,11 @@ def test_maybe_resolve_gate_approves_candidate(monkeypatch):
     state = {
         "pair_results": {
             "v3:v4": {
-                "a_wins": 30,
-                "b_wins": 60,
-                "draws": 10,
-                "a_as_white": 50,
-                "b_as_white": 50,
+                "a_wins": 2,
+                "b_wins": 18,
+                "draws": 0,
+                "a_as_white": 10,
+                "b_as_white": 10,
             }
         }
     }
@@ -130,6 +158,7 @@ def test_maybe_resolve_gate_approves_candidate(monkeypatch):
     assert changed
     assert gate_state["approved_version"] == 4
     assert gate_state["decisions"]["v4"]["status"] == "approved"
+    assert gate_state["decisions"]["v4"]["games"] == 20
     assert copied == [("models/versions/4.onnx", storage.APPROVED_ONNX)]
     assert writes[0][0] == storage.APPROVED_META
     assert writes[1][0] == storage.GATE_STATE
@@ -145,11 +174,11 @@ def test_maybe_resolve_gate_rejects_candidate(monkeypatch):
     state = {
         "pair_results": {
             "v3:v4": {
-                "a_wins": 55,
-                "b_wins": 35,
-                "draws": 10,
-                "a_as_white": 50,
-                "b_as_white": 50,
+                "a_wins": 18,
+                "b_wins": 2,
+                "draws": 0,
+                "a_as_white": 10,
+                "b_as_white": 10,
             }
         }
     }
