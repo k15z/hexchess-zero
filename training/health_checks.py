@@ -245,7 +245,7 @@ def check_no_illegal_prob_mass(model: torch.nn.Module,
             preds = model(boards)
         logits = preds["policy"].float()
         logits = logits.masked_fill(~legal_mask, float("-inf"))
-        probs = F.softmax(logits, dim=-1)
+        probs = F.softmax(logits, dim=-1).nan_to_num(0.0)
         illegal = (~legal_mask).float()
         illegal_mass = (probs * illegal).sum(dim=-1)
         max_mass = float(illegal_mass.max().item())
