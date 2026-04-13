@@ -71,19 +71,21 @@ class TestImitationMixDecay:
 
     def test_pinned_values(self):
         """Pin exact expected values at key versions for the default config.
-        Default: start=0.3, end=0.0, decay_end_version=5."""
+        Default: start=0.3, end=0.0, decay_end_version=8."""
         assert self.cfg.imitation_mix_start == 0.3
         assert self.cfg.imitation_mix_end == 0.0
-        assert self.cfg.imitation_mix_decay_end_version == 5
+        assert self.cfg.imitation_mix_decay_end_version == 8
 
         expected = {
             0: 0.3,
             1: 0.3,
-            2: 0.225,  # 0.3 + (0.0 - 0.3) * (2-1)/(5-1) = 0.3 - 0.075 = 0.225
-            3: 0.15,   # 0.3 + (0.0 - 0.3) * (3-1)/(5-1) = 0.3 - 0.15 = 0.15
-            4: 0.075,  # 0.3 + (0.0 - 0.3) * (4-1)/(5-1) = 0.3 - 0.225 = 0.075
-            5: 0.0,
-            6: 0.0,
+            2: 0.2571428571428571,
+            3: 0.2142857142857143,
+            4: 0.17142857142857143,
+            5: 0.1285714285714286,
+            6: 0.08571428571428572,
+            7: 0.04285714285714287,
+            8: 0.0,
             10: 0.0,
         }
         for v, exp in expected.items():
