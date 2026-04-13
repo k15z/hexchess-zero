@@ -11,9 +11,9 @@ from loguru import logger
 SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL")
 
 
-def notify_training_cycle(
+def notify_training_summary(
     *,
-    cycle: int,
+    summary: int,
     version: int,
     steps: int,
     total_steps: int,
@@ -22,14 +22,14 @@ def notify_training_cycle(
     value_loss: float,
     elapsed_seconds: float,
 ) -> None:
-    """Send a Slack message summarizing a completed training cycle."""
+    """Send a Slack message summarizing a completed trainer summary interval."""
     if not SLACK_WEBHOOK_URL:
         return
 
     total_loss = policy_loss + value_loss
 
     text = (
-        f"*Hexchess Training - Cycle {cycle}*\n"
+        f"*Hexchess Training - Summary {summary}*\n"
         f"Model: v{version} | Steps: {steps:,} ({total_steps:,} total)\n"
         f"Loss: policy={policy_loss:.4f} value={value_loss:.4f} total={total_loss:.4f}\n"
         f"Positions: {positions:,} | Time: {elapsed_seconds:.0f}s"

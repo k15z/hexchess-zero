@@ -6,8 +6,9 @@ Two training regimes:
    workers to generate enough imitation data, then trains for multiple epochs.
 
 2. **Self-play loop** (`run_trainer` main loop): Runs continuously after
-   bootstrap. Samples from a recency-weighted replay buffer, trains for N
-   steps per cycle, exports and promotes unconditionally, repeat.
+   bootstrap. Samples from a recency-weighted replay buffer, trains across fixed
+   summary intervals, and checks promotion whenever fresh-data polls indicate
+   the latest candidate is eligible.
 
 All data exchange happens via S3 (DigitalOcean Spaces / R2 / etc).
 """
@@ -50,7 +51,7 @@ from .losses import (
 )
 from .model import build_model
 from .replay_window import sublinear_window_size
-from .slack import notify_training_cycle
+from .slack import notify_training_summary
 from .swa import SwaSnapshotBuffer, update_bn_stats
 
 
@@ -114,7 +115,7 @@ class TrainBucket:
     seen ~target_passes times on average over its buffer lifetime.
 
     On first call to :meth:`update`, the bucket is seeded with enough
-    tokens for one cycle so the trainer can start immediately.
+    tokens for one summary interval so the trainer can start immediately.
     """
 
     def __init__(self, target_passes: float, batch_size: int,
@@ -666,13 +667,126 @@ def _try_gate_promotion(
     return decision.promote, decision.state, decision.score, decision.reason
 
 
+def _promotion_check_ready(
+    *,
+    new_positions: int,
+    threshold: int,
+    total_steps: int,
+    last_attempt_step: int,
+) -> bool:
+    """Return whether the trainer should evaluate a promotion candidate now.
+
+    Promotion cadence is driven by fresh self-play positions, not by the end
+    of a trainer summary interval. ``last_attempt_step`` suppresses repeated gate/export
+    attempts when nothing has changed since the previous check.
+    """
+    return new_positions >= threshold and total_steps > last_attempt_step
+
+
+def _maybe_promote(
+    cfg: AsyncConfig,
+    model: torch.nn.Module,
+    *,
+    current_version: int,
+    positions_at_last_promote: int,
+    n_total: int,
+    swa_buf: SwaSnapshotBuffer,
+    bn_refresh_batches: deque[torch.Tensor],
+    device: torch.device,
+    total_steps_all_time: int,
+    last_promotion_attempt_step: int,
+    log_skip: bool = False,
+) -> tuple[int, int, int, bool]:
+    """Export/promote if the current trainer state is eligible.
+
+    Returns ``(current_version, positions_at_last_promote,
+    last_promotion_attempt_step, promoted)`` with updated values.
+    """
+    new_positions = n_total - positions_at_last_promote
+    if new_positions < cfg.promote_every_new_positions:
+        if log_skip:
+            logger.info(
+                "Promotion not yet eligible — only {:,} new positions since v{} "
+                "(need {:,})",
+                new_positions, current_version, cfg.promote_every_new_positions,
+            )
+        return (
+            current_version,
+            positions_at_last_promote,
+            last_promotion_attempt_step,
+            False,
+        )
+
+    if not _promotion_check_ready(
+        new_positions=new_positions,
+        threshold=cfg.promote_every_new_positions,
+        total_steps=total_steps_all_time,
+        last_attempt_step=last_promotion_attempt_step,
+    ):
+        return (
+            current_version,
+            positions_at_last_promote,
+            last_promotion_attempt_step,
+            False,
+        )
+
+    last_promotion_attempt_step = total_steps_all_time
+
+    # Build SWA candidate weights (fall back to raw if buffer empty).
+    averaged_sd = swa_buf.average()
+    if averaged_sd is None:
+        logger.info("SWA buffer empty, using raw trainer weights for promotion")
+        averaged_sd = {k: v.detach().cpu().clone()
+                       for k, v in model.state_dict().items()}
+    else:
+        # Re-estimate BN stats on averaged weights using a scratch model copy.
+        scratch = build_model(cfg).to(device)
+        scratch.load_state_dict({k: v.to(device) for k, v in averaged_sd.items()})
+        if bn_refresh_batches:
+            update_bn_stats(
+                scratch,
+                ((b,) for b in bn_refresh_batches),
+                device=device,
+            )
+            averaged_sd = {k: v.detach().cpu().clone()
+                           for k, v in scratch.state_dict().items()}
+            logger.info(
+                "  Re-estimated BN stats on {} batches", len(bn_refresh_batches)
+            )
+        del scratch
+
+    new_version = current_version + 1
+    promote, gate_state, gate_score, gate_reason = _try_gate_promotion(
+        cfg, averaged_sd, new_version, current_version,
+    )
+    save_gate_state(gate_state)
+
+    if promote:
+        _promote_model(
+            cfg, model, new_version,
+            state_dict=averaged_sd,
+            positions_at_promote=n_total,
+        )
+        logger.info(
+            "Promoted to v{} ({}, score={:.3f}) | total steps: {:,}",
+            new_version, gate_reason, gate_score, total_steps_all_time,
+        )
+        return new_version, n_total, last_promotion_attempt_step, True
+
+    logger.warning(
+        "Promotion gated out ({}, score={:.3f}) — staying on v{}",
+        gate_reason, gate_score, current_version,
+    )
+    return current_version, positions_at_last_promote, last_promotion_attempt_step, False
+
+
 # ---------------------------------------------------------------------------
 # Trainer metrics publishing (plan §7.6 page 3)
 # ---------------------------------------------------------------------------
 
 def _publish_trainer_metrics(
     *,
-    cycle: int,
+    summary: int,
     version: int,
     steps: int,
     total_steps: int,
@@ -683,20 +797,26 @@ def _publish_trainer_metrics(
     avg_stv: float,
     avg_aux: float,
 ) -> None:
-    """Append a cycle summary to ``state/trainer_metrics.json`` (rolling 200).
+    """Append a trainer-summary record to ``state/trainer_metrics.json``.
 
     This is a read-modify-write operation. It is safe because only one trainer
     runs at a time — concurrent writes are not possible in normal operation.
-    A crash between GET and PUT silently drops the in-flight cycle from the
+    A crash between GET and PUT silently drops the in-flight summary from the
     history, which is acceptable (the loss value is recoverable from logs).
     """
     try:
         existing = storage.get_json(storage.TRAINER_METRICS)
-        history: list[dict] = existing.get("cycles", [])
+        history: list[dict] = [
+            {
+                **{k: v for k, v in entry.items() if k != "cycle"},
+                "summary": entry.get("summary", entry.get("cycle")),
+            }
+            for entry in existing.get("summaries", existing.get("cycles", []))
+        ]
     except KeyError:
         history = []
     history.append({
-        "cycle": cycle,
+        "summary": summary,
         "version": version,
         "steps": steps,
         "total_steps": total_steps,
@@ -710,7 +830,7 @@ def _publish_trainer_metrics(
     })
     if len(history) > 200:
         history = history[-200:]
-    storage.put_json(storage.TRAINER_METRICS, {"cycles": history})
+    storage.put_json(storage.TRAINER_METRICS, {"summaries": history})
 
 
 # ---------------------------------------------------------------------------
@@ -723,7 +843,7 @@ def run_trainer(cfg: AsyncConfig) -> None:
     cfg.validate()
     setup_json_logging("trainer", run_id=cfg.run_id)
     log_event("trainer.start", run_id=cfg.run_id,
-              steps_per_cycle=cfg.steps_per_cycle,
+              summary_interval_steps=cfg.summary_interval_steps,
               batch_size=cfg.batch_size)
 
     if torch.cuda.is_available():
@@ -737,8 +857,8 @@ def run_trainer(cfg: AsyncConfig) -> None:
         current_n_total, c=cfg.window_c, alpha=cfg.window_alpha, beta=cfg.window_beta,
     )
     logger.info("Trainer starting on device: {} | N_total={:,} window={:,} "
-                "steps/cycle={}",
-                device, current_n_total, initial_window, cfg.steps_per_cycle)
+                "steps/summary={}",
+                device, current_n_total, initial_window, cfg.summary_interval_steps)
 
     current_version = _read_model_version()
 
@@ -772,13 +892,13 @@ def run_trainer(cfg: AsyncConfig) -> None:
         current_version = _run_bootstrap(cfg, model, optimizer, device)
         optimizer = _make_optimizer(model, cfg)
 
-    cycle = 0
+    summary = 0
     total_steps_all_time = 0
     fresh_run_steps = 0  # for LR warmup — resets on promotion is NOT needed, it's "fresh run"
     bucket = TrainBucket(cfg.max_train_steps_per_new_data,
                          batch_size=cfg.batch_size,
-                         max_seed=cfg.steps_per_cycle * cfg.batch_size,
-                         max_tokens=float(cfg.steps_per_cycle * cfg.batch_size))
+                         max_seed=cfg.summary_interval_steps * cfg.batch_size,
+                         max_tokens=float(cfg.summary_interval_steps * cfg.batch_size))
 
     # SWA snapshot buffer + sample counter.
     # Build EMA-derived promotion weights from config: w_i = decay^i, then normalize.
@@ -795,12 +915,13 @@ def run_trainer(cfg: AsyncConfig) -> None:
     # Falls back to 0 for bootstrap (no meta.json yet).
     positions_at_last_promote = _read_positions_at_last_promote()
     logger.info("Loaded positions watermark: {:,}", positions_at_last_promote)
+    last_promotion_attempt_step = -1
     # Rolling buffer of recent training batches for re-estimating BN
     # running stats after SWA averaging. update_bn_stats uses cumulative
     # averaging (momentum=None), so forwarding a single batch leaves the
     # averaged model with running mean/var equal to that batch's stats —
     # a noisy, stale estimate that silently degrades every promoted model.
-    # We keep the buffer on CPU to avoid pinning GPU memory across cycles.
+    # We keep the buffer on CPU to avoid pinning GPU memory across summaries.
     bn_refresh_batches: deque[torch.Tensor] = deque(
         maxlen=cfg.swa_bn_refresh_batches
     )
@@ -836,13 +957,13 @@ def run_trainer(cfg: AsyncConfig) -> None:
             time.sleep(30)
             continue
 
-        cycle += 1
-        cycle_t0 = time.time()
+        summary += 1
+        summary_t0 = time.time()
 
         logger.info("")
         logger.info("=" * 60)
-        logger.info("Training cycle {} | model v{} | N_total={:,} window={:,}",
-                    cycle, current_version, n_total, dataset.window_size)
+        logger.info("Trainer summary {} | model v{} | N_total={:,} window={:,}",
+                    summary, current_version, n_total, dataset.window_size)
         logger.info("=" * 60)
 
         bucket.update(n_total, window_size=dataset.window_size)
@@ -868,28 +989,48 @@ def run_trainer(cfg: AsyncConfig) -> None:
         # Training
         model.train()
         step = 0
-        cycle_policy_loss = 0.0
-        cycle_value_loss = 0.0
-        cycle_mlh_loss = 0.0
-        cycle_stv_loss = 0.0
-        cycle_aux_loss = 0.0
-        cycle_total_loss = 0.0
+        summary_policy_loss = 0.0
+        summary_value_loss = 0.0
+        summary_mlh_loss = 0.0
+        summary_stv_loss = 0.0
+        summary_aux_loss = 0.0
+        summary_total_loss = 0.0
         loss_weights = LossWeights()
         train_t0 = time.time()
 
         logger.info("Training for {} steps (batch_size={})...",
-                    cfg.steps_per_cycle, cfg.batch_size)
+                    cfg.summary_interval_steps, cfg.batch_size)
 
-        while step < cfg.steps_per_cycle:
+        while step < cfg.summary_interval_steps:
             if not bucket.has_budget():
-                logger.info("  Bucket empty mid-cycle at step {}, waiting...", step)
+                logger.info("  Bucket empty mid-summary at step {}, waiting...", step)
                 while not bucket.has_budget():
                     time.sleep(30)
                     n_total = storage.count_positions(storage.SELFPLAY_PREFIX)
                     bucket.update(n_total, window_size=dataset.window_size)
+                    (
+                        current_version,
+                        positions_at_last_promote,
+                        last_promotion_attempt_step,
+                        promoted,
+                    ) = _maybe_promote(
+                        cfg,
+                        model,
+                        current_version=current_version,
+                        positions_at_last_promote=positions_at_last_promote,
+                        n_total=n_total,
+                        swa_buf=swa_buf,
+                        bn_refresh_batches=bn_refresh_batches,
+                        device=device,
+                        total_steps_all_time=total_steps_all_time,
+                        last_promotion_attempt_step=last_promotion_attempt_step,
+                    )
+                    if promoted:
+                        dataset, dataloader, n_total = reload_buffer()
+                        bucket.update(n_total, window_size=dataset.window_size)
 
             for batch_np in dataloader:
-                if step >= cfg.steps_per_cycle or not bucket.has_budget():
+                if step >= cfg.summary_interval_steps or not bucket.has_budget():
                     break
 
                 # Snapshot the CPU numpy boards into the BN refresh buffer
@@ -937,12 +1078,12 @@ def run_trainer(cfg: AsyncConfig) -> None:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip_norm)
                 optimizer.step()
 
-                cycle_policy_loss += breakdown.policy.item()
-                cycle_value_loss += breakdown.value.item()
-                cycle_mlh_loss += breakdown.mlh.item()
-                cycle_stv_loss += breakdown.stv.item()
-                cycle_aux_loss += breakdown.aux_policy.item()
-                cycle_total_loss += breakdown.total.item()
+                summary_policy_loss += breakdown.policy.item()
+                summary_value_loss += breakdown.value.item()
+                summary_mlh_loss += breakdown.mlh.item()
+                summary_stv_loss += breakdown.stv.item()
+                summary_aux_loss += breakdown.aux_policy.item()
+                summary_total_loss += breakdown.total.item()
                 step += 1
                 total_steps_all_time += 1
                 fresh_run_steps += 1
@@ -959,7 +1100,7 @@ def run_trainer(cfg: AsyncConfig) -> None:
                 log_event(
                     "train.step",
                     step_id=total_steps_all_time,
-                    cycle=cycle,
+                    summary=summary,
                     version=current_version,
                     wall_ms=int((time.time() - train_t0) * 1000),
                     loss_policy=float(breakdown.policy.item()),
@@ -973,17 +1114,17 @@ def run_trainer(cfg: AsyncConfig) -> None:
                     data_cumulative_positions=int(n_total),
                 )
 
-                if step % 100 == 0 or step == cfg.steps_per_cycle:
+                if step % 100 == 0 or step == cfg.summary_interval_steps:
                     elapsed = time.time() - train_t0
                     sps = step / elapsed if elapsed > 0 else 0
                     logger.info(
                         "  step {:>5}/{} lr={:.5f} | policy={:.4f} value={:.4f} "
                         "mlh={:.4f} stv={:.4f} aux={:.4f} total={:.4f} "
                         "| {:.1f} steps/s | {:.0f}s",
-                        step, cfg.steps_per_cycle, lr,
-                        cycle_policy_loss / step, cycle_value_loss / step,
-                        cycle_mlh_loss / step, cycle_stv_loss / step,
-                        cycle_aux_loss / step, cycle_total_loss / step,
+                        step, cfg.summary_interval_steps, lr,
+                        summary_policy_loss / step, summary_value_loss / step,
+                        summary_mlh_loss / step, summary_stv_loss / step,
+                        summary_aux_loss / step, summary_total_loss / step,
                         sps, elapsed,
                     )
 
@@ -997,7 +1138,7 @@ def run_trainer(cfg: AsyncConfig) -> None:
                         logger.warning("runtime health check: {}: {}",
                                        f.name, f.message)
 
-                if step % cfg.reload_interval == 0 and step < cfg.steps_per_cycle:
+                if step % cfg.reload_interval == 0 and step < cfg.summary_interval_steps:
                     dataset, dataloader, n_total = reload_buffer()
                     bucket.update(n_total, window_size=dataset.window_size)
                     logger.info(
@@ -1005,88 +1146,81 @@ def run_trainer(cfg: AsyncConfig) -> None:
                         len(dataset.files), dataset.total_positions,
                         dataset.window_size, bucket.tokens,
                     )
+                    (
+                        current_version,
+                        positions_at_last_promote,
+                        last_promotion_attempt_step,
+                        promoted,
+                    ) = _maybe_promote(
+                        cfg,
+                        model,
+                        current_version=current_version,
+                        positions_at_last_promote=positions_at_last_promote,
+                        n_total=n_total,
+                        swa_buf=swa_buf,
+                        bn_refresh_batches=bn_refresh_batches,
+                        device=device,
+                        total_steps_all_time=total_steps_all_time,
+                        last_promotion_attempt_step=last_promotion_attempt_step,
+                    )
+                    if promoted:
+                        dataset, dataloader, n_total = reload_buffer()
+                        bucket.update(n_total, window_size=dataset.window_size)
+                        logger.info(
+                            "  Reloaded after promotion: {} files, {:,} pos "
+                            "(window={:,}) | bucket: {:.0f}",
+                            len(dataset.files), dataset.total_positions,
+                            dataset.window_size, bucket.tokens,
+                        )
                     break
 
+        latest_n_total = storage.count_positions(storage.SELFPLAY_PREFIX)
+        if latest_n_total != n_total:
+            n_total = latest_n_total
+            bucket.update(n_total, window_size=dataset.window_size)
+
         train_elapsed = time.time() - train_t0
-        avg_policy = cycle_policy_loss / max(step, 1)
-        avg_value = cycle_value_loss / max(step, 1)
-        avg_mlh = cycle_mlh_loss / max(step, 1)
-        avg_stv = cycle_stv_loss / max(step, 1)
-        avg_aux = cycle_aux_loss / max(step, 1)
+        avg_policy = summary_policy_loss / max(step, 1)
+        avg_value = summary_value_loss / max(step, 1)
+        avg_mlh = summary_mlh_loss / max(step, 1)
+        avg_stv = summary_stv_loss / max(step, 1)
+        avg_aux = summary_aux_loss / max(step, 1)
         logger.info(
-            "Cycle done: {} steps in {:.0f}s | policy={:.4f} value={:.4f} "
+            "Summary done: {} steps in {:.0f}s | policy={:.4f} value={:.4f} "
             "mlh={:.4f} stv={:.4f} aux={:.4f}",
             step, train_elapsed, avg_policy, avg_value,
             avg_mlh, avg_stv, avg_aux,
         )
 
-        # Promotion gate: only promote every cfg.promote_every_new_positions new positions.
-        new_positions = n_total - positions_at_last_promote
-        if new_positions < cfg.promote_every_new_positions:
-            logger.info(
-                "Skipping promotion — only {:,} new positions since v{} "
-                "(need {:,})",
-                new_positions, current_version, cfg.promote_every_new_positions,
-            )
-            continue
-
-        # Build SWA candidate weights (fall back to raw if buffer empty).
-        averaged_sd = swa_buf.average()
-        if averaged_sd is None:
-            logger.info("SWA buffer empty, using raw trainer weights for promotion")
-            averaged_sd = {k: v.detach().cpu().clone()
-                           for k, v in model.state_dict().items()}
-        else:
-            # Re-estimate BN stats on averaged weights using a scratch model copy.
-            scratch = build_model(cfg).to(device)
-            scratch.load_state_dict({k: v.to(device) for k, v in averaged_sd.items()})
-            if bn_refresh_batches:
-                update_bn_stats(
-                    scratch,
-                    ((b,) for b in bn_refresh_batches),
-                    device=device,
-                )
-                averaged_sd = {k: v.detach().cpu().clone()
-                               for k, v in scratch.state_dict().items()}
-                logger.info(
-                    "  Re-estimated BN stats on {} batches", len(bn_refresh_batches)
-                )
-            del scratch
-
-        new_version = current_version + 1
-        promote, gate_state, gate_score, gate_reason = _try_gate_promotion(
-            cfg, averaged_sd, new_version, current_version,
+        (
+            current_version,
+            positions_at_last_promote,
+            last_promotion_attempt_step,
+            _promoted,
+        ) = _maybe_promote(
+            cfg,
+            model,
+            current_version=current_version,
+            positions_at_last_promote=positions_at_last_promote,
+            n_total=n_total,
+            swa_buf=swa_buf,
+            bn_refresh_batches=bn_refresh_batches,
+            device=device,
+            total_steps_all_time=total_steps_all_time,
+            last_promotion_attempt_step=last_promotion_attempt_step,
+            log_skip=True,
         )
-        save_gate_state(gate_state)
 
-        if promote:
-            _promote_model(
-                cfg, model, new_version,
-                state_dict=averaged_sd,
-                positions_at_promote=n_total,
-            )
-            current_version = new_version
-            positions_at_last_promote = n_total
-            logger.info(
-                "Promoted to v{} ({}, score={:.3f}) | total steps: {:,}",
-                new_version, gate_reason, gate_score, total_steps_all_time,
-            )
-        else:
-            logger.warning(
-                "Promotion gated out ({}, score={:.3f}) — staying on v{}",
-                gate_reason, gate_score, current_version,
-            )
-
-        cycle_elapsed = time.time() - cycle_t0
-        notify_training_cycle(
-            cycle=cycle, version=current_version, steps=step,
+        summary_elapsed = time.time() - summary_t0
+        notify_training_summary(
+            summary=summary, version=current_version, steps=step,
             total_steps=total_steps_all_time, positions=dataset.total_positions,
             policy_loss=avg_policy, value_loss=avg_value,
-            elapsed_seconds=cycle_elapsed,
+            elapsed_seconds=summary_elapsed,
         )
         try:
             _publish_trainer_metrics(
-                cycle=cycle,
+                summary=summary,
                 version=current_version,
                 steps=step,
                 total_steps=total_steps_all_time,

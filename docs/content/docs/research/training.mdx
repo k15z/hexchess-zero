@@ -45,12 +45,12 @@ Workers can run anywhere — local machines, cloud VMs, Docker containers, Kuber
 A single trainer process:
 
 1. Downloads recent `.npz` files from S3 (KataGo-style sublinear replay window)
-2. Trains the network for `steps_per_cycle` steps, mixing recent self-play with a decaying amount of imitation data in early versions
-3. Exports the updated model to ONNX
-4. Promotes a new version only after enough fresh self-play data has accumulated, with an early-version gate against the incumbent
+2. Trains continuously, emitting a trainer summary every `summary_interval_steps` steps while mixing recent self-play with a decaying amount of imitation data in early versions
+3. Re-scans S3 every `reload_interval` steps, and whenever it is waiting on fresh data, to pick up new worker output and re-check promotion eligibility
+4. Exports and promotes a new version once enough fresh self-play data has accumulated, with an early-version gate against the incumbent
 5. Repeats
 
-The trainer periodically re-scans S3 (every `reload_interval` steps) to pick up fresh data within a cycle.
+`summary_interval_steps` is a reporting cadence, not a hard promotion boundary.
 
 ### Elo service (`training/elo_service.py`)
 
@@ -154,15 +154,16 @@ If the trainer is outpacing data production, it sleeps rather than overfitting o
 | `learning_rate` | 5e-4 | SGD learning rate after warmup |
 | `l2_regularization` | $3 \times 10^{-5}$ | Weight decay |
 | `window_c` / `window_alpha` / `window_beta` | 25,000 / 0.75 / 0.4 | Sublinear replay-window parameters |
-| `steps_per_cycle` | 3,000 | Steps per trainer cycle |
+| `summary_interval_steps` | 3,000 | Steps between trainer summaries |
+| `reload_interval` | 1,000 | S3 refresh interval for fresh data and promotion checks |
 | `promote_every_new_positions` | 300,000 | Minimum fresh self-play positions required between promotions |
 | `imitation_mix_start` / `imitation_mix_end` / `imitation_mix_decay_end_version` | 0.3 / 0.0 / 5 | Early-version imitation mixing schedule |
 | `gating_enabled_first_n_versions` | 5 | Number of early versions that can still be gated vs the incumbent |
 
 ## Key dynamics
 
-**Worker throughput vs training speed**: Workers produce positions proportional to `num_simulations` and available CPUs. The trainer consumes them based on `steps_per_cycle`, GPU speed, and the early imitation mix. The token bucket keeps them balanced.
+**Worker throughput vs training speed**: Workers produce positions proportional to `num_simulations` and available CPUs. The trainer consumes them based on GPU speed, `batch_size`, the early imitation mix, and the token bucket target. `summary_interval_steps` only sets the summary cadence.
 
-**Replay window vs cycle length**: The replay window grows sublinearly with total self-play volume, so early versions train mostly on fresh data while later versions retain more historical diversity without a hard linear-growth cost.
+**Replay window vs summary cadence**: The replay window grows sublinearly with total self-play volume, so early versions train mostly on fresh data while later versions retain more historical diversity without a hard linear-growth cost.
 
-**Model version turnover**: Finishing a cycle is necessary but not sufficient for promotion. The trainer also requires `promote_every_new_positions` fresh self-play positions since the last promotion, and early versions may be gated against the incumbent. Workers poll for updates after each batch of games, so rollout lag is usually minutes rather than hours.
+**Model version turnover**: Promotion is driven by `promote_every_new_positions`, not by waiting for a full trainer interval to finish. The trainer checks eligibility at fresh-data polls (`reload_interval` reloads, data-wait polls, and the end-of-summary check), and early versions may still be gated against the incumbent. Workers poll for updates after each batch of games, so rollout lag is usually minutes rather than hours.

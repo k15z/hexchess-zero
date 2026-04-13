@@ -284,11 +284,11 @@ def test_trainer_metrics_etag_sync(
 
     fake.put_json(
         storage.TRAINER_METRICS,
-        {"cycles": [{"cycle": 1, "loss_policy": 0.5, "version": 1}]},
+        {"summaries": [{"summary": 1, "loss_policy": 0.5, "version": 1}]},
     )
     store.refresh_once()
     snap = store.snapshot()
-    assert snap["trainer_metrics"]["cycles"][0]["cycle"] == 1
+    assert snap["trainer_metrics"]["summaries"][0]["summary"] == 1
 
     # ETag unchanged → no re-download.
     calls: list[str] = []
@@ -305,11 +305,11 @@ def test_trainer_metrics_etag_sync(
     # Updated metrics → exactly one GET.
     fake.put_json(
         storage.TRAINER_METRICS,
-        {"cycles": [{"cycle": 2, "loss_policy": 0.4, "version": 1}]},
+        {"summaries": [{"summary": 2, "loss_policy": 0.4, "version": 1}]},
     )
     store.refresh_once()
     assert calls == [storage.TRAINER_METRICS]
-    assert store.snapshot()["trainer_metrics"]["cycles"][0]["cycle"] == 2
+    assert store.snapshot()["trainer_metrics"]["summaries"][0]["summary"] == 2
 
 
 def test_benchmark_results_incremental_fetch(
@@ -365,5 +365,4 @@ def test_empty_snapshot_has_new_keys(store: DashboardStore) -> None:
     assert snap["trainer_metrics"] == {}
     assert snap["benchmark_versions"] == []
     assert snap["benchmark_results"] == {}
-
 
