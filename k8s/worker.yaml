@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: worker
-          image: ghcr.io/k15z/hexchess-zero/training:latest
+          image: ghcr.io/k15z/hexchess-zero/training:cpu
           args: ["worker"]
           envFrom:
             - secretRef:

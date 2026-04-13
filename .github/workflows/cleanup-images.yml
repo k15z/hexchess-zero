@@ -16,10 +16,10 @@ permissions:
 
 env:
   # Tags to keep (never delete these)
-  KEEP_TAGS: 'latest cpu cuda cu121'
+  KEEP_TAGS: 'cpu cuda'
   # Keep images newer than this many days
   KEEP_DAYS: 30
-  # Always keep at least this many sha-* versions
+  # Always keep at least this many pinned (cpu-<sha>/cuda-<sha>) versions
   MIN_KEEP: 5
 
 jobs:
@@ -50,7 +50,7 @@ jobs:
             "/users/$OWNER/packages/container/${PACKAGE//\//%2F}/versions" | \
             jq -s 'add | sort_by(.created_at) | reverse | .[] | {id: .id, created_at: .created_at, tags: .metadata.container.tags}')
 
-          # Track how many sha-* versions we've kept
+          # Track how many pinned versions we've kept
           SHA_KEPT=0
           TO_DELETE=()
 
@@ -77,18 +77,18 @@ jobs:
               continue
             fi
 
-            # Check if it's a sha-* tag and within retention
-            IS_SHA=false
+            # Check if it's a pinned (cpu-<sha> or cuda-<sha>) tag
+            IS_PINNED=false
             for tag in $TAGS; do
-              if [[ "$tag" == sha-* ]]; then
-                IS_SHA=true
+              if [[ "$tag" == cpu-* || "$tag" == cuda-* ]]; then
+                IS_PINNED=true
                 break
               fi
             done
 
-            # Keep recent sha-* versions up to MIN_KEEP
-            if [ "$IS_SHA" = "true" ] && [ "$SHA_KEPT" -lt "$MIN_KEEP" ]; then
-              echo "Keeping version $ID (sha tag, min-keep: $((SHA_KEPT + 1))/$MIN_KEEP)"
+            # Keep recent pinned versions up to MIN_KEEP
+            if [ "$IS_PINNED" = "true" ] && [ "$SHA_KEPT" -lt "$MIN_KEEP" ]; then
+              echo "Keeping version $ID (pinned tag, min-keep: $((SHA_KEPT + 1))/$MIN_KEEP)"
               SHA_KEPT=$((SHA_KEPT + 1))
               continue
             fi
@@ -96,7 +96,7 @@ jobs:
             # Keep versions newer than cutoff
             if [[ "$CREATED" > "$CUTOFF_DATE" ]]; then
               echo "Keeping version $ID (created: $CREATED, within retention)"
-              [ "$IS_SHA" = "true" ] && SHA_KEPT=$((SHA_KEPT + 1))
+              [ "$IS_PINNED" = "true" ] && SHA_KEPT=$((SHA_KEPT + 1))
               continue
             fi
 
