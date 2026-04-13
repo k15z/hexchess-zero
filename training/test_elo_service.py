@@ -9,6 +9,7 @@ from training.elo_service import (
     _gate_decision,
     _desired_active,
     _maybe_resolve_gate,
+    _pending_candidate,
     _select_pair,
 )
 
@@ -127,6 +128,15 @@ def test_gate_decision_waits_when_inconclusive():
     assert score - half_width < 0.55 < score + half_width
 
 
+def test_gate_decision_forces_result_at_max_games():
+    decision, games, score, half_width = _gate_decision(50, 50, 0)
+
+    assert decision == "rejected"
+    assert games == 100
+    assert score == 0.5
+    assert half_width > 0.0
+
+
 def test_maybe_resolve_gate_approves_candidate(monkeypatch):
     copied: list[tuple[str, str]] = []
     writes: list[tuple[str, dict]] = []
@@ -197,3 +207,20 @@ def test_maybe_resolve_gate_rejects_candidate(monkeypatch):
     assert gate_state["decisions"]["v4"]["status"] == "rejected"
     assert copied == []
     assert writes == [(storage.GATE_STATE, gate_state)]
+
+
+def test_pending_candidate_returns_none_when_everything_is_rejected():
+    version_keys = {
+        "v1": "models/versions/1.onnx",
+        "v2": "models/versions/2.onnx",
+        "v3": "models/versions/3.onnx",
+    }
+    gate_state = {
+        "approved_version": 1,
+        "decisions": {
+            "v2": {"status": "rejected"},
+            "v3": {"status": "rejected"},
+        },
+    }
+
+    assert _pending_candidate(version_keys, 1, gate_state) is None

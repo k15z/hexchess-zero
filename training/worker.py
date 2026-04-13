@@ -42,6 +42,7 @@ import json
 import os
 import platform
 import random
+import secrets
 import signal
 import subprocess
 import sys
@@ -135,6 +136,16 @@ def _git_sha() -> str:
 
 def _worker_name() -> str:
     return os.environ.get("WORKER_NAME", platform.node())
+
+
+def _new_game_id() -> int:
+    """Return a collision-resistant 64-bit game identifier.
+
+    Trace files and audit tools treat game IDs as opaque uint64 values, so we
+    prefer randomness over per-worker counters. This avoids collisions across
+    workers that start in the same second or restart with the same local index.
+    """
+    return secrets.randbits(64)
 
 
 def _status_to_result_termination(status: str) -> tuple[str, str, list[float]]:
@@ -740,8 +751,6 @@ def run_worker(cfg: AsyncConfig) -> None:
     py_rng = random.Random()
     total_games = 0
     total_positions = 0
-    # Game-id generator: (unix-seconds << 16) | game-index, unique per worker.
-    game_id_base = int(time.time()) << 20
     # Rolling window for search stats (plan §7.6 page 4).
     _SEARCH_STAT_WINDOW = 100
     recent_game_qs: list[float] = []
@@ -750,7 +759,7 @@ def run_worker(cfg: AsyncConfig) -> None:
 
     while True:
         game_t0 = time.time()
-        game_id = game_id_base + total_games
+        game_id = _new_game_id()
         try:
             record = _play_one_game_pcr(
                 search,

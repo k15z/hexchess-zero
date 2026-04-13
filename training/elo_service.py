@@ -439,8 +439,16 @@ def _gate_score_stats(wins: int, losses: int, draws: int) -> tuple[int, float, f
     if total == 1:
         return total, score, 1.0
 
-    sum_sq = wins * 1.0 + draws * 0.25
-    sample_var = max(0.0, (sum_sq - total * score * score) / (total - 1))
+    # Treat outcomes as scalar scores in {1.0, 0.5, 0.0} and compute the
+    # unbiased sample variance explicitly. This is clearer than the
+    # sum-of-squares shortcut and keeps the loss term visible instead of
+    # relying on the fact that losses contribute 0^2 to Σx².
+    sum_sq_dev = (
+        wins * (1.0 - score) ** 2
+        + draws * (0.5 - score) ** 2
+        + losses * score**2
+    )
+    sample_var = max(0.0, sum_sq_dev / (total - 1))
     half_width = GATE_Z_VALUE * math.sqrt(sample_var / total)
     return total, score, half_width
 

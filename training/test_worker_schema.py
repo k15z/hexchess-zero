@@ -18,6 +18,7 @@ from training.worker import (
     GameRecord,
     PositionSample,
     _git_sha,
+    _new_game_id,
     compute_opening_hash,
     finalize_game_targets,
     legal_mask_from_moves,
@@ -210,6 +211,19 @@ def test_opening_hash_deterministic() -> None:
 def test_git_sha_prefers_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GIT_SHA", "1234567890abcdef")
     assert _git_sha() == "1234567890ab"
+
+
+def test_new_game_id_uses_u64_randbits(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[int] = []
+
+    def fake_randbits(bits: int) -> int:
+        calls.append(bits)
+        return 0x1234_5678_9ABC_DEF0
+
+    monkeypatch.setattr("training.worker.secrets.randbits", fake_randbits)
+
+    assert _new_game_id() == 0x1234_5678_9ABC_DEF0
+    assert calls == [64]
 
 
 def test_write_trace_json(tmp_path: Path) -> None:
