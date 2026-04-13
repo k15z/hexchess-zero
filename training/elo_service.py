@@ -43,6 +43,8 @@ from .elo import (
 # equality checks (frozenset iteration order is stable within a process but
 # a hidden invariant we'd rather make explicit).
 BASELINE_NAMES: tuple[str, ...] = ("Heuristic", "Minimax-2", "Minimax-3", "Minimax-4")
+GATE_REQUIRED_GAMES = 100
+GATE_PASS_SCORE = 0.55
 
 
 # ---------------------------------------------------------------------------
@@ -146,17 +148,74 @@ def _discover_versions() -> list[tuple[int, str]]:
     return versions
 
 
-def _desired_active(max_versions: int) -> tuple[list[str], dict[str, str]]:
-    """Return (active_player_list, version_key_map) for the current S3 state.
+def _read_approved_version() -> int:
+    """Return the model version approved for self-play.
 
-    Active set = baselines + latest N model versions (baselines first).
+    Falls back to ``latest`` for compatibility with pre-gating runs.
     """
+    for key in (storage.APPROVED_META, storage.LATEST_META):
+        try:
+            return int(storage.get_json(key).get("version", 0))
+        except KeyError:
+            continue
+    return 0
+
+
+def _load_gate_state(approved_version: int) -> dict:
+    """Load gate state from S3, or return an empty default."""
+    try:
+        state = storage.get_json(storage.GATE_STATE)
+    except KeyError:
+        state = {}
+    decisions = state.get("decisions")
+    if not isinstance(decisions, dict):
+        decisions = {}
+    return {
+        "approved_version": max(
+            int(state.get("approved_version", 0)),
+            approved_version,
+        ),
+        "decisions": decisions,
+    }
+
+
+def _pending_candidate(
+    version_keys: dict[str, str],
+    approved_version: int,
+    gate_state: dict,
+) -> str | None:
+    """Return the next ungated candidate after the approved version."""
+    for name in sorted(version_keys.keys(), key=lambda n: int(n[1:])):
+        if int(name[1:]) <= approved_version:
+            continue
+        if gate_state["decisions"].get(name, {}).get("status") == "rejected":
+            continue
+        return name
+    return None
+
+
+def _desired_active(
+    max_versions: int,
+) -> tuple[list[str], dict[str, str], str | None, str | None, dict]:
+    """Return active players, version key map, approved player, pending candidate, and gate state."""
     versions = _discover_versions()
     version_keys = {f"v{v}": key for v, key in versions}
-    sorted_names = sorted(version_keys.keys(), key=lambda n: int(n[1:]))
-    desired_models = sorted_names[-max_versions:] if max_versions > 0 else []
+    approved_version = _read_approved_version()
+    gate_state = _load_gate_state(approved_version)
+    approved_key = f"v{approved_version}"
+    approved_name = (
+        approved_key if approved_version > 0 and approved_key in version_keys else None
+    )
+    pending = _pending_candidate(version_keys, approved_version, gate_state)
+    desired_models: list[str] = []
+    if approved_name is not None:
+        desired_models.append(approved_name)
+    if pending is not None and pending != approved_name:
+        desired_models.append(pending)
+    if max_versions > 0:
+        desired_models = desired_models[:max_versions]
     active = list(BASELINE_NAMES) + desired_models
-    return active, version_keys
+    return active, version_keys, approved_name, pending, gate_state
 
 
 # ---------------------------------------------------------------------------
@@ -347,10 +406,88 @@ def _placement_pair(state: dict) -> tuple[str, str] | None:
     return random.choice(candidates)
 
 
-def _select_pair(state: dict) -> tuple[str, str] | None:
+def _gate_pair_result(
+    state: dict,
+    approved_name: str,
+    candidate_name: str,
+) -> tuple[int, int, int]:
+    """Return ``(wins, losses, draws)`` from the candidate's perspective."""
+    result = state["pair_results"].get(_pair_key(approved_name, candidate_name))
+    if result is None:
+        return 0, 0, 0
+    a, _b = sorted([approved_name, candidate_name])
+    if candidate_name == a:
+        wins = int(result["a_wins"])
+        losses = int(result["b_wins"])
+    else:
+        wins = int(result["b_wins"])
+        losses = int(result["a_wins"])
+    draws = int(result["draws"])
+    return wins, losses, draws
+
+
+def _maybe_resolve_gate(
+    state: dict,
+    version_keys: dict[str, str],
+    approved_name: str | None,
+    candidate_name: str | None,
+    gate_state: dict,
+) -> tuple[dict, bool]:
+    """Approve or reject the current candidate once the direct gate finishes."""
+    if approved_name is None or candidate_name is None:
+        return gate_state, False
+    if candidate_name in gate_state["decisions"]:
+        return gate_state, False
+
+    wins, losses, draws = _gate_pair_result(state, approved_name, candidate_name)
+    total = wins + losses + draws
+    if total < GATE_REQUIRED_GAMES:
+        return gate_state, False
+
+    score = (wins + 0.5 * draws) / total
+    resolved_at = datetime.now(timezone.utc).isoformat()
+    status = "approved" if score >= GATE_PASS_SCORE else "rejected"
+    gate_state["decisions"][candidate_name] = {
+        "status": status,
+        "approved_against": approved_name,
+        "wins": wins,
+        "losses": losses,
+        "draws": draws,
+        "games": total,
+        "score": score,
+        "resolved_at": resolved_at,
+    }
+    if status == "approved":
+        version = int(candidate_name[1:])
+        storage.copy(version_keys[candidate_name], storage.APPROVED_ONNX)
+        storage.put_json(
+            storage.APPROVED_META,
+            {
+                "version": version,
+                "timestamp": resolved_at,
+            },
+        )
+        gate_state["approved_version"] = version
+
+    storage.put_json(storage.GATE_STATE, gate_state)
+    logger.info(
+        "Gate resolved: {} {} vs {} (wins={} losses={} draws={} score={:.3f})",
+        candidate_name, status, approved_name, wins, losses, draws, score,
+    )
+    return gate_state, True
+
+
+def _select_pair(
+    state: dict,
+    *,
+    approved_name: str | None = None,
+    gate_candidate: str | None = None,
+) -> tuple[str, str] | None:
     """Placement → uncertainty exploration → predict_draw matchmaking.
 
     Priority order:
+    0. Gating: if an ungated candidate exists, play it directly against the
+       approved self-play model until the gate resolves.
     1. Placement: brand-new models play 1 game vs each baseline first.
     2. Uncertainty: if any player has σ > 4, pair them with a well-measured
        opponent (lowest σ) to shrink the wide CI fastest. Without this,
@@ -363,6 +500,15 @@ def _select_pair(state: dict) -> tuple[str, str] | None:
     players = state["active_players"]
     if len(players) < 2:
         return None
+
+    if (
+        approved_name is not None
+        and gate_candidate is not None
+        and approved_name in players
+        and gate_candidate in players
+        and _pair_game_count(state, approved_name, gate_candidate) < GATE_REQUIRED_GAMES
+    ):
+        return (approved_name, gate_candidate)
 
     pair = _placement_pair(state)
     if pair is not None:
@@ -468,11 +614,20 @@ def run_elo_service(
     )
 
     records.refresh()
-    active, version_keys = _desired_active(max_versions)
+    (
+        active,
+        version_keys,
+        approved_name,
+        gate_candidate,
+        gate_state,
+    ) = _desired_active(max_versions)
     state = _build_state(records.all_records(), active)
     logger.info(
-        "Initial state: {} games, {} active players",
-        state["total_games"], len(state["active_players"]),
+        "Initial state: {} games, {} active players, approved={}, candidate={}",
+        state["total_games"],
+        len(state["active_players"]),
+        approved_name,
+        gate_candidate,
     )
 
     last_peer_sync_ts = time.monotonic()
@@ -494,12 +649,54 @@ def run_elo_service(
         except Exception as e:
             logger.warning("Peer sync failed: {}", e)
 
+    def _refresh_gate_view_if_ready() -> None:
+        """Refresh peer results before resolving a completed gate."""
+        nonlocal state, approved_name, gate_candidate, gate_state, active, version_keys
+        if approved_name is None or gate_candidate is None:
+            return
+        if _pair_game_count(state, approved_name, gate_candidate) < GATE_REQUIRED_GAMES:
+            return
+        _sync_peer_records()
+        (
+            active,
+            version_keys,
+            approved_name,
+            gate_candidate,
+            gate_state,
+        ) = _desired_active(max_versions)
+        state = _build_state(records.all_records(), active)
+
     while True:
         # Active player set is cheap to recompute (one S3 LIST) and we want
         # to pick up newly-promoted models without waiting for the peer sync.
-        active, version_keys = _desired_active(max_versions)
+        (
+            active,
+            version_keys,
+            approved_name,
+            gate_candidate,
+            gate_state,
+        ) = _desired_active(max_versions)
         if active != state["active_players"]:
             _finalize_active(state, active)
+
+        _refresh_gate_view_if_ready()
+        gate_state, gate_changed = _maybe_resolve_gate(
+            state,
+            version_keys,
+            approved_name,
+            gate_candidate,
+            gate_state,
+        )
+        if gate_changed:
+            (
+                active,
+                version_keys,
+                approved_name,
+                gate_candidate,
+                gate_state,
+            ) = _desired_active(max_versions)
+            state = _build_state(records.all_records(), active)
+            continue
 
         if time.monotonic() - last_peer_sync_ts >= PEER_SYNC_INTERVAL_SECONDS:
             _sync_peer_records()
@@ -512,7 +709,11 @@ def run_elo_service(
             time.sleep(60)
             continue
 
-        pair = _select_pair(state)
+        pair = _select_pair(
+            state,
+            approved_name=approved_name,
+            gate_candidate=gate_candidate,
+        )
         if pair is None:
             logger.info("No dispatchable pairs, waiting...")
             time.sleep(60)
@@ -566,6 +767,24 @@ def run_elo_service(
         # Incremental fold — avoids an O(N) OpenSkill replay after every game.
         # The periodic sync above rebuilds from scratch to absorb peer writes.
         _apply_record(state, record)
+
+        _refresh_gate_view_if_ready()
+        gate_state, gate_changed = _maybe_resolve_gate(
+            state,
+            version_keys,
+            approved_name,
+            gate_candidate,
+            gate_state,
+        )
+        if gate_changed:
+            (
+                active,
+                version_keys,
+                approved_name,
+                gate_candidate,
+                gate_state,
+            ) = _desired_active(max_versions)
+            state = _build_state(records.all_records(), active)
 
         if state["total_games"] % 10 == 0:
             logger.info(

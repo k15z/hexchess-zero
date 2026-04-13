@@ -2,7 +2,14 @@
 
 import json
 
-from training.elo_service import _build_state
+from training import storage
+from training.elo_service import (
+    BASELINE_NAMES,
+    _build_state,
+    _desired_active,
+    _maybe_resolve_gate,
+    _select_pair,
+)
 
 
 def test_build_state_deterministic_under_record_permutation():
@@ -52,3 +59,112 @@ def test_build_state_deterministic_under_record_permutation():
         b, sort_keys=True, separators=(",", ":")
     )
 
+
+def test_desired_active_uses_approved_and_next_candidate(monkeypatch):
+    monkeypatch.setattr(
+        "training.elo_service._discover_versions",
+        lambda: [
+            (1, "models/versions/1.onnx"),
+            (2, "models/versions/2.onnx"),
+            (3, "models/versions/3.onnx"),
+            (4, "models/versions/4.onnx"),
+            (5, "models/versions/5.onnx"),
+        ],
+    )
+    monkeypatch.setattr("training.elo_service._read_approved_version", lambda: 3)
+    monkeypatch.setattr(
+        "training.elo_service._load_gate_state",
+        lambda approved_version: {
+            "approved_version": approved_version,
+            "decisions": {"v4": {"status": "rejected"}},
+        },
+    )
+
+    active, version_keys, approved_name, pending, gate_state = _desired_active(5)
+
+    assert active == [*BASELINE_NAMES, "v3", "v5"]
+    assert version_keys["v5"] == "models/versions/5.onnx"
+    assert approved_name == "v3"
+    assert pending == "v5"
+    assert gate_state["approved_version"] == 3
+
+
+def test_select_pair_prefers_gate_matchup():
+    state = {
+        "active_players": [*BASELINE_NAMES, "v3", "v4"],
+        "pair_results": {},
+        "ratings": {},
+    }
+
+    assert _select_pair(state, approved_name="v3", gate_candidate="v4") == ("v3", "v4")
+
+
+def test_maybe_resolve_gate_approves_candidate(monkeypatch):
+    copied: list[tuple[str, str]] = []
+    writes: list[tuple[str, dict]] = []
+
+    monkeypatch.setattr(storage, "copy", lambda src, dst: copied.append((src, dst)))
+    monkeypatch.setattr(storage, "put_json", lambda key, obj: writes.append((key, obj)))
+
+    state = {
+        "pair_results": {
+            "v3:v4": {
+                "a_wins": 30,
+                "b_wins": 60,
+                "draws": 10,
+                "a_as_white": 50,
+                "b_as_white": 50,
+            }
+        }
+    }
+    gate_state = {"approved_version": 3, "decisions": {}}
+
+    gate_state, changed = _maybe_resolve_gate(
+        state,
+        {"v4": "models/versions/4.onnx"},
+        "v3",
+        "v4",
+        gate_state,
+    )
+
+    assert changed
+    assert gate_state["approved_version"] == 4
+    assert gate_state["decisions"]["v4"]["status"] == "approved"
+    assert copied == [("models/versions/4.onnx", storage.APPROVED_ONNX)]
+    assert writes[0][0] == storage.APPROVED_META
+    assert writes[1][0] == storage.GATE_STATE
+
+
+def test_maybe_resolve_gate_rejects_candidate(monkeypatch):
+    copied: list[tuple[str, str]] = []
+    writes: list[tuple[str, dict]] = []
+
+    monkeypatch.setattr(storage, "copy", lambda src, dst: copied.append((src, dst)))
+    monkeypatch.setattr(storage, "put_json", lambda key, obj: writes.append((key, obj)))
+
+    state = {
+        "pair_results": {
+            "v3:v4": {
+                "a_wins": 55,
+                "b_wins": 35,
+                "draws": 10,
+                "a_as_white": 50,
+                "b_as_white": 50,
+            }
+        }
+    }
+    gate_state = {"approved_version": 3, "decisions": {}}
+
+    gate_state, changed = _maybe_resolve_gate(
+        state,
+        {"v4": "models/versions/4.onnx"},
+        "v3",
+        "v4",
+        gate_state,
+    )
+
+    assert changed
+    assert gate_state["approved_version"] == 3
+    assert gate_state["decisions"]["v4"]["status"] == "rejected"
+    assert copied == []
+    assert writes == [(storage.GATE_STATE, gate_state)]
