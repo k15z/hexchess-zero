@@ -5,6 +5,8 @@ metadata:
   namespace: hexchess
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: hexchess-trainer

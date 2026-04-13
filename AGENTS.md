@@ -119,6 +119,25 @@ Position count is encoded in each `.npz` filename (`_n{count}`) so the trainer c
 - When merging a PR, use GitHub's `squash` or `rebase` merge modes. Do not create merge commits unless the user explicitly asks for that history shape.
 - When asked to assess training health, consult `ai/training-health.md` for the data collection and interpretation checklist.
 
+## Deployment
+
+Two k8s clusters: `kevz-infra` (public Hetzner k3s) and `kevz-gpu` (private, behind Tailscale). Manifests live in `k8s/`.
+
+**Image tags:** The Docker workflow publishes both floating tags (`cpu`, `cuda`) and SHA-pinned tags using 7-char short SHAs (`cpu-<sha7>`, `cuda-<sha7>`). The manifests in `k8s/` use the floating tags as defaults, but deploys should pin to a specific SHA tag at apply time for reproducibility:
+```bash
+# Find available SHA tags
+gh api /users/k15z/packages/container/hexchess-zero%2Ftraining/versions \
+  --jq '.[].metadata.container.tags[]' | grep -E '^(cpu|cuda)-'
+
+# Deploy with a specific SHA tag
+TAG=47e2984
+kubectl set image deployment/trainer trainer=ghcr.io/k15z/hexchess-zero/training:cuda-$TAG -n hexchess
+kubectl set image deployment/worker worker=ghcr.io/k15z/hexchess-zero/training:cpu-$TAG -n hexchess
+kubectl set image deployment/dashboard dashboard=ghcr.io/k15z/hexchess-zero/training:cpu-$TAG \
+  tunnel=ghcr.io/k15z/hexchess-zero/training:cpu-$TAG -n hexchess
+kubectl set image deployment/elo-service elo=ghcr.io/k15z/hexchess-zero/training:cpu-$TAG -n hexchess
+```
+
 ## Key Conventions
 
 - Coordinates are always axial `(q, r)` - never use doubled or offset coordinates

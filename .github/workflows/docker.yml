@@ -80,15 +80,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        include:
-          - variant: cpu
-            tags: |
-              ghcr.io/k15z/hexchess-zero/training:cpu
-              ghcr.io/k15z/hexchess-zero/training:cpu-${{ github.event.workflow_run.head_sha }}
-          - variant: cuda
-            tags: |
-              ghcr.io/k15z/hexchess-zero/training:cuda
-              ghcr.io/k15z/hexchess-zero/training:cuda-${{ github.event.workflow_run.head_sha }}
+        variant: [cpu, cuda]
     permissions:
       contents: read
       packages: write
@@ -109,6 +101,8 @@ jobs:
       - name: Create manifest and push
         working-directory: /tmp/digests/${{ matrix.variant }}
         run: |
-          TAGS=$(echo '${{ matrix.tags }}' | xargs -n1 printf ' -t %s')
+          SHORT_SHA="${{ github.event.workflow_run.head_sha }}"
+          SHORT_SHA="${SHORT_SHA:0:7}"
+          TAGS="-t ${{ env.IMAGE }}:${{ matrix.variant }} -t ${{ env.IMAGE }}:${{ matrix.variant }}-${SHORT_SHA}"
           DIGESTS=$(printf '${{ env.IMAGE }}@sha256:%s ' *)
           docker buildx imagetools create $TAGS $DIGESTS
