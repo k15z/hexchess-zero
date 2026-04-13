@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: dashboard
-          image: ghcr.io/k15z/hexchess-zero/training:latest
+          image: ghcr.io/k15z/hexchess-zero/training:cpu
           args: ["dashboard", "--port", "8080"]
           envFrom:
             - secretRef:
@@ -30,7 +30,7 @@ spec:
               cpu: "1"
               memory: "1Gi"
         - name: tunnel
-          image: ghcr.io/k15z/hexchess-zero/training:latest
+          image: ghcr.io/k15z/hexchess-zero/training:cpu
           command: ["python3", "-u", "-c"]
           args:
             - |
