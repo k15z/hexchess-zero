@@ -6,8 +6,6 @@
 <title>hexchess training</title>
 <link rel="icon" type="image/png" href="/icon.png">
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
-
   :root {
     --bg: #ffffff;
     --bg-subtle: #fafafa;
@@ -17,10 +15,9 @@
     --border-strong: #d0d0d0;
     --text: #111111;
     --text-secondary: #555555;
-    --text-muted: #999999;
+    --text-muted: #666666;
     --text-invert: #ffffff;
-    --color: 'IBM Plex Mono', 'SF Mono', 'Consolas', monospace;
-    --sans: 'Instrument Sans', -apple-system, 'Segoe UI', sans-serif;
+    --mono: ui-monospace, 'SF Mono', 'Cascadia Mono', 'Consolas', monospace;
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -68,7 +65,6 @@
   }
 
   .logo {
-    font-family: var(--sans);
     font-size: 20px;
     font-weight: 700;
     letter-spacing: -0.5px;
@@ -126,14 +122,12 @@
     margin-bottom: 8px;
     color: var(--text-muted);
     font-size: 10px;
-    font-family: var(--sans);
     font-weight: 600;
     letter-spacing: 0.1em;
     text-transform: uppercase;
   }
 
   .snapshot-value {
-    font-family: var(--sans);
     font-size: 26px;
     font-weight: 700;
     letter-spacing: -0.04em;
@@ -194,7 +188,6 @@
   .panel-header > * { pointer-events: none; }
 
   .panel-title {
-    font-family: var(--sans);
     font-size: 12px;
     font-weight: 600;
     text-transform: uppercase;
@@ -281,7 +274,7 @@
     background: transparent;
   }
 
-  tr.provisional td { opacity: 0.45; }
+  tr.provisional td { opacity: 0.55; }
   tr.provisional td:last-child { opacity: 1; }
 
   /* --- Rating bars --- */
