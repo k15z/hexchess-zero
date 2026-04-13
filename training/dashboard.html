@@ -9,20 +9,25 @@
   @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=DM+Sans:wght@400;500;600;700&display=swap');
 
   :root {
-    --bg-deep: #09090b;
-    --bg-base: #0e0e11;
-    --bg-raised: #141417;
-    --bg-surface: #1a1a1f;
-    --border-dim: #1e1e24;
-    --border-mid: #2a2a33;
-    --text-primary: #e4e4e7;
-    --text-secondary: #a1a1aa;
-    --text-dim: #52525b;
-    --accent: #e4e4e7;
-    --accent-dim: #71717a;
-    --green: #22c55e;
-    --amber: #eab308;
-    --red: #ef4444;
+    --bg-deep: #07080b;
+    --bg-base: #0d1015;
+    --bg-raised: #141923;
+    --bg-surface: #191f2a;
+    --bg-overlay: rgba(12, 16, 23, 0.82);
+    --border-dim: rgba(160, 175, 198, 0.08);
+    --border-mid: rgba(184, 196, 214, 0.16);
+    --border-strong: rgba(225, 182, 90, 0.28);
+    --text-primary: #edf1f7;
+    --text-secondary: #b2bdcc;
+    --text-dim: #6d7889;
+    --accent: #e1b65a;
+    --accent-soft: rgba(225, 182, 90, 0.14);
+    --accent-dim: #8e7850;
+    --green: #42c78b;
+    --amber: #f0be64;
+    --red: #f07178;
+    --teal: #5cc7c6;
+    --shadow-soft: 0 18px 40px rgba(0, 0, 0, 0.22);
     --mono: 'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
     --sans: 'DM Sans', -apple-system, sans-serif;
   }
@@ -36,13 +41,17 @@
     font-size: 12px;
     line-height: 1.5;
     min-height: 100vh;
+    background-image:
+      radial-gradient(circle at top left, rgba(92, 199, 198, 0.12), transparent 32%),
+      radial-gradient(circle at top right, rgba(225, 182, 90, 0.14), transparent 28%),
+      linear-gradient(180deg, #0b0d12 0%, #07080b 55%, #06070a 100%);
   }
 
   .container {
     position: relative;
-    max-width: 960px;
+    max-width: 1280px;
     margin: 0 auto;
-    padding: 0 16px 48px;
+    padding: 0 20px 56px;
   }
 
   /* --- Header --- */
@@ -50,113 +59,234 @@
     position: sticky;
     top: 0;
     z-index: 100;
-    background: var(--bg-deep);
-    border-bottom: 1px solid var(--border-mid);
-    padding: 12px 0;
-    margin-bottom: 20px;
+    background: linear-gradient(180deg, rgba(7, 8, 11, 0.96), rgba(7, 8, 11, 0.8));
+    backdrop-filter: blur(16px);
+    border-bottom: 1px solid var(--border-dim);
+    padding: 18px 0 16px;
+    margin-bottom: 18px;
   }
 
   .header-row {
     display: flex;
     justify-content: space-between;
-    align-items: baseline;
-    gap: 12px;
+    align-items: flex-start;
+    gap: 16px;
   }
 
   .header-left {
     display: flex;
-    align-items: baseline;
-    gap: 12px;
+    align-items: flex-start;
+    gap: 16px;
+  }
+
+  .brand-lockup {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
   }
 
   .logo {
     font-family: var(--sans);
-    font-size: 15px;
+    font-size: 30px;
     font-weight: 700;
-    letter-spacing: -0.5px;
+    line-height: 0.95;
+    letter-spacing: -1.4px;
     color: var(--text-primary);
   }
 
-  .logo span { color: var(--text-dim); font-weight: 400; }
+  .logo span { color: var(--accent); font-weight: 500; }
+
+  .header-subtitle {
+    max-width: 420px;
+    color: var(--text-secondary);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
 
   .model-badge {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    background: var(--bg-surface);
-    border: 1px solid var(--border-mid);
-    padding: 2px 8px;
-    border-radius: 3px;
-    font-size: 12px;
+    gap: 6px;
+    background: linear-gradient(180deg, rgba(225, 182, 90, 0.18), rgba(225, 182, 90, 0.08));
+    border: 1px solid var(--border-strong);
+    padding: 7px 12px;
+    border-radius: 999px;
+    font-size: 11px;
     font-weight: 600;
     color: var(--text-primary);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
   }
 
   .header-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
     font-size: 11px;
-    color: var(--text-dim);
+    color: var(--text-secondary);
     text-align: right;
+  }
+
+  .header-meta strong {
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+
+  .overview {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+    margin-bottom: 22px;
+  }
+
+  .snapshot {
+    position: relative;
+    min-height: 88px;
+    padding: 14px 16px;
+    border: 1px solid var(--border-dim);
+    border-radius: 18px;
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0)),
+      var(--bg-overlay);
+    box-shadow: var(--shadow-soft);
+    overflow: hidden;
+  }
+
+  .snapshot::before {
+    content: '';
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 2px;
+    background: linear-gradient(180deg, rgba(92, 199, 198, 0.15), rgba(225, 182, 90, 0.9));
+  }
+
+  .snapshot-label {
+    display: block;
+    margin-bottom: 14px;
+    color: var(--text-dim);
+    font-size: 10px;
+    font-family: var(--sans);
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+  }
+
+  .snapshot-value {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-family: var(--sans);
+    font-size: 28px;
+    line-height: 0.95;
+    letter-spacing: -0.06em;
+    font-weight: 700;
+    color: var(--text-primary);
+  }
+
+  .snapshot-meta {
+    margin-top: 8px;
+    color: var(--text-secondary);
+    font-size: 11px;
+  }
+
+  .snapshot-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-secondary);
+    font-size: 11px;
+  }
+
+  .snapshot-status .dot {
+    margin-right: 0;
   }
 
   /* --- Section panels --- */
   .panel {
-    background: var(--bg-base);
+    position: relative;
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.015), rgba(255, 255, 255, 0)),
+      rgba(13, 16, 21, 0.88);
     border: 1px solid var(--border-dim);
-    border-radius: 4px;
-    margin-bottom: 12px;
+    border-radius: 20px;
+    margin-bottom: 14px;
     overflow: hidden;
+    box-shadow: var(--shadow-soft);
+  }
+
+  .panel::before {
+    content: '';
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 1px;
+    background: linear-gradient(180deg, rgba(92, 199, 198, 0), rgba(225, 182, 90, 0.5), rgba(92, 199, 198, 0));
+    opacity: 0.9;
   }
 
   .panel-header {
+    appearance: none;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 8px 12px;
-    background: var(--bg-raised);
+    width: 100%;
+    padding: 14px 16px 13px;
+    background: linear-gradient(180deg, rgba(25, 31, 42, 0.72), rgba(20, 25, 35, 0.36));
+    border: 0;
     border-bottom: 1px solid var(--border-dim);
     cursor: pointer;
     user-select: none;
-    transition: background 0.15s;
+    transition: background 0.18s ease, transform 0.18s ease, border-color 0.18s ease;
+    text-align: left;
+    color: inherit;
+    font: inherit;
   }
 
-  .panel-header:hover { background: var(--bg-surface); }
+  .panel-header:hover {
+    background: linear-gradient(180deg, rgba(30, 37, 48, 0.86), rgba(22, 29, 40, 0.55));
+  }
+
+  .panel-header:focus-visible {
+    outline: none;
+    box-shadow: inset 0 0 0 1px rgba(225, 182, 90, 0.55);
+  }
+
   .panel-header > * { pointer-events: none; }
 
   .panel-title {
     font-family: var(--sans);
-    font-size: 11px;
-    font-weight: 600;
+    font-size: 12px;
+    font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 1.5px;
+    letter-spacing: 0.16em;
     color: var(--text-secondary);
   }
 
   .panel-badge {
     font-size: 10px;
-    color: var(--text-dim);
-    font-weight: 400;
-    padding: 1px 6px;
-    background: var(--bg-deep);
-    border-radius: 3px;
-    border: 1px solid var(--border-dim);
+    color: var(--accent);
+    font-weight: 600;
+    padding: 3px 8px;
+    background: var(--accent-soft);
+    border-radius: 999px;
+    border: 1px solid rgba(225, 182, 90, 0.18);
   }
 
   .panel-chevron {
-    color: var(--text-dim);
+    color: var(--accent);
     font-size: 10px;
-    transition: transform 0.2s;
+    transition: transform 0.22s ease;
   }
 
   .panel.collapsed .panel-chevron { transform: rotate(-90deg); }
   .panel.collapsed .panel-body { display: none; }
 
-  .panel-body { padding: 10px 12px; }
+  .panel-body { padding: 14px 16px 16px; }
 
   /* --- Two-column grid for bottom panels --- */
   .two-col {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 12px;
+    gap: 14px;
   }
 
   .two-col .panel { margin-bottom: 0; }
@@ -174,11 +304,11 @@
   th {
     text-align: left;
     font-size: 10px;
-    font-weight: 500;
+    font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.8px;
+    letter-spacing: 0.12em;
     color: var(--text-dim);
-    padding: 4px 8px;
+    padding: 6px 8px 8px;
     border-bottom: 1px solid var(--border-dim);
     white-space: nowrap;
   }
@@ -214,19 +344,24 @@
   tr.provisional td:last-child { opacity: 1; }
 
   td {
-    padding: 4px 8px;
+    padding: 7px 8px;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
-    border-bottom: 1px solid rgba(30, 30, 36, 0.5);
+    border-bottom: 1px solid rgba(160, 175, 198, 0.08);
   }
 
   tr:last-child td { border-bottom: none; }
+
+  tbody tr:hover td,
+  table tr:hover td {
+    background: rgba(255, 255, 255, 0.02);
+  }
 
   /* --- Rating bars --- */
   .rating-bar-track {
     flex: 1;
     height: 14px;
-    background: var(--bg-deep);
+    background: rgba(7, 8, 11, 0.75);
     border-radius: 2px;
     position: relative;
     overflow: hidden;
@@ -278,7 +413,7 @@
   }
 
   .h2h-table td.self {
-    background: var(--bg-surface);
+    background: rgba(255, 255, 255, 0.035);
     color: var(--text-dim);
   }
 
@@ -308,11 +443,12 @@
   .kv-row {
     display: flex;
     justify-content: space-between;
-    padding: 2px 0;
+    gap: 16px;
+    padding: 4px 0;
   }
 
   .kv-row .k { color: var(--text-dim); }
-  .kv-row .v { color: var(--text-primary); font-weight: 500; }
+  .kv-row .v { color: var(--text-primary); font-weight: 500; text-align: right; }
 
   /* --- Misc --- */
   .empty { color: var(--text-dim); font-style: italic; padding: 12px 0; }
@@ -330,6 +466,28 @@
   .initial .panel:nth-child(4) { animation-delay: 0.12s; }
   .initial .two-col .panel { animation: fadeUp 0.3s ease both; animation-delay: 0.16s; }
   .initial .two-col .panel:nth-child(2) { animation-delay: 0.20s; }
+
+  @media (max-width: 960px) {
+    .overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .header-row,
+    .header-left {
+      flex-direction: column;
+      align-items: flex-start;
+    }
+    .header-meta { text-align: left; }
+  }
+
+  @media (max-width: 640px) {
+    body { font-size: 11px; }
+    .container { padding: 0 14px 42px; }
+    .header { padding-top: 16px; }
+    .logo { font-size: 24px; }
+    .overview { grid-template-columns: 1fr; }
+    .snapshot { min-height: 76px; }
+    .snapshot-value { font-size: 24px; }
+    .panel-header,
+    .panel-body { padding-left: 14px; padding-right: 14px; }
+  }
 </style>
 </head>
 <body>
@@ -338,7 +496,10 @@
 <div class="header">
   <div class="header-row">
     <div class="header-left">
-      <div class="logo">hexchess <span>// training</span></div>
+      <div class="brand-lockup">
+        <div class="logo">hexchess <span>training</span></div>
+        <div class="header-subtitle">Live model promotion, worker health, replay growth, and evaluation drift in one operating surface.</div>
+      </div>
       <span class="model-badge" id="model-badge">&mdash;</span>
     </div>
     <div class="header-meta">
@@ -348,6 +509,7 @@
   </div>
 </div>
 
+<div class="overview" id="overview"></div>
 <div id="panels"></div>
 
 </div>
@@ -391,8 +553,11 @@ function shorten(s) { return s.length > 7 ? s.slice(0, 6) + '\u2026' : s; }
 
 // --- Panel collapse state ---
 const panelState = {};
+const panelDefaults = {};
 function togglePanel(id) {
-  panelState[id] = !panelState[id];
+  const defaultOpen = panelDefaults[id] !== undefined ? panelDefaults[id] : true;
+  const currentCollapsed = panelState[id] !== undefined ? panelState[id] : !defaultOpen;
+  panelState[id] = !currentCollapsed;
   render(lastData);
 }
 
@@ -401,15 +566,16 @@ let firstRender = true;
 
 // --- Render helpers ---
 function panelHtml(id, title, badge, body, defaultOpen = true) {
+  panelDefaults[id] = defaultOpen;
   const collapsed = panelState[id] !== undefined ? panelState[id] : !defaultOpen;
   return `<div class="panel ${collapsed ? 'collapsed' : ''}" id="panel-${id}">
-    <div class="panel-header" onclick="togglePanel('${id}')">
+    <button type="button" class="panel-header" onclick="togglePanel('${id}')" aria-expanded="${collapsed ? 'false' : 'true'}">
       <div style="display:flex;align-items:center;gap:8px">
         <span class="panel-title">${title}</span>
         ${badge ? `<span class="panel-badge">${badge}</span>` : ''}
       </div>
       <span class="panel-chevron">&#9660;</span>
-    </div>
+    </button>
     <div class="panel-body">${body}</div>
   </div>`;
 }
@@ -481,8 +647,58 @@ function renderRatingTable(players, ratings, playerStats) {
 function renderHeader(data) {
   const m = data.model;
   document.getElementById('model-badge').textContent = m.version ? `v${m.version}` : 'no model';
-  document.getElementById('promoted-at').textContent = m.promoted_at ? `promoted ${ago(m.promoted_at)}` : 'bootstrap';
-  document.getElementById('last-refresh').textContent = `refreshed ${ago(data.timestamp)}`;
+  document.getElementById('promoted-at').innerHTML = m.promoted_at
+    ? `promoted <strong>${ago(m.promoted_at)}</strong>`
+    : '<strong>bootstrap</strong> phase';
+  document.getElementById('last-refresh').innerHTML = `refreshed <strong>${ago(data.timestamp)}</strong>`;
+}
+
+function buildOverview(data) {
+  const e = data.elo || {};
+  const d = data.data || {};
+  const sp = d.selfplay || {};
+  const im = d.imitation || {};
+  const workers = Object.values(data.workers || {});
+  const activeWorkers = workers.filter(w => freshness(w.timestamp) === 'fresh').length;
+  const staleWorkers = workers.filter(w => freshness(w.timestamp) === 'stale').length;
+  const totalPositions = (sp.total_positions || 0) + (im.total_positions || 0);
+  const cycles = ((data.trainer_metrics || {}).cycles || []);
+  const latestCycle = cycles.length ? cycles[cycles.length - 1] : null;
+
+  const items = [
+    {
+      label: 'Promotion',
+      value: data.model && data.model.version ? `v${data.model.version}` : 'none',
+      meta: data.model && data.model.positions_at_promote != null
+        ? `${fmt(data.model.positions_at_promote)} positions at promote`
+        : 'waiting for first promotion',
+    },
+    {
+      label: 'Replay',
+      value: fmt(totalPositions),
+      meta: `${fmt(sp.total_positions || 0)} self-play · ${fmt(im.total_positions || 0)} imitation`,
+    },
+    {
+      label: 'Workers',
+      value: fmt(workers.length),
+      meta: `<span class="snapshot-status"><span class="dot fresh"></span>${activeWorkers} fresh</span>${staleWorkers ? ` · <span class="snapshot-status"><span class="dot stale"></span>${staleWorkers} stale</span>` : ''}`,
+    },
+    {
+      label: 'Evaluation',
+      value: fmt(e.total_games || 0),
+      meta: latestCycle
+        ? `cycle ${latestCycle.cycle} · ${fmt(latestCycle.total_steps)} total steps`
+        : `${fmt((e.active_players || []).length)} tracked players`,
+    },
+  ];
+
+  document.getElementById('overview').innerHTML = items.map(item => `
+    <section class="snapshot">
+      <span class="snapshot-label">${item.label}</span>
+      <div class="snapshot-value">${item.value}</div>
+      <div class="snapshot-meta">${item.meta}</div>
+    </section>
+  `).join('');
 }
 
 function buildRatings(data) {
@@ -525,7 +741,7 @@ function buildData(data) {
     html += `<div class="kv-row"><span class="k">snapshots</span><span class="v">${d.models.length} versions</span></div>`;
   }
 
-  return panelHtml('data', 'Training Data', null, html, false);
+  return panelHtml('data', 'Training Data', null, html);
 }
 
 function buildH2H(data) {
@@ -534,7 +750,7 @@ function buildH2H(data) {
   const pairs = e.pair_results || {};
 
   if (active.length < 2) {
-    return panelHtml('h2h', 'Head-to-Head', null, '<div class="empty">Not enough players</div>', false);
+    return panelHtml('h2h', 'Head-to-Head', null, '<div class="empty">Not enough players</div>');
   }
 
   const ratings = e.ratings || {};
@@ -583,7 +799,7 @@ function buildH2H(data) {
   }
   html += '</table></div>';
 
-  return panelHtml('h2h', 'Head-to-Head', `${Object.keys(pairs).length} pairs`, html, false);
+  return panelHtml('h2h', 'Head-to-Head', `${Object.keys(pairs).length} pairs`, html);
 }
 
 function buildGames(data) {
@@ -611,13 +827,13 @@ function buildGames(data) {
   }
   html += '</table>';
 
-  return panelHtml('games', 'Recent Games', `${games.length}`, html, false);
+  return panelHtml('games', 'Recent Games', `${games.length}`, html);
 }
 
 function buildWorkers(data) {
   const w = data.workers || {};
   const names = Object.keys(w).sort();
-  if (!names.length) return panelHtml('workers', 'Workers', null, '<div class="empty">No worker heartbeats</div>', false);
+  if (!names.length) return panelHtml('workers', 'Workers', null, '<div class="empty">No worker heartbeats</div>');
 
   let html = `<table><tr><th></th><th>worker</th><th>model</th><th class="r">games</th><th class="r">pos</th><th class="r">seen</th></tr>`;
   for (const name of names) {
@@ -633,7 +849,7 @@ function buildWorkers(data) {
     </tr>`;
   }
   html += '</table>';
-  return panelHtml('workers', 'Workers', `${names.length}`, html, false);
+  return panelHtml('workers', 'Workers', `${names.length}`, html);
 }
 
 function buildRetired(data) {
@@ -646,7 +862,7 @@ function buildRetired(data) {
 
   const body = renderRatingTable(retired, ratings, ps);
   if (!body) return '';
-  return panelHtml('retired', 'Retired', `${retired.length}`, body, false);
+  return panelHtml('retired', 'Retired', `${retired.length}`, body);
 }
 
 // --- Plan §7.6 pages 1-7 ---
@@ -729,7 +945,7 @@ function buildRunHealth(data) {
   }
 
   if (!html) html = '<div class="empty">awaiting first games</div>';
-  return panelHtml('run-health', 'Page 1 — Run Health', `${total}`, html, false);
+  return panelHtml('run-health', 'Page 1 / Run Health', `${total}`, html);
 }
 
 function buildDataPage(data) {
@@ -768,7 +984,7 @@ function buildDataPage(data) {
     html += _stackedBar(parts, total);
   }
 
-  return panelHtml('data-page', 'Page 2 — Data', `${fmt(nTotal)}`, html, false);
+  return panelHtml('data-page', 'Page 2 / Data', `${fmt(nTotal)}`, html);
 }
 
 function buildModelBehavior(data) {
@@ -776,13 +992,13 @@ function buildModelBehavior(data) {
   const cycles = (tm.cycles || []).slice(-100);
 
   if (!cycles.length) {
-    return panelHtml('model-behavior', 'Page 3 — Model Behavior', 'waiting', `
+    return panelHtml('model-behavior', 'Page 3 / Model Behavior', 'waiting', `
       <div class="empty">awaiting first training cycle</div>
       <ul style="margin:8px 0 0 18px;font-size:12px;opacity:0.5">
         <li>WDL calibration — not yet instrumented (needs per-step value predictions logged)</li>
         <li>NN argmax vs MCTS argmax agreement — needs trainer instrumentation</li>
         <li>KL(old \u2192 new) per promotion — needs consecutive ONNX comparison</li>
-      </ul>`, false);
+      </ul>`);
   }
 
   const latest = cycles[cycles.length - 1];
@@ -819,7 +1035,7 @@ function buildModelBehavior(data) {
     <li>KL(old \u2192 new) per promotion — not yet instrumented</li>
   </ul>`;
 
-  return panelHtml('model-behavior', 'Page 3 — Model Behavior', `cycle ${latest.cycle}`, html, false);
+  return panelHtml('model-behavior', 'Page 3 / Model Behavior', `cycle ${latest.cycle}`, html);
 }
 
 function buildSearch(data) {
@@ -851,7 +1067,7 @@ function buildSearch(data) {
   </ul>`;
 
   const badge = withStats.length ? `${withStats.length} worker${withStats.length > 1 ? 's' : ''}` : 'waiting';
-  return panelHtml('search', 'Page 4 — Search', badge, html, false);
+  return panelHtml('search', 'Page 4 / Search', badge, html);
 }
 
 function buildBenchmarks(data) {
@@ -859,11 +1075,11 @@ function buildBenchmarks(data) {
   const br = data.benchmark_results || {};
 
   if (!bvs.length) {
-    return panelHtml('benchmarks', 'Page 5 — Benchmarks', 'waiting', `
+    return panelHtml('benchmarks', 'Page 5 / Benchmarks', 'waiting', `
       <div class="empty">awaiting first benchmark run</div>
       <div style="font-size:11px;opacity:0.6;margin-top:6px">
         Run after each promotion: <code>uv run python -m training.benchmark_runner</code>
-      </div>`, false);
+      </div>`);
   }
 
   // Precompute version keys once to avoid repeated string operations in loops.
@@ -882,7 +1098,7 @@ function buildBenchmarks(data) {
   }
 
   if (!posOrder.length) {
-    return panelHtml('benchmarks', 'Page 5 — Benchmarks', `${bvs.length}v`, '<div class="empty">no position results found</div>', false);
+    return panelHtml('benchmarks', 'Page 5 / Benchmarks', `${bvs.length}v`, '<div class="empty">no position results found</div>');
   }
 
   // Build lookup: versionKey -> posId -> result
@@ -913,7 +1129,7 @@ function buildBenchmarks(data) {
   }
   html += '</table></div>';
 
-  return panelHtml('benchmarks', 'Page 5 — Benchmarks', `${bvs.length}v \u00d7 ${posOrder.length}pos`, html, false);
+  return panelHtml('benchmarks', 'Page 5 / Benchmarks', `${bvs.length}v \u00d7 ${posOrder.length}pos`, html);
 }
 
 function buildDiffViewer(data) {
@@ -921,7 +1137,7 @@ function buildDiffViewer(data) {
   const br = data.benchmark_results || {};
 
   if (bvs.length < 2) {
-    return panelHtml('diff-viewer', 'Page 6 — Diff Viewer', 'waiting', '<div class="empty">awaiting \u22652 benchmark runs</div>', false);
+    return panelHtml('diff-viewer', 'Page 6 / Diff Viewer', 'waiting', '<div class="empty">awaiting \u22652 benchmark runs</div>');
   }
 
   const prev = bvs[bvs.length - 2];
@@ -932,7 +1148,7 @@ function buildDiffViewer(data) {
   const currRes = (br[ck] || {}).results || [];
 
   if (!prevRes.length || !currRes.length) {
-    return panelHtml('diff-viewer', 'Page 6 — Diff Viewer', `${pk} \u2192 ${ck}`, '<div class="empty">results not yet loaded</div>', false);
+    return panelHtml('diff-viewer', 'Page 6 / Diff Viewer', `${pk} \u2192 ${ck}`, '<div class="empty">results not yet loaded</div>');
   }
 
   const pm = Object.fromEntries(prevRes.map(r => [r.id, r]));
@@ -967,7 +1183,7 @@ function buildDiffViewer(data) {
     html += '</table>';
   }
 
-  return panelHtml('diff-viewer', 'Page 6 — Diff Viewer', `${pk} \u2192 ${ck}`, html, false);
+  return panelHtml('diff-viewer', 'Page 6 / Diff Viewer', `${pk} \u2192 ${ck}`, html);
 }
 
 function buildReplayAudit(data) {
@@ -980,7 +1196,7 @@ function buildReplayAudit(data) {
   });
 
   if (!entries.length) {
-    return panelHtml('replay-audit', 'Page 7 — Replay Audit', 'waiting', '<div class="empty">awaiting self-play data</div>', false);
+    return panelHtml('replay-audit', 'Page 7 / Replay Audit', 'waiting', '<div class="empty">awaiting self-play data</div>');
   }
 
   // Replicate client-side window formula from buildDataPage.
@@ -1015,13 +1231,14 @@ function buildReplayAudit(data) {
   }
   html += '</table>';
 
-  return panelHtml('replay-audit', 'Page 7 — Replay Audit', `${entries.length}v`, html, false);
+  return panelHtml('replay-audit', 'Page 7 / Replay Audit', `${entries.length}v`, html);
 }
 
 function render(data) {
   if (!data) return;
   lastData = data;
   renderHeader(data);
+  buildOverview(data);
 
   const panels = document.getElementById('panels');
   if (firstRender) panels.classList.add('initial');
