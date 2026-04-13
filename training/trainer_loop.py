@@ -37,12 +37,6 @@ from .health_checks import (
     run_all_invariants,
     run_runtime_checks,
 )
-from .gating import (
-    GateState,
-    decide_promotion,
-    load_gate_state,
-    save_gate_state,
-)
 from .losses import (
     LossBreakdown,
     LossWeights,
@@ -580,93 +574,6 @@ def _autocast_dtype(device: torch.device) -> torch.dtype | None:
     return None
 
 
-# ---------------------------------------------------------------------------
-# Gauntlet runner for first-5 gating (chunk 6)
-# ---------------------------------------------------------------------------
-
-def _default_gauntlet(candidate_onnx: Path, current_onnx: Path,
-                      *, simulations: int, n_games: int) -> float:
-    """Play ``n_games`` between candidate and current ONNX models.
-
-    Returns candidate's score fraction in [0, 1]. Lazy-imports from
-    :mod:`training.elo` so unit tests can run without the hexchess
-    binding installed.
-    """
-    from .elo import MctsPlayer, play_game
-
-    cand = MctsPlayer(name="candidate", simulations=simulations,
-                      model_path=str(candidate_onnx))
-    cur = MctsPlayer(name="current", simulations=simulations,
-                     model_path=str(current_onnx))
-    wins = 0.0
-    for i in range(n_games):
-        if i % 2 == 0:
-            result = play_game(cand, cur)
-            outcome = result.get("outcome")
-            if outcome == "white":
-                wins += 1.0
-            elif outcome == "draw":
-                wins += 0.5
-        else:
-            result = play_game(cur, cand)
-            outcome = result.get("outcome")
-            if outcome == "black":
-                wins += 1.0
-            elif outcome == "draw":
-                wins += 0.5
-    return wins / n_games
-
-
-def _try_gate_promotion(
-    cfg: AsyncConfig,
-    averaged_sd: dict[str, torch.Tensor],
-    candidate_version: int,
-    current_version: int,
-    play_gauntlet=None,
-) -> tuple[bool, GateState, float, str]:
-    """Run the gate against a candidate SWA state_dict.
-
-    Writes the candidate ONNX to a scratch path before invoking the
-    gauntlet. Returns (promote, new_state, score, reason).
-    """
-    state = load_gate_state()
-    if not state.gate_enabled:
-        decision = decide_promotion(
-            state, candidate=None, current=None,
-            promotion_horizon=cfg.gating_enabled_first_n_versions,
-            escape_failures=cfg.gating_max_failures,
-            pass_threshold=cfg.gating_win_threshold,
-        )
-        return decision.promote, decision.state, decision.score, decision.reason
-
-    # Materialize candidate ONNX to a scratch path so the gauntlet can load it.
-    scratch_pt = cfg.model_cache_dir / "candidate.pt"
-    scratch_onnx = cfg.model_cache_dir / "candidate.onnx"
-    torch.save(averaged_sd, scratch_pt)
-    export_to_onnx(scratch_pt, scratch_onnx, cfg)
-
-    # The current model is already on disk from the previous promotion.
-    current_onnx = cfg.model_cache_dir / "latest.onnx"
-
-    gauntlet = play_gauntlet
-    if gauntlet is None:
-        def gauntlet(_c, _cur):
-            return _default_gauntlet(
-                scratch_onnx, current_onnx,
-                simulations=cfg.num_simulations,
-                n_games=cfg.gating_games,
-            )
-
-    decision = decide_promotion(
-        state, candidate=scratch_onnx, current=current_onnx,
-        play_gauntlet=gauntlet,
-        promotion_horizon=cfg.gating_enabled_first_n_versions,
-        escape_failures=cfg.gating_max_failures,
-        pass_threshold=cfg.gating_win_threshold,
-    )
-    return decision.promote, decision.state, decision.score, decision.reason
-
-
 def _promotion_check_ready(
     *,
     new_positions: int,
@@ -756,28 +663,16 @@ def _maybe_promote(
         del scratch
 
     new_version = current_version + 1
-    promote, gate_state, gate_score, gate_reason = _try_gate_promotion(
-        cfg, averaged_sd, new_version, current_version,
+    _promote_model(
+        cfg, model, new_version,
+        state_dict=averaged_sd,
+        positions_at_promote=n_total,
     )
-    save_gate_state(gate_state)
-
-    if promote:
-        _promote_model(
-            cfg, model, new_version,
-            state_dict=averaged_sd,
-            positions_at_promote=n_total,
-        )
-        logger.info(
-            "Promoted to v{} ({}, score={:.3f}) | total steps: {:,}",
-            new_version, gate_reason, gate_score, total_steps_all_time,
-        )
-        return new_version, n_total, last_promotion_attempt_step, True
-
-    logger.warning(
-        "Promotion gated out ({}, score={:.3f}) — staying on v{}",
-        gate_reason, gate_score, current_version,
+    logger.info(
+        "Promoted to v{} | total steps: {:,}",
+        new_version, total_steps_all_time,
     )
-    return current_version, positions_at_last_promote, last_promotion_attempt_step, False
+    return new_version, n_total, last_promotion_attempt_step, True
 
 
 # ---------------------------------------------------------------------------

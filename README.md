@@ -117,7 +117,7 @@ These only apply to the initial bootstrap phase when no model exists yet:
 
 **Replay window vs summary cadence.** The trainer no longer uses a fixed-size replay buffer. Instead it computes a KataGo-style sublinear window from the cumulative self-play count, so early training emphasizes recency while later training keeps more historical coverage without growing linearly forever.
 
-**Model version turnover.** Promotion is driven by fresh self-play volume, not by the end of an arbitrary trainer interval. Once at least `promote_every_new_positions` new positions have landed since the last promotion, the trainer will try to promote at the next fresh-data poll (`reload_interval` reloads, data-starvation polls, or the end-of-summary check). Early versions can still be gated against the incumbent before `models/latest.meta.json` is advanced.
+**Model version turnover.** Promotion is driven by fresh self-play volume, not by the end of an arbitrary trainer interval. Once at least `promote_every_new_positions` new positions have landed since the last promotion, the trainer will try to promote at the next fresh-data poll (`reload_interval` reloads, data-starvation polls, or the end-of-summary check).
 
 ## S3 Layout
 

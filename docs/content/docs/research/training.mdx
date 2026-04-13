@@ -47,7 +47,7 @@ A single trainer process:
 1. Downloads recent `.npz` files from S3 (KataGo-style sublinear replay window)
 2. Trains continuously, emitting a trainer summary every `summary_interval_steps` steps while mixing recent self-play with a decaying amount of imitation data in early versions
 3. Re-scans S3 every `reload_interval` steps, and whenever it is waiting on fresh data, to pick up new worker output and re-check promotion eligibility
-4. Exports and promotes a new version once enough fresh self-play data has accumulated, with an early-version gate against the incumbent
+4. Exports and promotes a new version once enough fresh self-play data has accumulated
 5. Repeats
 
 `summary_interval_steps` is a reporting cadence, not a hard promotion boundary.
@@ -158,7 +158,7 @@ If the trainer is outpacing data production, it sleeps rather than overfitting o
 | `reload_interval` | 1,000 | S3 refresh interval for fresh data and promotion checks |
 | `promote_every_new_positions` | 300,000 | Minimum fresh self-play positions required between promotions |
 | `imitation_mix_start` / `imitation_mix_end` / `imitation_mix_decay_end_version` | 0.3 / 0.0 / 5 | Early-version imitation mixing schedule |
-| `gating_enabled_first_n_versions` | 5 | Number of early versions that can still be gated vs the incumbent |
+
 
 ## Key dynamics
 
@@ -166,4 +166,4 @@ If the trainer is outpacing data production, it sleeps rather than overfitting o
 
 **Replay window vs summary cadence**: The replay window grows sublinearly with total self-play volume, so early versions train mostly on fresh data while later versions retain more historical diversity without a hard linear-growth cost.
 
-**Model version turnover**: Promotion is driven by `promote_every_new_positions`, not by waiting for a full trainer interval to finish. The trainer checks eligibility at fresh-data polls (`reload_interval` reloads, data-wait polls, and the end-of-summary check), and early versions may still be gated against the incumbent. Workers poll for updates after each batch of games, so rollout lag is usually minutes rather than hours.
+**Model version turnover**: Promotion is driven by `promote_every_new_positions`, not by waiting for a full trainer interval to finish. The trainer checks eligibility at fresh-data polls (`reload_interval` reloads, data-wait polls, and the end-of-summary check). Workers poll for updates after each batch of games, so rollout lag is usually minutes rather than hours.

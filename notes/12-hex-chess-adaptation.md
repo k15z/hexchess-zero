@@ -152,7 +152,7 @@ and repetition count in input planes so the network can reason about them.
 | LR | 1e-3 constant + 2000-step linear warmup, SGD momentum 0.9, wd=3e-5 |
 | Batch size | 256 |
 | SWA | EMA over 4 snapshots, every 250k samples |
-| Gating | first 5 promotions (≥50% over 200 games, 3-failure escape) |
+| Gating | off (continuous Elo service) |
 | Promotion | every 500k samples |
 | Mirror augmentation | central inversion, p=0.5 |
 

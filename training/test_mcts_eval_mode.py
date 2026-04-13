@@ -2,8 +2,8 @@
 
 These guard against a past bug where the Python binding hard-coded
 `SearchConfig::training()` and only conditionally layered Dirichlet noise
-on top, so callers that passed `dirichlet_epsilon=0.0` (Elo, gauntlet,
-benchmarks, replay) silently ran in training mode — with Dirichlet at
+on top, so callers that passed `dirichlet_epsilon=0.0` (Elo, benchmarks,
+replay) silently ran in training mode — with Dirichlet at
 root, forced playouts, policy-target pruning, no LCB, etc.
 
 If `config_summary()` is missing from the binding, the binding is older

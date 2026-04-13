@@ -283,7 +283,7 @@ to an arbitrary trainer chunk boundary.
 
 ### 4.6 Gating
 
-**Off** in steady state (notes/06 §gating, notes/09 §gating). Continuous Elo service catches regressions. **On for the first 5 promotions after bootstrap**: candidate must score ≥ 50% (not 55%) over 200 SPRT-style games against current. Escape hatch: after 3 failed gates, promote anyway. This catches catastrophic bootstrap-to-selfplay handoff bugs.
+**Off.** Continuous Elo service catches regressions; no inline gauntlet needed. (Early-phase gating was removed — the Elo service discovers model quality faster without blocking the trainer.)
 
 ### 4.7 Bootstrap
 
@@ -410,7 +410,7 @@ Keep the existing `elo_service.py` design (immutable per-game records under `sta
 
 - **Pairing policy:** OpenSkill-uncertainty-driven matchmaking (already done) plus a hard rule: every new model plays at minimum 30 games against each anchor before its rating is "released" to the dashboard. Prevents premature regression alarms.
 - **Use ≥800 sims** as already mandated by AGENTS.md.
-- **SPRT** option for "is candidate stronger than current": API endpoint that sets up a pairing campaign with stop conditions `(elo0=0, elo1=10, α=β=0.05)`. Used during gating in phase-1 only.
+- **SPRT** option for "is candidate stronger than current": API endpoint that sets up a pairing campaign with stop conditions `(elo0=0, elo1=10, α=β=0.05)`.
 
 ### 6.3 Fixed benchmark suite
 
@@ -578,7 +578,7 @@ From `notes/10`, monitor (and alert) on every numbered failure mode:
 | 8 Encoding off-by-one | round-trip CI test |
 | 9 Orientation | win-by-color delta > 15 pp |
 | 10 Search exploration collapse | mean root entropy < 0.5 bit |
-| 11 Recent overfit | gauntlet vs older versions degrades |
+| 11 Recent overfit | Elo vs older versions degrades |
 | 12 Cold-start stuck | bootstrap → v1 transition fails minimax-d1 gate |
 | 13 Underflow | NaN detector + assertion that softmax stays in fp32 |
 | 14 Repetition off-by-one | hard-fail invariant |
@@ -606,7 +606,7 @@ Tool: `python -m training.audit_buffer` lists every file in the current window, 
 
 ### What to delete / rewrite
 - `training/model.py` — rewrite to add MLH, STV, aux-policy heads and 3 new input planes (from 19 → 22).
-- `training/trainer_loop.py` — rewrite loss section, replace fixed buffer with sublinear window, add SWA, add health checks, add gating-for-first-5-versions.
+- `training/trainer_loop.py` — rewrite loss section, replace fixed buffer with sublinear window, add SWA, add health checks.
 - `training/worker.py` — rewrite to add PCR, new sample schema, per-game trace writer, per-game heartbeat.
 - `engine/src/mcts.rs` — major surgery: PUCT constants, FPU reduction, PCR API, forced playouts, PTP, LCB, shaped Dirichlet, online variance tracking. The arena/TT plumbing stays.
 
@@ -619,7 +619,7 @@ Tool: `python -m training.audit_buffer` lists every file in the current window, 
 5. **Network: rewrite `model.py` with new heads + 3 input planes.** Smoke test forward shape, parameter count, BN eval-mode test.
 6. **Loss module: separate file, all 6 losses, label smoothing on WDL, mask logic, fp32-softmax guarantee.** Unit-test on synthetic data.
 7. **Worker: new sample schema + trace sidecars + meta sidecars + PCR plumbing + game seeds.** Old `.npz` files become unreadable — that's fine, we're starting from scratch.
-8. **Trainer: sublinear window, SWA, gating-for-first-5, full health-check module.**
+8. **Trainer: sublinear window, SWA, full health-check module.**
 9. **Dashboard: pages 1–4 (loss, data, model behavior, search).** Reuses existing infra.
 10. **Eval: benchmark suite generator, per-version benchmark runner.**
 11. **Eval: anchor Elo expansion, regression alerts.**
@@ -681,7 +681,7 @@ Tool: `python -m training.audit_buffer` lists every file in the current window, 
 | Network: 8×144 trunk, 5 heads | `training/model.py` | ✓ 6.3M params |
 | Loss module (6 weighted terms + label smoothing) | `training/losses.py` | ✓ |
 | Worker: PCR self-play, rich npz schema, sidecars | `training/worker.py` | ✓ |
-| Trainer: sublinear window, SWA, gating-first-5 | `training/trainer_loop.py` | ✓ |
+| Trainer: sublinear window, SWA | `training/trainer_loop.py` | ✓ |
 | Health checks (11 invariants, strict + runtime modes) | `training/health_checks.py` | ✓ |
 | Structured JSONL logging | `training/logging_setup.py` | ✓ |
 | Replay tool (CLI) | `training/replay_game.py` | ✓ |

@@ -70,9 +70,7 @@ class _BaseConfig:
     # has overtaken it; notes/13 calls for a "bootstrap then switch"
     # schedule. We linearly decay from ``imitation_mix_start`` at v1 to
     # ``imitation_mix_end`` by ``imitation_mix_decay_end_version``, after
-    # which the trainer is pure self-play. The decay horizon matches
-    # ``gating_enabled_first_n_versions`` so "bootstrap" and "gated early
-    # versions" stay in lockstep.
+    # which the trainer is pure self-play.
     imitation_mix_start: float = 0.3
     imitation_mix_end: float = 0.0
     imitation_mix_decay_end_version: int = 5
@@ -110,14 +108,6 @@ class _BaseConfig:
     # Throughput drops to ~90 pos/min with 22 workers — v7 promotion cadence ~2 days.
     pcr_n_full: int = 800
     pcr_n_fast: int = 160
-
-    # --- Gating (plan §4.6) ---
-    gating_enabled_first_n_versions: int = 5
-    gating_games: int = (
-        30  # early-run gate length (was 200; cut 6.7× for pipeline validation)
-    )
-    gating_win_threshold: float = 0.50
-    gating_max_failures: int = 3
 
     # --- Network architecture ---
     # Sized to ~5M params: small enough to iterate fast on the cluster + Mac
@@ -250,12 +240,6 @@ class AsyncConfig(_BaseConfig):
         _check(self.pcr_n_full > 0, "pcr_n_full must be > 0")
         _check(self.pcr_n_fast > 0, "pcr_n_fast must be > 0")
         _check(self.pcr_n_fast <= self.pcr_n_full, "pcr_n_fast must be <= pcr_n_full")
-
-        _check(self.gating_games > 0, "gating_games must be > 0")
-        _check(
-            0.0 < self.gating_win_threshold <= 1.0,
-            "gating_win_threshold must be in (0, 1]",
-        )
 
         _check(self.swa_buffer_size >= 1, "swa_buffer_size must be >= 1")
         _check(0.0 < self.swa_ema_decay <= 1.0, "swa_ema_decay must be in (0, 1]")
