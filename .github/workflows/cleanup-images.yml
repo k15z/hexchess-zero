@@ -77,10 +77,10 @@ jobs:
               continue
             fi
 
-            # Check if it's a pinned (cpu-<sha> or cuda-<sha>) tag
+            # Check if it's a pinned (cpu-<short-sha> or cuda-<short-sha>) tag
             IS_PINNED=false
             for tag in $TAGS; do
-              if [[ "$tag" == cpu-* || "$tag" == cuda-* ]]; then
+              if [[ "$tag" =~ ^(cpu|cuda)-[0-9a-f]+$ ]]; then
                 IS_PINNED=true
                 break
               fi
