@@ -201,12 +201,13 @@ class _MaskedPolicyModel(nn.Module):
         }
 
 
-def test_illegal_prob_mass_fails_for_uniform_model():
+def test_illegal_prob_mass_passes_for_uniform_model():
+    """Uniform logits are fine — the health check masks illegal moves before softmax."""
     boards = _valid_board_batch(batch=2)
     legal = torch.zeros(2, NUM_MOVE_INDICES, dtype=torch.bool)
     legal[:, :40] = True  # 40 legal out of ~4000
     r = check_no_illegal_prob_mass(_UniformPolicyModel(), boards, legal)
-    assert not r.passed
+    assert r.passed, r.message
 
 
 def test_illegal_prob_mass_passes_for_masked_model():

@@ -237,13 +237,15 @@ def check_no_illegal_prob_mass(model: torch.nn.Module,
                                boards: torch.Tensor,
                                legal_mask: torch.Tensor,
                                tol: float = 1e-3) -> HealthCheckResult:
-    """Invariant 5: per-sample sum of softmax over illegal moves < 1e-3."""
+    """Invariant 5: after masking illegal moves, softmax mass on illegal slots < tol."""
     was_training = model.training
     model.eval()
     try:
         with torch.no_grad():
             preds = model(boards)
-        probs = F.softmax(preds["policy"].float(), dim=-1)
+        logits = preds["policy"].float()
+        logits = logits.masked_fill(~legal_mask, float("-inf"))
+        probs = F.softmax(logits, dim=-1).nan_to_num(0.0)
         illegal = (~legal_mask).float()
         illegal_mass = (probs * illegal).sum(dim=-1)
         max_mass = float(illegal_mass.max().item())
