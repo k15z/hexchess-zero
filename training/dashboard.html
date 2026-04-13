@@ -19,9 +19,7 @@
     --text-secondary: #555555;
     --text-muted: #999999;
     --text-invert: #ffffff;
-    --positive: #111111;
-    --negative: #888888;
-    --mono: 'IBM Plex Mono', 'SF Mono', 'Consolas', monospace;
+    --color: 'IBM Plex Mono', 'SF Mono', 'Consolas', monospace;
     --sans: 'Instrument Sans', -apple-system, 'Segoe UI', sans-serif;
   }
 
@@ -259,7 +257,7 @@
   }
 
   tr:last-child td { border-bottom: none; }
-  tbody tr:hover td, table tr:hover td { background: var(--bg-subtle); }
+  tbody tr:hover td { background: var(--bg-subtle); }
 
   /* --- Eval badges --- */
   .eval-badge {
@@ -436,6 +434,16 @@ const BASELINES = new Set(['Minimax-2', 'Minimax-3', 'Minimax-4', 'Heuristic']);
 
 function conservRating(mu, sigma) { return mu - CONSERVATIVE_Z * sigma; }
 function isEvaluated(sigma) { return sigma <= EVALUATED_SIGMA_THRESHOLD; }
+
+// Sublinear KataGo replay window: c=25_000, alpha=0.75, beta=0.4.
+// Mirrors training/replay_window.py.
+const _WC = 25000, _WA = 0.75, _WB = 0.4;
+function windowSize(n) {
+  if (n <= 0) return 0;
+  if (n <= _WC) return n;
+  const t = Math.pow(n / _WC, _WA);
+  return Math.round(_WC * (1 + _WB * (t - 1) / _WA));
+}
 
 function ago(ts) {
   if (!ts) return '';
@@ -799,7 +807,7 @@ function _stackedBar(parts, total) {
   for (let idx = 0; idx < parts.length; idx++) {
     const p = parts[idx];
     const pct = (100 * p.value) / total;
-    const c = p.mono ?? grays[idx % grays.length];
+    const c = p.color ?? grays[idx % grays.length];
     if (pct > 0) {
       bar += `<div style="width:${pct.toFixed(2)}%;background:${c};" title="${p.label}: ${p.value}"></div>`;
     }
@@ -827,9 +835,9 @@ function buildRunHealth(data) {
   const total = w + d + l;
   html += `<div class="kv-row"><span class="k">recent W/D/L</span><span class="v">${total} games</span></div>`;
   html += _stackedBar([
-    {label: 'W', value: w, mono: '#111'},
-    {label: 'D', value: d, mono: '#999'},
-    {label: 'L', value: l, mono: '#ddd'},
+    {label: 'W', value: w, color: '#111'},
+    {label: 'D', value: d, color: '#999'},
+    {label: 'L', value: l, color: '#ddd'},
   ], total);
 
   if (lengths.length) {
@@ -856,14 +864,6 @@ function buildRunHealth(data) {
 }
 
 function buildDataPage(data) {
-  const C = 25000, A = 0.75, B = 0.4;
-  function windowSize(n) {
-    if (n <= 0) return 0;
-    if (n <= C) return n;
-    const t = Math.pow(n / C, A);
-    return Math.round(C * (1 + B * (t - 1) / A));
-  }
-
   const sp = (data.data && data.data.selfplay) || {};
   const im = (data.data && data.data.imitation) || {};
   const nTotal = (sp.total_positions || 0) + (im.total_positions || 0);
@@ -1082,14 +1082,6 @@ function buildReplayAudit(data) {
 
   if (!entries.length) {
     return panelHtml('replay-audit', 'Replay Audit', 'waiting', '<div class="empty">awaiting self-play data</div>');
-  }
-
-  const C = 25000, A = 0.75, B = 0.4;
-  function windowSize(n) {
-    if (n <= 0) return 0;
-    if (n <= C) return n;
-    const t = Math.pow(n / C, A);
-    return Math.round(C * (1 + B * (t - 1) / A));
   }
 
   const nTotal = sp.total_positions || 0;
