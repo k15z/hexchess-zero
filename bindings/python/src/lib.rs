@@ -665,7 +665,7 @@ impl PyMctsSearch {
     /// `eval_mode=True` swaps the underlying `SearchConfig` to
     /// `SearchConfig::eval()` (no forced playouts, LCB move selection,
     /// greedy temperature, no Dirichlet, no policy-target pruning).
-    /// Use this for Elo, gauntlet, benchmark, and replay paths.
+    /// Use this for Elo, benchmark, and replay paths.
     /// The default (`eval_mode=False`) uses `SearchConfig::training()`
     /// (c_puct=2.5, Dirichlet noise, PCR, temperature decay, etc.).
     ///
