@@ -7,6 +7,8 @@ from training.elo_service import (
     BASELINE_NAMES,
     _build_state,
     _gate_decision,
+    _gate_progress_from_records,
+    _gate_sprt_decision,
     _desired_active,
     _maybe_resolve_gate,
     _pending_candidate,
@@ -162,6 +164,121 @@ def test_gate_decision_forces_result_at_max_games():
     assert half_width > 0.0
 
 
+def test_gate_progress_counts_only_completed_pairs():
+    records = [
+        {
+            "white": "v2",
+            "black": "v1",
+            "outcome": "white",
+            "gate_candidate": "v2",
+            "gate_incumbent": "v1",
+            "gate_pair_id": "pair-a",
+            "gate_pair_game_index": 0,
+        },
+        {
+            "white": "v1",
+            "black": "v2",
+            "outcome": "draw",
+            "gate_candidate": "v2",
+            "gate_incumbent": "v1",
+            "gate_pair_id": "pair-a",
+            "gate_pair_game_index": 1,
+        },
+        {
+            "white": "v2",
+            "black": "v1",
+            "outcome": "black",
+            "gate_candidate": "v2",
+            "gate_incumbent": "v1",
+            "gate_pair_id": "pair-b",
+            "gate_pair_game_index": 0,
+        },
+    ]
+
+    progress = _gate_progress_from_records(records, "v1", "v2")
+
+    assert progress["completed_pairs"] == 1
+    assert progress["wins"] == 1
+    assert progress["draws"] == 1
+    assert progress["losses"] == 0
+    assert progress["games"] == 2
+    assert progress["pair_buckets"]["1.5"] == 1
+
+
+def test_gate_sprt_decision_waits_for_more_evidence():
+    decision, llr, lower, upper = _gate_sprt_decision(
+        {"2.0": 3, "1.5": 1, "1.0": 15, "0.5": 1, "0.0": 0},
+        40,
+    )
+
+    assert decision is None
+    assert lower < llr < upper
+
+
+def test_gate_sprt_decision_rejects_clear_loser():
+    decision, llr, lower, upper = _gate_sprt_decision(
+        {"2.0": 0, "1.5": 0, "1.0": 0, "0.5": 0, "0.0": 16},
+        32,
+    )
+
+    assert decision == "rejected"
+    assert llr <= lower
+    assert lower < upper
+
+
+def test_maybe_resolve_gate_waits_on_draw_heavy_positive_result(monkeypatch):
+    copied: list[tuple[str, str]] = []
+    writes: list[tuple[str, dict]] = []
+
+    monkeypatch.setattr(storage, "copy", lambda src, dst: copied.append((src, dst)))
+    monkeypatch.setattr(storage, "put_json", lambda key, obj: writes.append((key, obj)))
+
+    records = []
+    pair_specs = (
+        [("white", "black")] * 3
+        + [("white", "draw")]
+        + [("draw", "draw")] * 15
+        + [("black", "draw")]
+    )
+    for i, (first_outcome, second_outcome) in enumerate(pair_specs):
+        pair_id = f"pair-{i}"
+        records.extend([
+            {
+                "white": "v2",
+                "black": "v1",
+                "outcome": first_outcome,
+                "gate_candidate": "v2",
+                "gate_incumbent": "v1",
+                "gate_pair_id": pair_id,
+                "gate_pair_game_index": 0,
+            },
+            {
+                "white": "v1",
+                "black": "v2",
+                "outcome": second_outcome,
+                "gate_candidate": "v2",
+                "gate_incumbent": "v1",
+                "gate_pair_id": pair_id,
+                "gate_pair_game_index": 1,
+            },
+        ])
+
+    gate_state = {"approved_version": 1, "decisions": {}}
+    gate_state, changed = _maybe_resolve_gate(
+        records,
+        {"v2": "models/versions/2.onnx"},
+        "v1",
+        "v2",
+        gate_state,
+    )
+
+    assert not changed
+    assert gate_state["approved_version"] == 1
+    assert gate_state["decisions"] == {}
+    assert copied == []
+    assert writes == []
+
+
 def test_maybe_resolve_gate_approves_candidate(monkeypatch):
     copied: list[tuple[str, str]] = []
     writes: list[tuple[str, dict]] = []
@@ -169,21 +286,33 @@ def test_maybe_resolve_gate_approves_candidate(monkeypatch):
     monkeypatch.setattr(storage, "copy", lambda src, dst: copied.append((src, dst)))
     monkeypatch.setattr(storage, "put_json", lambda key, obj: writes.append((key, obj)))
 
-    state = {
-        "pair_results": {
-            "v3:v4": {
-                "a_wins": 2,
-                "b_wins": 18,
-                "draws": 0,
-                "a_as_white": 10,
-                "b_as_white": 10,
-            }
-        }
-    }
+    records = []
+    for i in range(16):
+        pair_id = f"pair-{i}"
+        records.extend([
+            {
+                "white": "v4",
+                "black": "v3",
+                "outcome": "white",
+                "gate_candidate": "v4",
+                "gate_incumbent": "v3",
+                "gate_pair_id": pair_id,
+                "gate_pair_game_index": 0,
+            },
+            {
+                "white": "v3",
+                "black": "v4",
+                "outcome": "black",
+                "gate_candidate": "v4",
+                "gate_incumbent": "v3",
+                "gate_pair_id": pair_id,
+                "gate_pair_game_index": 1,
+            },
+        ])
     gate_state = {"approved_version": 3, "decisions": {}}
 
     gate_state, changed = _maybe_resolve_gate(
-        state,
+        records,
         {"v4": "models/versions/4.onnx"},
         "v3",
         "v4",
@@ -193,7 +322,8 @@ def test_maybe_resolve_gate_approves_candidate(monkeypatch):
     assert changed
     assert gate_state["approved_version"] == 4
     assert gate_state["decisions"]["v4"]["status"] == "approved"
-    assert gate_state["decisions"]["v4"]["games"] == 20
+    assert gate_state["decisions"]["v4"]["games"] == 32
+    assert gate_state["decisions"]["v4"]["completed_pairs"] == 16
     assert copied == [("models/versions/4.onnx", storage.APPROVED_ONNX)]
     assert writes[0][0] == storage.APPROVED_META
     assert writes[1][0] == storage.GATE_STATE
@@ -206,21 +336,33 @@ def test_maybe_resolve_gate_rejects_candidate(monkeypatch):
     monkeypatch.setattr(storage, "copy", lambda src, dst: copied.append((src, dst)))
     monkeypatch.setattr(storage, "put_json", lambda key, obj: writes.append((key, obj)))
 
-    state = {
-        "pair_results": {
-            "v3:v4": {
-                "a_wins": 18,
-                "b_wins": 2,
-                "draws": 0,
-                "a_as_white": 10,
-                "b_as_white": 10,
-            }
-        }
-    }
+    records = []
+    for i in range(16):
+        pair_id = f"pair-{i}"
+        records.extend([
+            {
+                "white": "v4",
+                "black": "v3",
+                "outcome": "black",
+                "gate_candidate": "v4",
+                "gate_incumbent": "v3",
+                "gate_pair_id": pair_id,
+                "gate_pair_game_index": 0,
+            },
+            {
+                "white": "v3",
+                "black": "v4",
+                "outcome": "white",
+                "gate_candidate": "v4",
+                "gate_incumbent": "v3",
+                "gate_pair_id": pair_id,
+                "gate_pair_game_index": 1,
+            },
+        ])
     gate_state = {"approved_version": 3, "decisions": {}}
 
     gate_state, changed = _maybe_resolve_gate(
-        state,
+        records,
         {"v4": "models/versions/4.onnx"},
         "v3",
         "v4",

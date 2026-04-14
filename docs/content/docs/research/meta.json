@@ -1,4 +1,4 @@
 {
   "title": "Research",
-  "pages": ["index", "mcts", "model", "training", "deployment"]
+  "pages": ["index", "mcts", "model", "training", "evaluation", "deployment"]
 }
