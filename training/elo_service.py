@@ -7,10 +7,12 @@ object per game. Writes are race-free (unique keys). ``state/elo.json`` is a
 overwrite it idempotently; last-writer-wins is fine because it is a pure
 function of the game log.
 
-Each replica plays one game at a time (no in-process parallelism). K8s
-replicas provide parallelism; matchmaking collisions across replicas are
-harmless — two pods occasionally picking the same high-uncertainty pair just
-means more samples on a matchup we already care about.
+Each replica usually plays one game at a time (no in-process parallelism).
+When a promotion gate is active, a replica that picks the gate matchup plays a
+two-game paired-color mini-match back-to-back. K8s replicas provide overall
+parallelism; matchmaking collisions across replicas are harmless — two pods
+occasionally picking the same high-uncertainty pair just means more samples on
+a matchup we already care about.
 """
 
 from __future__ import annotations
@@ -48,6 +50,20 @@ GATE_MIN_GAMES = 20
 GATE_MAX_GAMES = 100
 GATE_PASS_SCORE = 0.55
 GATE_Z_VALUE = 1.96
+GATE_PAIR_GAME_COUNT = 2
+GATE_SPRT_P0 = 0.50
+GATE_SPRT_P1 = 0.55
+GATE_SPRT_ALPHA = 0.05
+GATE_SPRT_BETA = 0.05
+GATE_PAIR_BUCKETS: tuple[str, ...] = ("2.0", "1.5", "1.0", "0.5", "0.0")
+GATE_PAIR_PSEUDOCOUNT = 0.25
+GATE_PAIR_BUCKET_SCORES: dict[str, float] = {
+    "2.0": 1.0,
+    "1.5": 0.75,
+    "1.0": 0.5,
+    "0.5": 0.25,
+    "0.0": 0.0,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +73,145 @@ GATE_Z_VALUE = 1.96
 
 def _pair_key(a: str, b: str) -> str:
     return ":".join(sorted([a, b]))
+
+
+def _gate_pair_id() -> str:
+    return f"{random.getrandbits(64):016x}"
+
+
+def _gate_pair_bucket(pair_score: float) -> str:
+    return f"{pair_score:.1f}"
+
+
+def _candidate_points(outcome: str, *, candidate_is_white: bool) -> float:
+    if outcome == "draw":
+        return 0.5
+    if outcome == "white":
+        return 1.0 if candidate_is_white else 0.0
+    return 0.0 if candidate_is_white else 1.0
+
+
+def _sprt_bounds(
+    alpha: float = GATE_SPRT_ALPHA,
+    beta: float = GATE_SPRT_BETA,
+) -> tuple[float, float]:
+    return (
+        math.log(beta / (1.0 - alpha)),
+        math.log((1.0 - beta) / alpha),
+    )
+
+
+def _pair_bucket_mean(pair_buckets: dict[str, int]) -> tuple[float, int]:
+    total_pairs = sum(int(pair_buckets.get(bucket, 0)) for bucket in GATE_PAIR_BUCKETS)
+    if total_pairs <= 0:
+        return 0.0, 0
+    total_score = sum(
+        GATE_PAIR_BUCKET_SCORES[bucket] * int(pair_buckets.get(bucket, 0))
+        for bucket in GATE_PAIR_BUCKETS
+    )
+    return total_score / total_pairs, total_pairs
+
+
+def _pair_bucket_support(pair_buckets: dict[str, int]) -> list[tuple[float, int]]:
+    return [
+        (GATE_PAIR_BUCKET_SCORES[bucket], int(pair_buckets.get(bucket, 0)))
+        for bucket in GATE_PAIR_BUCKETS
+        if int(pair_buckets.get(bucket, 0)) > 0
+    ]
+
+
+def _smoothed_pair_support(
+    pair_buckets: dict[str, int],
+    pseudocount: float = GATE_PAIR_PSEUDOCOUNT,
+) -> list[tuple[float, float]]:
+    return [
+        (GATE_PAIR_BUCKET_SCORES[bucket], float(pair_buckets.get(bucket, 0)) + pseudocount)
+        for bucket in GATE_PAIR_BUCKETS
+    ]
+
+
+def _empirical_likelihood_lambda(
+    pair_buckets: dict[str, int],
+    target_score: float,
+    pseudocount: float = GATE_PAIR_PSEUDOCOUNT,
+) -> float | None:
+    support = _smoothed_pair_support(pair_buckets, pseudocount)
+    if not support:
+        return 0.0
+
+    scores = [score for score, _count in support]
+    min_score = min(scores)
+    max_score = max(scores)
+    tol = 1e-12
+    if min_score == max_score:
+        return 0.0 if abs(target_score - min_score) <= tol else None
+    if target_score <= min_score + tol or target_score >= max_score - tol:
+        return None
+
+    total_pairs = sum(weight for _score, weight in support)
+    empirical_mean = sum(score * count for score, count in support) / total_pairs
+    if abs(empirical_mean - target_score) <= tol:
+        return 0.0
+
+    def g(lam: float) -> float:
+        total = 0.0
+        for score, count in support:
+            delta = score - target_score
+            total += count * delta / (1.0 + lam * delta)
+        return total
+
+    if target_score < empirical_mean:
+        lower = 0.0
+        upper = min(-1.0 / (score - target_score) for score, _count in support if score < target_score)
+    else:
+        lower = max(-1.0 / (score - target_score) for score, _count in support if score > target_score)
+        upper = 0.0
+
+    eps = 1e-12
+    lo = lower + eps
+    hi = upper - eps
+    for _ in range(100):
+        mid = (lo + hi) / 2.0
+        value = g(mid)
+        if abs(value) <= 1e-12:
+            return mid
+        if value > 0.0:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2.0
+
+
+def _empirical_likelihood_log_prob(
+    pair_buckets: dict[str, int],
+    target_score: float,
+    pseudocount: float = GATE_PAIR_PSEUDOCOUNT,
+) -> float:
+    lam = _empirical_likelihood_lambda(pair_buckets, target_score, pseudocount)
+    if lam is None:
+        return float("-inf")
+    support = _smoothed_pair_support(pair_buckets, pseudocount)
+    total = 0.0
+    for score, count in support:
+        denom = 1.0 + lam * (score - target_score)
+        if denom <= 0.0:
+            return float("-inf")
+        total -= count * math.log(denom)
+    return total
+
+
+def _gate_pentanomial_llr(
+    pair_buckets: dict[str, int],
+    p0: float = GATE_SPRT_P0,
+    p1: float = GATE_SPRT_P1,
+    pseudocount: float = GATE_PAIR_PSEUDOCOUNT,
+) -> float:
+    mean_score, total_pairs = _pair_bucket_mean(pair_buckets)
+    if total_pairs <= 0:
+        return 0.0
+    log_p0 = _empirical_likelihood_log_prob(pair_buckets, p0, pseudocount)
+    log_p1 = _empirical_likelihood_log_prob(pair_buckets, p1, pseudocount)
+    return log_p1 - log_p0
 
 
 # ---------------------------------------------------------------------------
@@ -415,24 +570,65 @@ def _placement_pair(state: dict) -> tuple[str, str] | None:
     return random.choice(candidates)
 
 
-def _gate_pair_result(
-    state: dict,
+def _gate_progress_from_records(
+    records: list[dict],
     approved_name: str,
     candidate_name: str,
-) -> tuple[int, int, int]:
-    """Return ``(wins, losses, draws)`` from the candidate's perspective."""
-    result = state["pair_results"].get(_pair_key(approved_name, candidate_name))
-    if result is None:
-        return 0, 0, 0
-    a, _b = sorted([approved_name, candidate_name])
-    if candidate_name == a:
-        wins = int(result["a_wins"])
-        losses = int(result["b_wins"])
-    else:
-        wins = int(result["b_wins"])
-        losses = int(result["a_wins"])
-    draws = int(result["draws"])
-    return wins, losses, draws
+) -> dict:
+    """Summarize completed paired-color gate mini-matches from immutable records."""
+    pending_pairs: dict[str, dict[int, dict]] = {}
+    for rec in records:
+        if rec.get("gate_candidate") != candidate_name:
+            continue
+        if rec.get("gate_incumbent") != approved_name:
+            continue
+        pair_id = rec.get("gate_pair_id")
+        pair_game_index = rec.get("gate_pair_game_index")
+        if not pair_id or pair_game_index not in (0, 1):
+            continue
+        pair_bucket = pending_pairs.setdefault(str(pair_id), {})
+        pair_bucket[int(pair_game_index)] = rec
+
+    wins = 0
+    losses = 0
+    draws = 0
+    total_score = 0.0
+    total_games = 0
+    completed_pairs = 0
+    pair_buckets = {bucket: 0 for bucket in GATE_PAIR_BUCKETS}
+
+    for pair_id, pair_games in pending_pairs.items():
+        del pair_id
+        if len(pair_games) != GATE_PAIR_GAME_COUNT:
+            continue
+        completed_pairs += 1
+        pair_score = 0.0
+        for idx in (0, 1):
+            rec = pair_games[idx]
+            candidate_is_white = rec.get("white") == candidate_name
+            outcome = rec.get("outcome")
+            pts = _candidate_points(outcome, candidate_is_white=candidate_is_white)
+            pair_score += pts
+            total_score += pts
+            total_games += 1
+            if pts == 1.0:
+                wins += 1
+            elif pts == 0.5:
+                draws += 1
+            else:
+                losses += 1
+        pair_buckets[_gate_pair_bucket(pair_score)] += 1
+
+    return {
+        "wins": wins,
+        "losses": losses,
+        "draws": draws,
+        "games": total_games,
+        "score": (total_score / total_games) if total_games else 0.0,
+        "total_score": total_score,
+        "completed_pairs": completed_pairs,
+        "pair_buckets": pair_buckets,
+    }
 
 
 def _gate_score_stats(wins: int, losses: int, draws: int) -> tuple[int, float, float]:
@@ -480,8 +676,32 @@ def _gate_decision(wins: int, losses: int, draws: int) -> tuple[str | None, int,
     return None, total, score, half_width
 
 
+def _gate_sprt_decision(
+    pair_buckets: dict[str, int],
+    total_games: int,
+) -> tuple[str | None, float, float, float]:
+    """Return ``(decision, llr, lower_bound, upper_bound)`` for the paired GSPRT.
+
+    This treats each paired-color mini-match as one pentanomial observation and
+    evaluates the null/alternative score hypotheses via a generalized
+    likelihood ratio over the five pair buckets.
+    """
+    lower, upper = _sprt_bounds()
+    llr = _gate_pentanomial_llr(pair_buckets)
+    if total_games < GATE_MIN_GAMES:
+        return None, llr, lower, upper
+    if llr >= upper:
+        return "approved", llr, lower, upper
+    if llr <= lower:
+        return "rejected", llr, lower, upper
+    if total_games >= GATE_MAX_GAMES:
+        mean_score, _total_pairs = _pair_bucket_mean(pair_buckets)
+        return ("approved" if mean_score >= GATE_PASS_SCORE else "rejected"), llr, lower, upper
+    return None, llr, lower, upper
+
+
 def _maybe_resolve_gate(
-    state: dict,
+    records: list[dict],
     version_keys: dict[str, str],
     approved_name: str | None,
     candidate_name: str | None,
@@ -493,8 +713,16 @@ def _maybe_resolve_gate(
     if candidate_name in gate_state["decisions"]:
         return gate_state, False
 
-    wins, losses, draws = _gate_pair_result(state, approved_name, candidate_name)
-    status, total, score, half_width = _gate_decision(wins, losses, draws)
+    progress = _gate_progress_from_records(records, approved_name, candidate_name)
+    status, llr, sprt_lower, sprt_upper = _gate_sprt_decision(
+        progress["pair_buckets"],
+        progress["games"],
+    )
+    total, score, half_width = _gate_score_stats(
+        progress["wins"],
+        progress["losses"],
+        progress["draws"],
+    )
     if status is None:
         return gate_state, False
 
@@ -502,12 +730,18 @@ def _maybe_resolve_gate(
     gate_state["decisions"][candidate_name] = {
         "status": status,
         "approved_against": approved_name,
-        "wins": wins,
-        "losses": losses,
-        "draws": draws,
-        "games": total,
-        "score": score,
+        "wins": progress["wins"],
+        "losses": progress["losses"],
+        "draws": progress["draws"],
+        "games": progress["games"],
+        "score": progress["score"],
         "ci_half_width": half_width,
+        "completed_pairs": progress["completed_pairs"],
+        "pair_buckets": progress["pair_buckets"],
+        "sprt_llr": llr,
+        "sprt_lower_bound": sprt_lower,
+        "sprt_upper_bound": sprt_upper,
+        "gate_mode": "paired_pentanomial_gsprt",
         "resolved_at": resolved_at,
     }
     if status == "approved":
@@ -524,8 +758,17 @@ def _maybe_resolve_gate(
 
     storage.put_json(storage.GATE_STATE, gate_state)
     logger.info(
-        "Gate resolved: {} {} vs {} (wins={} losses={} draws={} score={:.3f} +/- {:.3f})",
-        candidate_name, status, approved_name, wins, losses, draws, score, half_width,
+        "Gate resolved: {} {} vs {} (wins={} losses={} draws={} score={:.3f} +/- {:.3f}, pairs={}, llr={:.3f})",
+        candidate_name,
+        status,
+        approved_name,
+        progress["wins"],
+        progress["losses"],
+        progress["draws"],
+        progress["score"],
+        half_width,
+        progress["completed_pairs"],
+        llr,
     )
     return gate_state, True
 
@@ -618,6 +861,49 @@ def _assign_colors(state: dict, a: str, b: str) -> tuple[str, str]:
     return b, a
 
 
+def _make_game_record(
+    white_name: str,
+    black_name: str,
+    result: dict,
+    *,
+    gate_candidate: str | None = None,
+    gate_incumbent: str | None = None,
+    gate_pair_id: str | None = None,
+    gate_pair_game_index: int | None = None,
+) -> dict:
+    record = {
+        "white": white_name,
+        "black": black_name,
+        "outcome": result["outcome"],
+        "moves": result["moves"],
+        "white_time": result["white_time"],
+        "black_time": result["black_time"],
+        "white_moves": result["white_moves"],
+        "black_moves": result["black_moves"],
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    if gate_candidate is not None:
+        record["gate_candidate"] = gate_candidate
+    if gate_incumbent is not None:
+        record["gate_incumbent"] = gate_incumbent
+    if gate_pair_id is not None:
+        record["gate_pair_id"] = gate_pair_id
+    if gate_pair_game_index is not None:
+        record["gate_pair_game_index"] = gate_pair_game_index
+    return record
+
+
+def _persist_record(records: GameRecordStore, state: dict, record: dict) -> bool:
+    try:
+        key = storage.put_game_record(record)
+        records.add_local(key, record)
+    except Exception as e:
+        logger.error("Failed to persist game record: {}", e)
+        return False
+    _apply_record(state, record)
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
@@ -644,7 +930,11 @@ def run_elo_service(
     max_versions: int = 5,
     notify_interval: int = 20,
 ) -> None:
-    """Run the continuous Elo rating service. One game at a time per replica."""
+    """Run the continuous Elo rating service.
+
+    Ordinary matchmaking plays one game per loop. An active promotion gate is
+    evaluated as a paired-color two-game mini-match on the same replica.
+    """
     cfg = AsyncConfig()
     cfg.ensure_cache_dirs()
     setup_json_logging("elo", run_id=cfg.run_id)
@@ -707,7 +997,12 @@ def run_elo_service(
         nonlocal state, approved_name, gate_candidate, gate_state, active, version_keys
         if approved_name is None or gate_candidate is None:
             return
-        if _pair_game_count(state, approved_name, gate_candidate) < GATE_MIN_GAMES:
+        progress = _gate_progress_from_records(
+            records.all_records(),
+            approved_name,
+            gate_candidate,
+        )
+        if progress["games"] < GATE_MIN_GAMES:
             return
         _sync_peer_records()
         (
@@ -734,7 +1029,7 @@ def run_elo_service(
 
         _refresh_gate_view_if_ready()
         gate_state, gate_changed = _maybe_resolve_gate(
-            state,
+            records.all_records(),
             version_keys,
             approved_name,
             gate_candidate,
@@ -773,57 +1068,97 @@ def run_elo_service(
             continue
 
         a, b = pair
-        white_name, black_name = _assign_colors(state, a, b)
-        logger.info(
-            "Dispatch game {}: {} (W) vs {} (B) [pair has {} prior games]",
-            state["total_games"] + 1, white_name, black_name,
-            _pair_game_count(state, a, b),
+        is_gate_pair = (
+            approved_name is not None
+            and gate_candidate is not None
+            and {a, b} == {approved_name, gate_candidate}
         )
 
-        try:
-            white = players_cache.get(white_name, version_keys.get(white_name))
-            black = players_cache.get(black_name, version_keys.get(black_name))
-            result = play_game(white, black)
-        except Exception as e:
-            logger.error("Game {} vs {} failed: {}", white_name, black_name, e)
-            time.sleep(5)
-            continue
+        if is_gate_pair:
+            gate_pair_id = _gate_pair_id()
+            logger.info(
+                "Dispatch gate pair {}: {} vs {} (2 games, {} prior games)",
+                gate_pair_id,
+                gate_candidate,
+                approved_name,
+                _pair_game_count(state, a, b),
+            )
+            gate_games = [
+                (gate_candidate, approved_name, 0),
+                (approved_name, gate_candidate, 1),
+            ]
+            gate_failed = False
+            for white_name, black_name, gate_game_index in gate_games:
+                try:
+                    white = players_cache.get(white_name, version_keys.get(white_name))
+                    black = players_cache.get(black_name, version_keys.get(black_name))
+                    result = play_game(white, black)
+                except Exception as e:
+                    logger.error("Gate game {} vs {} failed: {}", white_name, black_name, e)
+                    gate_failed = True
+                    break
 
-        outcome = result["outcome"]
-        w_avg = result["white_time"] / max(result["white_moves"], 1)
-        b_avg = result["black_time"] / max(result["black_moves"], 1)
-        logger.info(
-            "  Result: {} ({} moves) | {} {:.2f}s/move | {} {:.2f}s/move",
-            outcome, result["moves"],
-            white_name, w_avg, black_name, b_avg,
-        )
+                outcome = result["outcome"]
+                w_avg = result["white_time"] / max(result["white_moves"], 1)
+                b_avg = result["black_time"] / max(result["black_moves"], 1)
+                logger.info(
+                    "  Gate game {} result: {} ({} moves) | {} {:.2f}s/move | {} {:.2f}s/move",
+                    gate_game_index + 1,
+                    outcome,
+                    result["moves"],
+                    white_name,
+                    w_avg,
+                    black_name,
+                    b_avg,
+                )
+                record = _make_game_record(
+                    white_name,
+                    black_name,
+                    result,
+                    gate_candidate=gate_candidate,
+                    gate_incumbent=approved_name,
+                    gate_pair_id=gate_pair_id,
+                    gate_pair_game_index=gate_game_index,
+                )
+                if not _persist_record(records, state, record):
+                    gate_failed = True
+                    break
 
-        record = {
-            "white": white_name,
-            "black": black_name,
-            "outcome": outcome,
-            "moves": result["moves"],
-            "white_time": result["white_time"],
-            "black_time": result["black_time"],
-            "white_moves": result["white_moves"],
-            "black_moves": result["black_moves"],
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
+            if gate_failed:
+                time.sleep(5)
+                continue
+        else:
+            white_name, black_name = _assign_colors(state, a, b)
+            logger.info(
+                "Dispatch game {}: {} (W) vs {} (B) [pair has {} prior games]",
+                state["total_games"] + 1, white_name, black_name,
+                _pair_game_count(state, a, b),
+            )
 
-        try:
-            key = storage.put_game_record(record)
-            records.add_local(key, record)
-        except Exception as e:
-            logger.error("Failed to persist game record: {}", e)
-            continue
+            try:
+                white = players_cache.get(white_name, version_keys.get(white_name))
+                black = players_cache.get(black_name, version_keys.get(black_name))
+                result = play_game(white, black)
+            except Exception as e:
+                logger.error("Game {} vs {} failed: {}", white_name, black_name, e)
+                time.sleep(5)
+                continue
 
-        # Incremental fold — avoids an O(N) OpenSkill replay after every game.
-        # The periodic sync above rebuilds from scratch to absorb peer writes.
-        _apply_record(state, record)
+            outcome = result["outcome"]
+            w_avg = result["white_time"] / max(result["white_moves"], 1)
+            b_avg = result["black_time"] / max(result["black_moves"], 1)
+            logger.info(
+                "  Result: {} ({} moves) | {} {:.2f}s/move | {} {:.2f}s/move",
+                outcome, result["moves"],
+                white_name, w_avg, black_name, b_avg,
+            )
+            record = _make_game_record(white_name, black_name, result)
+            if not _persist_record(records, state, record):
+                continue
 
         _refresh_gate_view_if_ready()
         gate_state, gate_changed = _maybe_resolve_gate(
-            state,
+            records.all_records(),
             version_keys,
             approved_name,
             gate_candidate,

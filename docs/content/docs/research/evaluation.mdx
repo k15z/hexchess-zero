@@ -1,0 +1,164 @@
+---
+title: Evaluation
+description: Elo tracking, model gating, and paired-color candidate testing
+---
+
+The training stack uses the Elo service for two related but distinct jobs:
+
+1. **Monitoring**: keep a running strength picture for baselines and recent model versions
+2. **Gating**: decide whether a newly exported candidate is allowed to replace the current self-play model
+
+Those jobs share the same game runner and immutable game log, but they use different decision logic.
+
+## Two pointers: `latest` vs `approved`
+
+The trainer exports every new candidate to:
+
+```text
+models/latest.onnx
+models/latest.meta.json
+models/versions/{N}.onnx
+```
+
+Workers do **not** automatically follow `latest`. Self-play uses:
+
+```text
+models/approved.onnx
+models/approved.meta.json
+```
+
+That split matters:
+
+- `latest`: newest exported candidate from the trainer
+- `approved`: incumbent model allowed to generate self-play
+
+If a candidate fails the gate, `latest` advances but `approved` does not.
+
+## Ordinary Elo tracking
+
+Outside of gating, the Elo service keeps a small active pool:
+
+- fixed anchors: `Heuristic`, `Minimax-2`, `Minimax-3`, `Minimax-4`
+- the current approved model
+- one pending candidate, if any
+- a short rolling window of recent versions for trend visibility
+
+Every Elo replica writes immutable game objects under:
+
+```text
+state/elo_games/{ts}_{rand}.json
+```
+
+`state/elo.json` is then rebuilt from that log with OpenSkill. This is for **monitoring**, not for promotion decisions.
+
+## Why gating is separate
+
+Global pool ratings are useful for dashboards and anchor comparisons, but they are not the right promotion rule:
+
+- pool ratings drift over time as the active set changes
+- direct `candidate vs incumbent` evidence is what matters for a replacement decision
+- draw-heavy deterministic matches need stronger controls than “did the newest model get a higher μ?”
+
+So gating uses a dedicated direct match between the candidate and the incumbent.
+
+## Paired-color gate
+
+When a candidate is pending, an Elo replica that selects the gate matchup plays a **2-game mini-match**:
+
+1. candidate as White, incumbent as Black
+2. incumbent as White, candidate as Black
+
+Both games share the same `gate_pair_id`. The gate only counts a pair once **both** games exist in the immutable log.
+
+This reduces color bias without needing a separate coordinator or leader election.
+
+## Pentanomial buckets
+
+Each completed pair is reduced to one of five outcomes from the candidate's perspective:
+
+| Pair result | Candidate score over 2 games | Bucket |
+|-------------|-------------------------------|--------|
+| loss + loss | `0.0` | `0.0` |
+| loss + draw | `0.5` | `0.5` |
+| draw + draw or win + loss | `1.0` | `1.0` |
+| win + draw | `1.5` | `1.5` |
+| win + win | `2.0` | `2.0` |
+
+The gate stores counts of those five buckets instead of flattening everything into independent games.
+
+## Gate decision rule
+
+The production gate uses a **paired pentanomial-style GSPRT**:
+
+- minimum sample: `20` games
+- hard cap: `100` games
+- score hypotheses: `0.50` vs `0.55`
+- error rates: `alpha = beta = 0.05`
+
+Internally, the gate profiles the observed five-bucket distribution under the null and alternative score hypotheses and compares the resulting log-likelihoods.
+
+This is more conservative than the old `55% + confidence interval` rule, especially in draw-heavy matchups.
+
+### Why this helps
+
+- **Color-balanced evidence**: each sample contains both color assignments
+- **Better draw handling**: `draw/draw` and `win/loss` are no longer treated like unrelated individual games
+- **Cleaner decisions**: a candidate needs sustained evidence, not just an early unbeaten streak
+
+## Reading gate state
+
+Gate decisions are persisted in:
+
+```text
+state/gate.json
+```
+
+Each candidate entry includes:
+
+- `status`: `approved` or `rejected`
+- `approved_against`: incumbent version name
+- `wins`, `losses`, `draws`
+- `completed_pairs`
+- `pair_buckets`
+- `sprt_llr`
+- `sprt_lower_bound`, `sprt_upper_bound`
+- `resolved_at`
+
+The dashboard reads this directly so you can tell:
+
+- newest exported candidate (`latest`)
+- currently active self-play model (`approved`)
+- whether a candidate passed or failed
+
+## Local replay tool
+
+To replay a gate locally with verbose per-move logging:
+
+```bash
+uv run python -m training.evaluate_gate \
+  --approved 1 \
+  --candidate 2 \
+  --simulations 800 \
+  --max-pairs 50 \
+  --stop-when-decided
+```
+
+To keep the pair summaries but suppress per-move ticks:
+
+```bash
+uv run python -m training.evaluate_gate \
+  --approved 1 \
+  --candidate 2 \
+  --simulations 800 \
+  --max-pairs 50 \
+  --stop-when-decided \
+  --quiet-moves
+```
+
+The script prints:
+
+- the legacy gate view
+- the paired pentanomial GSPRT view
+- cumulative pair-bucket counts after every mini-match
+
+That makes it useful for tuning gate parameters before changing the live Elo service.
