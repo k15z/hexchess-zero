@@ -56,10 +56,14 @@ class DashboardStore:
         self._stop = threading.Event()
 
         self._etag_meta: str | None = None
+        self._etag_approved_meta: str | None = None
         self._etag_elo: str | None = None
+        self._etag_gate: str | None = None
         self._etag_trainer: str | None = None
-        self._model: dict = {"version": 0, "promoted_at": None}
+        self._model: dict = {"version": 0, "promoted_at": None, "positions_at_promote": None}
+        self._approved_model: dict = {"version": 0, "promoted_at": None}
         self._elo: dict = {}
+        self._gate: dict = {"approved_version": 0, "decisions": {}}
         self._trainer_metrics: dict = {}
 
         self._sp_files: dict[str, tuple[int, str]] = {}
@@ -114,11 +118,24 @@ class DashboardStore:
             lambda d: {
                 "version": d.get("version", 0),
                 "promoted_at": d.get("timestamp"),
+                "positions_at_promote": d.get("positions_at_promote"),
             },
             fallback=self._model,
         )
+        self._approved_model = self._sync_etagged_json(
+            storage.APPROVED_META,
+            "_etag_approved_meta",
+            lambda d: {
+                "version": d.get("version", 0),
+                "promoted_at": d.get("timestamp"),
+            },
+            fallback=self._approved_model,
+        )
         self._elo = self._sync_etagged_json(
             storage.ELO_STATE, "_etag_elo", lambda d: d, fallback=self._elo
+        )
+        self._gate = self._sync_etagged_json(
+            storage.GATE_STATE, "_etag_gate", lambda d: d, fallback=self._gate
         )
         self._trainer_metrics = self._sync_etagged_json(
             storage.TRAINER_METRICS,
@@ -301,6 +318,8 @@ class DashboardStore:
             im_agg = {k: v for k, v in self._im_agg.items() if k != "by_version"}
             return {
                 "model": dict(self._model),
+                "approved_model": dict(self._approved_model),
+                "gate": dict(self._gate),
                 "workers": {n: e["data"] for n, e in self._heartbeats.items()},
                 "elo": {
                     "ratings": self._elo.get("ratings", {}),

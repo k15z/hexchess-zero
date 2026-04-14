@@ -131,7 +131,13 @@ def store(fake: FakeStorage) -> DashboardStore:
 def test_empty_snapshot_has_expected_shape(store: DashboardStore) -> None:
     store.refresh_once()
     snap = store.snapshot()
-    assert snap["model"] == {"version": 0, "promoted_at": None}
+    assert snap["model"] == {
+        "version": 0,
+        "promoted_at": None,
+        "positions_at_promote": None,
+    }
+    assert snap["approved_model"] == {"version": 0, "promoted_at": None}
+    assert snap["gate"] == {"approved_version": 0, "decisions": {}}
     assert snap["workers"] == {}
     assert snap["recent_games"] == []
     assert snap["data"]["selfplay"]["total_positions"] == 0
@@ -143,16 +149,34 @@ def test_empty_snapshot_has_expected_shape(store: DashboardStore) -> None:
 def test_model_and_elo_use_etag_skip(
     fake: FakeStorage, store: DashboardStore
 ) -> None:
-    fake.put_json(storage.LATEST_META, {"version": 3, "timestamp": "2026-04-06T00:00:00Z"})
+    fake.put_json(
+        storage.LATEST_META,
+        {
+            "version": 3,
+            "timestamp": "2026-04-06T00:00:00Z",
+            "positions_at_promote": 12345,
+        },
+    )
+    fake.put_json(
+        storage.APPROVED_META,
+        {"version": 2, "timestamp": "2026-04-05T12:00:00Z"},
+    )
     fake.put_json(
         storage.ELO_STATE,
         {"ratings": {"alice": {"mu": 25, "sigma": 8}}, "total_games": 10},
+    )
+    fake.put_json(
+        storage.GATE_STATE,
+        {"approved_version": 2, "decisions": {"v3": {"status": "pending"}}},
     )
 
     store.refresh_once()
     snap = store.snapshot()
     assert snap["model"]["version"] == 3
+    assert snap["model"]["positions_at_promote"] == 12345
+    assert snap["approved_model"]["version"] == 2
     assert snap["elo"]["total_games"] == 10
+    assert snap["gate"]["approved_version"] == 2
 
     # If nothing changed, ETag match should cause get_json NOT to be called.
     calls = {"n": 0}
@@ -365,4 +389,3 @@ def test_empty_snapshot_has_new_keys(store: DashboardStore) -> None:
     assert snap["trainer_metrics"] == {}
     assert snap["benchmark_versions"] == []
     assert snap["benchmark_results"] == {}
-
