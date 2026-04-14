@@ -217,8 +217,8 @@ def test_gate_sprt_decision_waits_for_more_evidence():
 
 def test_gate_sprt_decision_rejects_clear_loser():
     decision, llr, lower, upper = _gate_sprt_decision(
-        {"2.0": 0, "1.5": 0, "1.0": 0, "0.5": 0, "0.0": 16},
-        32,
+        {"2.0": 0, "1.5": 0, "1.0": 0, "0.5": 0, "0.0": 32},
+        64,
     )
 
     assert decision == "rejected"
@@ -287,7 +287,7 @@ def test_maybe_resolve_gate_approves_candidate(monkeypatch):
     monkeypatch.setattr(storage, "put_json", lambda key, obj: writes.append((key, obj)))
 
     records = []
-    for i in range(16):
+    for i in range(32):
         pair_id = f"pair-{i}"
         records.extend([
             {
@@ -322,8 +322,8 @@ def test_maybe_resolve_gate_approves_candidate(monkeypatch):
     assert changed
     assert gate_state["approved_version"] == 4
     assert gate_state["decisions"]["v4"]["status"] == "approved"
-    assert gate_state["decisions"]["v4"]["games"] == 32
-    assert gate_state["decisions"]["v4"]["completed_pairs"] == 16
+    assert gate_state["decisions"]["v4"]["games"] == 64
+    assert gate_state["decisions"]["v4"]["completed_pairs"] == 32
     assert copied == [("models/versions/4.onnx", storage.APPROVED_ONNX)]
     assert writes[0][0] == storage.APPROVED_META
     assert writes[1][0] == storage.GATE_STATE
@@ -337,7 +337,7 @@ def test_maybe_resolve_gate_rejects_candidate(monkeypatch):
     monkeypatch.setattr(storage, "put_json", lambda key, obj: writes.append((key, obj)))
 
     records = []
-    for i in range(16):
+    for i in range(32):
         pair_id = f"pair-{i}"
         records.extend([
             {

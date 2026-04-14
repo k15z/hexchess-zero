@@ -56,6 +56,7 @@ GATE_SPRT_P1 = 0.55
 GATE_SPRT_ALPHA = 0.05
 GATE_SPRT_BETA = 0.05
 GATE_PAIR_BUCKETS: tuple[str, ...] = ("2.0", "1.5", "1.0", "0.5", "0.0")
+GATE_PAIR_PSEUDOCOUNT = 0.25
 GATE_PAIR_BUCKET_SCORES: dict[str, float] = {
     "2.0": 1.0,
     "1.5": 0.75,
@@ -119,8 +120,22 @@ def _pair_bucket_support(pair_buckets: dict[str, int]) -> list[tuple[float, int]
     ]
 
 
-def _empirical_likelihood_lambda(pair_buckets: dict[str, int], target_score: float) -> float | None:
-    support = _pair_bucket_support(pair_buckets)
+def _smoothed_pair_support(
+    pair_buckets: dict[str, int],
+    pseudocount: float = GATE_PAIR_PSEUDOCOUNT,
+) -> list[tuple[float, float]]:
+    return [
+        (GATE_PAIR_BUCKET_SCORES[bucket], float(pair_buckets.get(bucket, 0)) + pseudocount)
+        for bucket in GATE_PAIR_BUCKETS
+    ]
+
+
+def _empirical_likelihood_lambda(
+    pair_buckets: dict[str, int],
+    target_score: float,
+    pseudocount: float = GATE_PAIR_PSEUDOCOUNT,
+) -> float | None:
+    support = _smoothed_pair_support(pair_buckets, pseudocount)
     if not support:
         return 0.0
 
@@ -133,7 +148,7 @@ def _empirical_likelihood_lambda(pair_buckets: dict[str, int], target_score: flo
     if target_score <= min_score + tol or target_score >= max_score - tol:
         return None
 
-    total_pairs = sum(count for _score, count in support)
+    total_pairs = sum(weight for _score, weight in support)
     empirical_mean = sum(score * count for score, count in support) / total_pairs
     if abs(empirical_mean - target_score) <= tol:
         return 0.0
@@ -167,11 +182,15 @@ def _empirical_likelihood_lambda(pair_buckets: dict[str, int], target_score: flo
     return (lo + hi) / 2.0
 
 
-def _empirical_likelihood_log_prob(pair_buckets: dict[str, int], target_score: float) -> float:
-    lam = _empirical_likelihood_lambda(pair_buckets, target_score)
+def _empirical_likelihood_log_prob(
+    pair_buckets: dict[str, int],
+    target_score: float,
+    pseudocount: float = GATE_PAIR_PSEUDOCOUNT,
+) -> float:
+    lam = _empirical_likelihood_lambda(pair_buckets, target_score, pseudocount)
     if lam is None:
         return float("-inf")
-    support = _pair_bucket_support(pair_buckets)
+    support = _smoothed_pair_support(pair_buckets, pseudocount)
     total = 0.0
     for score, count in support:
         denom = 1.0 + lam * (score - target_score)
@@ -185,22 +204,13 @@ def _gate_pentanomial_llr(
     pair_buckets: dict[str, int],
     p0: float = GATE_SPRT_P0,
     p1: float = GATE_SPRT_P1,
+    pseudocount: float = GATE_PAIR_PSEUDOCOUNT,
 ) -> float:
     mean_score, total_pairs = _pair_bucket_mean(pair_buckets)
     if total_pairs <= 0:
         return 0.0
-    log_p0 = _empirical_likelihood_log_prob(pair_buckets, p0)
-    log_p1 = _empirical_likelihood_log_prob(pair_buckets, p1)
-    if math.isinf(log_p0) and math.isinf(log_p1):
-        if mean_score > max(p0, p1):
-            return math.inf
-        if mean_score < min(p0, p1):
-            return -math.inf
-        return 0.0
-    if math.isinf(log_p0):
-        return math.inf
-    if math.isinf(log_p1):
-        return -math.inf
+    log_p0 = _empirical_likelihood_log_prob(pair_buckets, p0, pseudocount)
+    log_p1 = _empirical_likelihood_log_prob(pair_buckets, p1, pseudocount)
     return log_p1 - log_p0
 
 
