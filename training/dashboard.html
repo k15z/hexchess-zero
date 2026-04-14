@@ -269,13 +269,10 @@
     background: transparent;
   }
   .eval-badge.prov {
-    color: var(--text-muted);
-    border-color: var(--border-strong);
+    color: var(--text);
+    border-color: var(--text);
     background: transparent;
   }
-
-  tr.provisional td { opacity: 0.55; }
-  tr.provisional td:last-child { opacity: 1; }
 
   /* --- Rating bars --- */
   .rating-bar-track {
@@ -406,6 +403,7 @@
     <div class="header-left">
       <div class="logo">hexchess <span>training</span></div>
       <span class="model-badge" id="model-badge">&mdash;</span>
+      <span class="model-badge" id="approved-badge">&mdash;</span>
     </div>
     <div class="header-meta">
       <div id="promoted-at"></div>
@@ -463,6 +461,17 @@ function freshness(ts) {
 
 function pairKey(a, b) { return [a, b].sort().join(':'); }
 function shorten(s) { return s.length > 7 ? s.slice(0, 6) + '\u2026' : s; }
+function versionNumber(name) {
+  const m = /^v(\d+)$/.exec(name || '');
+  return m ? Number(m[1]) : -1;
+}
+function latestGateDecision(gate) {
+  const decisions = Object.entries((gate && gate.decisions) || {});
+  if (!decisions.length) return null;
+  decisions.sort((a, b) => versionNumber(b[0]) - versionNumber(a[0]));
+  const [name, info] = decisions[0];
+  return { name, ...info };
+}
 
 const panelState = {};
 const panelDefaults = {};
@@ -527,21 +536,19 @@ function renderRatingTable(players, ratings, playerStats) {
     const barRight = Math.min(100, ((it.cr + it.sigma) - base) / span * 100);
     const barCenter = (it.cr - base) / span * 100;
 
-    const isBaseline = BASELINES.has(it.name);
-    const barColor = isBaseline ? '#ccc' : '#111';
-    const rowClass = it.evaluated ? '' : 'provisional';
+    const barColor = '#111';
     const stateBadge = it.evaluated
       ? `<span class="eval-badge eval" title="sigma \u2264 ${EVALUATED_SIGMA_THRESHOLD}">eval</span>`
       : `<span class="eval-badge prov" title="sigma > ${EVALUATED_SIGMA_THRESHOLD}">prov</span>`;
 
-    html += `<tr class="${rowClass}">
-      <td class="r muted">${i + 1}</td>
-      <td style="${isBaseline ? 'color:var(--text-muted)' : ''}">${it.name}</td>
+    html += `<tr>
+      <td class="r">${i + 1}</td>
+      <td>${it.name}</td>
       <td class="r" style="font-weight:600">${it.cr >= 0 ? '+' : ''}${it.cr.toFixed(2)}</td>
-      <td class="r muted">${it.mu.toFixed(2)}</td>
-      <td class="r muted">${it.sigma.toFixed(2)}</td>
+      <td class="r">${it.mu.toFixed(2)}</td>
+      <td class="r">${it.sigma.toFixed(2)}</td>
       <td class="c">${stateBadge}</td>
-      <td class="r muted">${avg}</td>
+      <td class="r">${avg}</td>
       <td>
         <div class="rating-bar-track">
           <div class="rating-bar-ci" style="left:${barLeft}%;width:${barRight - barLeft}%;background:${barColor}"></div>
@@ -556,16 +563,28 @@ function renderRatingTable(players, ratings, playerStats) {
 
 function renderHeader(data) {
   const m = data.model;
-  document.getElementById('model-badge').textContent = m.version ? `v${m.version}` : 'no model';
-  document.getElementById('promoted-at').innerHTML = m.promoted_at
-    ? `promoted <strong>${ago(m.promoted_at)}</strong>`
-    : '<strong>bootstrap</strong>';
+  const approved = data.approved_model || {};
+  const gate = data.gate || {};
+  const latestDecision = latestGateDecision(gate);
+  document.getElementById('model-badge').textContent = m.version ? `latest v${m.version}` : 'latest none';
+  document.getElementById('approved-badge').textContent = approved.version ? `approved v${approved.version}` : 'approved none';
+  if (m.version && approved.version && m.version !== approved.version) {
+    document.getElementById('promoted-at').innerHTML = `candidate <strong>v${m.version}</strong> gating against v${approved.version}`;
+  } else if (latestDecision) {
+    const against = latestDecision.approved_against ? ` vs ${latestDecision.approved_against}` : '';
+    document.getElementById('promoted-at').innerHTML = `latest gate <strong>${latestDecision.name} ${latestDecision.status}</strong>${against}`;
+  } else if (m.promoted_at) {
+    document.getElementById('promoted-at').innerHTML = `latest exported <strong>${ago(m.promoted_at)}</strong>`;
+  } else {
+    document.getElementById('promoted-at').innerHTML = '<strong>bootstrap</strong>';
+  }
   document.getElementById('last-refresh').innerHTML = `refreshed <strong>${ago(data.timestamp)}</strong>`;
 }
 
 function buildOverview(data) {
   const e = data.elo || {};
   const d = data.data || {};
+  const gate = data.gate || {};
   const sp = d.selfplay || {};
   const im = d.imitation || {};
   const workers = Object.values(data.workers || {});
@@ -575,14 +594,20 @@ function buildOverview(data) {
   const summaries = (((data.trainer_metrics || {}).summaries) || ((data.trainer_metrics || {}).cycles) || []);
   const latestSummary = summaries.length ? summaries[summaries.length - 1] : null;
   const latestSummaryId = latestSummary ? (latestSummary.summary ?? latestSummary.cycle) : null;
+  const latest = data.model || {};
+  const approved = data.approved_model || {};
+  const latestDecision = latestGateDecision(gate);
+  const gateMeta = latest.version && approved.version && latest.version !== approved.version
+    ? `pending: v${latest.version} vs v${approved.version}`
+    : latestDecision
+      ? `${latestDecision.name} ${latestDecision.status}`
+      : 'no gate yet';
 
   const items = [
     {
-      label: 'Promotion',
-      value: data.model && data.model.version ? `v${data.model.version}` : 'none',
-      meta: data.model && data.model.positions_at_promote != null
-        ? `${fmt(data.model.positions_at_promote)} pos at promote`
-        : 'waiting for first promotion',
+      label: 'Models',
+      value: latest.version ? `v${latest.version} / v${approved.version || 0}` : 'none',
+      meta: `latest / approved &middot; ${gateMeta}`,
     },
     {
       label: 'Replay',
@@ -599,7 +624,7 @@ function buildOverview(data) {
       value: fmt(e.total_games || 0),
       meta: latestSummary
         ? `summary ${latestSummaryId} &middot; ${fmt(latestSummary.total_steps)} steps`
-        : `${fmt((e.active_players || []).length)} tracked players`,
+        : `${fmt((e.active_players || []).length)} active &middot; ${fmt((e.retired_players || []).length)} retired`,
     },
   ];
 
@@ -624,9 +649,52 @@ function buildRatings(data) {
   }
 
   let body = `<div class="kv-row"><span class="k">total games</span><span class="v">${fmt(e.total_games)}</span></div>`;
+  body += `<div class="kv-row"><span class="k">active window</span><span class="v">${fmt(active.length)} active &middot; ${fmt((e.retired_players || []).length)} retired</span></div>`;
   body += renderRatingTable(active, ratings, ps);
 
   return panelHtml('ratings', 'Ratings', `${active.length} players`, body);
+}
+
+function buildGate(data) {
+  const latest = data.model || {};
+  const approved = data.approved_model || {};
+  const gate = data.gate || {};
+  const decisions = Object.entries(gate.decisions || {}).sort(
+    (a, b) => versionNumber(b[0]) - versionNumber(a[0]),
+  );
+
+  let html = '';
+  if (latest.version && approved.version && latest.version !== approved.version) {
+    html += `<div class="kv-row"><span class="k">current gate</span><span class="v">v${latest.version} vs v${approved.version}</span></div>`;
+    html += `<div class="kv-row"><span class="k">self-play source</span><span class="v">approved v${approved.version}</span></div>`;
+  } else if (approved.version) {
+    html += `<div class="kv-row"><span class="k">current gate</span><span class="v">none pending</span></div>`;
+    html += `<div class="kv-row"><span class="k">self-play source</span><span class="v">approved v${approved.version}</span></div>`;
+  } else {
+    html += `<div class="empty">awaiting first approved model</div>`;
+  }
+
+  if (!decisions.length) {
+    return panelHtml('gate', 'Gate', null, html);
+  }
+
+  html += '<table style="margin-top:8px"><tr><th>candidate</th><th>decision</th><th>against</th><th class="r">record</th><th class="r">score</th><th class="r">when</th></tr>';
+  for (const [name, info] of decisions.slice(0, 6)) {
+    const against = info.approved_against || '\u2014';
+    const record = `${info.wins ?? 0}-${info.draws ?? 0}-${info.losses ?? 0}`;
+    const score = info.score != null ? info.score.toFixed(3) : '\u2014';
+    html += `<tr>
+      <td>${name}</td>
+      <td style="font-weight:600">${info.status || '\u2014'}</td>
+      <td>${against}</td>
+      <td class="r">${record}</td>
+      <td class="r">${score}</td>
+      <td class="r">${info.resolved_at ? ago(info.resolved_at) : '\u2014'}</td>
+    </tr>`;
+  }
+  html += '</table>';
+
+  return panelHtml('gate', 'Gate', `${decisions.length} decisions`, html);
 }
 
 function buildData(data) {
@@ -773,7 +841,7 @@ function buildRetired(data) {
 
   const body = renderRatingTable(retired, ratings, ps);
   if (!body) return '';
-  return panelHtml('retired', 'Retired', `${retired.length}`, body);
+  return panelHtml('retired', 'Retired Ratings', `${retired.length}`, body);
 }
 
 // --- Pages 1-7 ---
@@ -1116,6 +1184,7 @@ function render(data) {
 
   panels.innerHTML = [
     buildRatings(data),
+    buildGate(data),
     buildData(data),
     buildRunHealth(data),
     buildDataPage(data),

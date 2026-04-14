@@ -62,7 +62,7 @@ def test_build_state_deterministic_under_record_permutation():
     )
 
 
-def test_desired_active_uses_approved_and_next_candidate(monkeypatch):
+def test_desired_active_keeps_approved_candidate_and_recent_versions(monkeypatch):
     monkeypatch.setattr(
         "training.elo_service._discover_versions",
         lambda: [
@@ -84,11 +84,36 @@ def test_desired_active_uses_approved_and_next_candidate(monkeypatch):
 
     active, version_keys, approved_name, pending, gate_state = _desired_active(5)
 
-    assert active == [*BASELINE_NAMES, "v3", "v5"]
+    assert active == [*BASELINE_NAMES, "v3", "v5", "v4", "v2", "v1"]
     assert version_keys["v5"] == "models/versions/5.onnx"
     assert approved_name == "v3"
     assert pending == "v5"
     assert gate_state["approved_version"] == 3
+
+
+def test_desired_active_pins_old_approved_version_inside_window(monkeypatch):
+    monkeypatch.setattr(
+        "training.elo_service._discover_versions",
+        lambda: [
+            (1, "models/versions/1.onnx"),
+            (2, "models/versions/2.onnx"),
+            (3, "models/versions/3.onnx"),
+            (4, "models/versions/4.onnx"),
+            (5, "models/versions/5.onnx"),
+            (6, "models/versions/6.onnx"),
+        ],
+    )
+    monkeypatch.setattr("training.elo_service._read_approved_version", lambda: 1)
+    monkeypatch.setattr(
+        "training.elo_service._load_gate_state",
+        lambda approved_version: {"approved_version": approved_version, "decisions": {}},
+    )
+
+    active, _, approved_name, pending, _ = _desired_active(3)
+
+    assert active == [*BASELINE_NAMES, "v1", "v2", "v6"]
+    assert approved_name == "v1"
+    assert pending == "v2"
 
 
 def test_select_pair_prefers_gate_matchup():

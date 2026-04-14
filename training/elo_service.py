@@ -210,13 +210,19 @@ def _desired_active(
         approved_key if approved_version > 0 and approved_key in version_keys else None
     )
     pending = _pending_candidate(version_keys, approved_version, gate_state)
+    discovered_names = sorted(version_keys.keys(), key=lambda n: int(n[1:]), reverse=True)
     desired_models: list[str] = []
-    if approved_name is not None:
-        desired_models.append(approved_name)
-    if pending is not None and pending != approved_name:
-        desired_models.append(pending)
-    if max_versions > 0:
-        desired_models = desired_models[:max_versions]
+
+    # Always keep the incumbent and any pending gate candidate visible, then
+    # retain a rolling window of the newest snapshots so recent trends remain
+    # comparable in the active Elo pool.
+    pinned = [name for name in (approved_name, pending) if name is not None]
+    for name in pinned + discovered_names:
+        if name in desired_models:
+            continue
+        desired_models.append(name)
+        if max_versions > 0 and len(desired_models) >= max_versions:
+            break
     active = list(BASELINE_NAMES) + desired_models
     return active, version_keys, approved_name, pending, gate_state
 
