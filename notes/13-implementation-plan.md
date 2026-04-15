@@ -283,7 +283,7 @@ to an arbitrary trainer chunk boundary.
 
 ### 4.6 Gating
 
-**Off.** Continuous Elo service catches regressions; no inline gauntlet needed. (Early-phase gating was removed — the Elo service discovers model quality faster without blocking the trainer.)
+**Moved out of the trainer loop.** Promotions are decided by the separate evaluation service, not by inline trainer-side gauntlets. The trainer just exports candidates and advances once the fresh-position watermark is met.
 
 ### 4.7 Bootstrap
 
@@ -402,15 +402,16 @@ Maintain a fixed external anchor pool that **never changes for the run**:
 - `anchor_minimax_d7_full`.
 - `anchor_v0` — first promoted NN snapshot, frozen forever.
 
-Anchors live in S3 as `anchors/{name}.json` config. The Elo service treats them as immortal players that get matched at high frequency early in a model's life and tapered off.
+Anchors live in S3 as `anchors/{name}.json` config. The evaluation service treats them as fixed benchmark opponents for every candidate and uses the approved model's anchor scores as the regression baseline.
 
-### 6.2 Continuous Elo service
+### 6.2 Continuous evaluation service
 
-Keep the existing `elo_service.py` design (immutable per-game records under `state/elo_games/`, projection rebuilt). Changes:
+Use a narrow `evaluation_service.py` design. It writes immutable per-game records under `state/evals/v{N}/games/` and rebuilds version-scoped summaries from that log.
 
-- **Pairing policy:** OpenSkill-uncertainty-driven matchmaking (already done) plus a hard rule: every new model plays at minimum 30 games against each anchor before its rating is "released" to the dashboard. Prevents premature regression alarms.
+- **Gate policy:** newest candidate vs current approved model only, using paired-color mini-matches and a pentanomial SPRT.
+- **Benchmark policy:** newest candidate vs fixed anchors only, using paired-color mini-matches plus a non-regression tolerance against the approved model's anchor scores.
 - **Use ≥800 sims** as already mandated by AGENTS.md.
-- **SPRT** option for "is candidate stronger than current": API endpoint that sets up a pairing campaign with stop conditions `(elo0=0, elo1=10, α=β=0.05)`.
+- **Artifacts:** `gate_summary.json`, `benchmark_summary.json`, `decision.json`, and immutable game records for each candidate version.
 
 ### 6.3 Fixed benchmark suite
 
@@ -426,8 +427,8 @@ For every promoted version, the trainer (or a dedicated benchmark service) runs 
 ### 6.4 Regression detection
 
 Auto-alert (Slack via existing `slack.py`) when:
-- Anchor Elo (vs `anchor_minimax_d5_full`) drops by >50 between consecutive versions.
-- Anchor Elo (vs `anchor_v0`) drops at all between consecutive versions (it should monotonically rise).
+- Anchor benchmark score regresses beyond tolerance between consecutive approved versions.
+- Direct gate score vs the approved model stalls for too long across successive candidates.
 - Draw rate against anchor pool jumps by >15 percentage points.
 - Mean game length drops by >20% (often signals tactical regression).
 - Any benchmark suite "best move" flips to a known-bad move.

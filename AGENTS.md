@@ -15,7 +15,8 @@ make setup                              # uv sync + build Python bindings
 # Training pipeline
 make worker                             # run self-play worker
 make trainer                            # run continuous trainer
-make elo                                # run Elo rating service
+make eval                               # run evaluation service
+make elo                                # deprecated alias for evaluation service
 make dashboard                          # run training dashboard
 make status                             # show training status
 
@@ -65,10 +66,10 @@ AlphaZero-style self-play training loop. All shared state lives in S3 (DigitalOc
 - **trainer_loop.py** - Continuous trainer. Samples from a sliding-window replay buffer (downloads from S3), emits periodic trainer summaries for observability, and promotes as soon as the fresh-position threshold is met at a reload/poll boundary. KataGo-style token bucket throttles training to match data production rate.
 - **model.py** - `HexChessNet`: 8 SE residual blocks (144 filters) with KataGo-style global pooling at blocks 2 and 5. Input `(22, 11, 11)` in STM frame. Heads: main policy, terminal WDL value, moves-left (MLH), short-term value (STV), and auxiliary opponent policy.
 - **export.py** - PyTorch -> ONNX export.
-- **elo.py** - Shared Elo types: `Player` protocol, `MinimaxPlayer`, `MctsPlayer`, game play with per-player timing, OpenSkill (Plackett-Luce / Weng-Lin) rating math rescaled to look Elo-like, `predict_draw`, table formatting.
-- **elo_service.py** - Continuous Elo rating service. `predict_draw`-driven matchmaking with placement matches for new models. Scales horizontally: each replica plays one game at a time and writes per-game immutable objects under `state/elo_games/`; the `state/elo.json` projection is rebuilt from the game log (last-writer-wins, idempotent). LRU-caches loaded ONNX sessions to bound memory.
+- **elo.py** - Shared evaluation play types: `Player` protocol, `MinimaxPlayer`, `MctsPlayer`, game play with per-player timing, plus legacy OpenSkill helpers retained for offline scripts.
+- **evaluation_service.py** - Continuous candidate evaluation service. Runs paired-color gate mini-matches against the approved model plus paired-color benchmark mini-matches against fixed anchors, writing immutable per-game records and version-scoped summaries under `state/evals/v{N}/`.
 - **imitation.py** - Minimax self-play games for the bootstrap phase, parallelized with `ProcessPoolExecutor`.
-- **dashboard.py** + **dashboard_store.py** + **dashboard.html** - HTTP server backed by an in-memory store that incrementally syncs from S3 in a background thread (ETag caches + LIST diffs on `state/elo_games/`), so HTTP requests never block on S3.
+- **dashboard.py** + **dashboard_store.py** + **dashboard.html** - HTTP server backed by an in-memory store that incrementally syncs from S3 in a background thread (ETag caches on version-scoped evaluation summaries plus LIST diffs on `state/evals/v{N}/games/`), so HTTP requests never block on S3.
 - **config.py** - Hyperparameters. Local `.cache/` directory for downloaded S3 objects.
 
 ### Documentation (`docs/`)
@@ -99,8 +100,10 @@ data/
   imitation/{ts}_{rand}_n{count}.npz
 
 state/
-  elo.json                 # derived Elo projection (rebuilt from elo_games/)
-  elo_games/{ts}_{rand}.json  # one immutable object per played game
+  evals/v{N}/gate_summary.json
+  evals/v{N}/benchmark_summary.json
+  evals/v{N}/decision.json
+  evals/v{N}/games/{ts}_{rand}.json
   trainer_metrics.json     # latest trainer telemetry for the dashboard
 
 benchmarks/
@@ -135,7 +138,7 @@ kubectl set image deployment/trainer trainer=ghcr.io/k15z/hexchess-zero/training
 kubectl set image deployment/worker worker=ghcr.io/k15z/hexchess-zero/training:cpu-$TAG -n hexchess
 kubectl set image deployment/dashboard dashboard=ghcr.io/k15z/hexchess-zero/training:cpu-$TAG \
   tunnel=ghcr.io/k15z/hexchess-zero/training:cpu-$TAG -n hexchess
-kubectl set image deployment/elo-service elo=ghcr.io/k15z/hexchess-zero/training:cpu-$TAG -n hexchess
+kubectl set image deployment/evaluation-service evaluation=ghcr.io/k15z/hexchess-zero/training:cpu-$TAG -n hexchess
 ```
 
 ## Key Conventions

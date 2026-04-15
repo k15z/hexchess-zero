@@ -19,13 +19,13 @@ graph LR
     S3 -->|latest.onnx| W1
     S3 -->|latest.onnx| W2
     S3 -->|latest.onnx| W3
-    S3 -->|model versions| E["Elo Service"]
-    E -->|ratings| S3
+    S3 -->|model versions| E["Evaluation Service"]
+    E -->|gate + benchmark artifacts| S3
 
     style S3 fill:#fdf2e9,stroke:#e67e22
     style T fill:#e8f4f8,stroke:#2980b9
     style E fill:#e8f8e8,stroke:#27ae60
-`} caption="Distributed training loop: workers generate self-play data, the trainer produces new models, and the Elo service rates them" />
+`} caption="Distributed training loop: workers generate self-play data, the trainer produces new models, and the evaluation service decides whether the newest candidate should replace the approved model" />
 
 ## Components
 
@@ -52,15 +52,16 @@ A single trainer process:
 
 `summary_interval_steps` is a reporting cadence, not a hard promotion boundary.
 
-### Elo service (`training/elo_service.py`)
+### Evaluation service (`training/evaluation_service.py`)
 
-A continuous rating service that:
+A continuous candidate-evaluation service that:
 
-1. Rates every model version (and a fixed set of heuristic / minimax baselines) with **OpenSkill** — a Bayesian Plackett-Luce / Weng-Lin model rescaled to look Elo-like (μ=25 → 1500). The "conservative rating" used for ranking is `μ − 2σ`.
-2. Picks pairings using `predict_draw` over the current rating distribution: the top 5% of pairs by draw probability are sampled uniformly, so games concentrate where the result is genuinely uncertain instead of on hopeless mismatches.
-3. Runs **placement matches** for new model versions — they exclusively play baselines until σ has shrunk enough for them to be matched against other models.
-4. Scales horizontally. Each replica plays one game at a time and writes the result as an immutable per-game object under `state/elo_games/{ts}_{rand}.json`. A derived `state/elo.json` projection is rebuilt from the game log (last-writer-wins, idempotent), so multiple replicas never race on a shared state file.
-5. LRU-caches loaded ONNX sessions (default 6 slots) to bound memory.
+1. Discovers the current `approved` model and the newest candidate snapshot.
+2. Runs paired-color gate mini-matches: `candidate vs approved`.
+3. Runs paired-color benchmark mini-matches: `candidate vs Heuristic / Minimax-2 / Minimax-3 / Minimax-4`.
+4. Starts each paired mini-match from the same opening prefix and then swaps colors, so evaluation does not collapse into one repeated line or first-mover artifacts.
+5. Persists every game as an immutable record under `state/evals/v{N}/games/...` and rebuilds summaries from that append-only log.
+6. Promotes only when the direct gate passes and the benchmark suite stays within the configured regression tolerance.
 
 ## Bootstrap phase
 
@@ -114,8 +115,10 @@ data/
   imitation/{ts}_{rand}_n{count}.npz
 
 state/
-  elo.json                 # derived Elo projection (rebuilt from elo_games/)
-  elo_games/{ts}_{rand}.json  # one immutable object per played game
+  evals/v{N}/gate_summary.json
+  evals/v{N}/benchmark_summary.json
+  evals/v{N}/decision.json
+  evals/v{N}/games/{ts}_{rand}.json
   trainer_metrics.json     # latest trainer telemetry for the dashboard
 
 heartbeats/
@@ -156,7 +159,7 @@ If the trainer is outpacing data production, it sleeps rather than overfitting o
 | `window_c` / `window_alpha` / `window_beta` | 25,000 / 0.75 / 0.4 | Sublinear replay-window parameters |
 | `summary_interval_steps` | 3,000 | Steps between trainer summaries |
 | `reload_interval` | 1,000 | S3 refresh interval for fresh data and promotion checks |
-| `promote_every_new_positions` | 300,000 | Minimum fresh self-play positions required between promotions |
+| `promote_every_new_positions` | 2,500,000 | Minimum fresh self-play positions required between promotions |
 | `imitation_mix_start` / `imitation_mix_end` / `imitation_mix_decay_end_version` | 0.3 / 0.0 / 5 | Early-version imitation mixing schedule |
 
 

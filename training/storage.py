@@ -52,6 +52,11 @@ EVALS_PREFIX = "state/evals/"
 HEARTBEATS_PREFIX = "heartbeats/"
 TRAINER_METRICS = "state/trainer_metrics.json"
 BENCHMARK_RESULTS_PREFIX = "benchmarks/results/"
+EVAL_PROMOTION_LOCK = f"{EVALS_PREFIX}promotion.lock"
+
+
+class ConditionalWriteFailed(RuntimeError):
+    """Raised when an S3 conditional write precondition fails."""
 
 # ---------------------------------------------------------------------------
 # Client
@@ -80,11 +85,27 @@ def _bucket() -> str:
 # Core operations
 # ---------------------------------------------------------------------------
 
-def put(key: str, data: bytes | str) -> None:
+def put(
+    key: str,
+    data: bytes | str,
+    *,
+    if_match: str | None = None,
+    if_none_match: str | None = None,
+) -> None:
     """Upload bytes or string to S3."""
     if isinstance(data, str):
         data = data.encode()
-    _client().put_object(Bucket=_bucket(), Key=key, Body=data)
+    kwargs = {"Bucket": _bucket(), "Key": key, "Body": data}
+    if if_match is not None:
+        kwargs["IfMatch"] = if_match
+    if if_none_match is not None:
+        kwargs["IfNoneMatch"] = if_none_match
+    try:
+        _client().put_object(**kwargs)
+    except ClientError as e:
+        if e.response["Error"]["Code"] in ("PreconditionFailed", "ConditionalRequestConflict"):
+            raise ConditionalWriteFailed(key) from e
+        raise
 
 
 def put_file(key: str, local_path: str | Path) -> None:
@@ -116,9 +137,15 @@ def get_file(key: str, local_path: str | Path) -> Path:
     return local_path
 
 
-def put_json(key: str, obj: dict) -> None:
+def put_json(
+    key: str,
+    obj: dict,
+    *,
+    if_match: str | None = None,
+    if_none_match: str | None = None,
+) -> None:
     """Upload a dict as JSON."""
-    put(key, json.dumps(obj, indent=2))
+    put(key, json.dumps(obj, indent=2), if_match=if_match, if_none_match=if_none_match)
 
 
 def delete(key: str) -> None:
@@ -130,12 +157,29 @@ def delete(key: str) -> None:
             raise
 
 
-def copy(src_key: str, dst_key: str) -> None:
+def copy(
+    src_key: str,
+    dst_key: str,
+    *,
+    if_match: str | None = None,
+    if_none_match: str | None = None,
+) -> None:
     """Server-side copy within the same bucket."""
-    _client().copy_object(
-        Bucket=_bucket(), Key=dst_key,
-        CopySource={"Bucket": _bucket(), "Key": src_key},
-    )
+    kwargs = {
+        "Bucket": _bucket(),
+        "Key": dst_key,
+        "CopySource": {"Bucket": _bucket(), "Key": src_key},
+    }
+    if if_match is not None:
+        kwargs["IfMatch"] = if_match
+    if if_none_match is not None:
+        kwargs["IfNoneMatch"] = if_none_match
+    try:
+        _client().copy_object(**kwargs)
+    except ClientError as e:
+        if e.response["Error"]["Code"] in ("PreconditionFailed", "ConditionalRequestConflict"):
+            raise ConditionalWriteFailed(dst_key) from e
+        raise
 
 
 def head(key: str) -> dict | None:

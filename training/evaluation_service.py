@@ -21,6 +21,7 @@ import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+from statistics import NormalDist
 
 from loguru import logger
 
@@ -48,7 +49,7 @@ GATE_SPRT_P0 = 0.50
 GATE_SPRT_P1 = 0.55
 GATE_SPRT_ALPHA = 0.05
 GATE_SPRT_BETA = 0.05
-GATE_Z_VALUE = 1.96
+GATE_Z_VALUE = NormalDist().inv_cdf(1.0 - GATE_SPRT_ALPHA / 2.0)
 
 BENCHMARK_MIN_GAMES = 12
 BENCHMARK_MAX_GAMES = 24
@@ -59,6 +60,7 @@ OPENING_RANDOM_PLIES = 8
 MODEL_CACHE_LIMIT = 2
 SYNC_INTERVAL_SECONDS = 60
 IDLE_SECONDS = 60
+PROMOTION_LEASE_STALE_SECONDS = 15 * 60
 
 
 def _pair_bucket(pair_score: float) -> str:
@@ -433,7 +435,37 @@ def _series_progress(records: list[dict], *, candidate: str, opponent: str) -> d
 
 
 def _empty_progress() -> dict:
-    return _series_progress([], candidate="__", opponent="__")
+    return {
+        "wins": 0,
+        "losses": 0,
+        "draws": 0,
+        "games": 0,
+        "score": 0.0,
+        "completed_pairs": 0,
+        "pending_pairs": 0,
+        "pair_buckets": {bucket: 0 for bucket in PAIR_BUCKETS},
+        "color_split": {
+            "candidate_white": {"games": 0, "wins": 0, "losses": 0, "draws": 0},
+            "candidate_black": {"games": 0, "wins": 0, "losses": 0, "draws": 0},
+        },
+        "confidence": {
+            "score": 0.0,
+            "ci_half_width": 1.0,
+            "lower": -1.0,
+            "upper": 1.0,
+            "games": 0,
+        },
+        "move_time_stats": {
+            "candidate_total_seconds": 0.0,
+            "opponent_total_seconds": 0.0,
+            "candidate_total_moves": 0,
+            "opponent_total_moves": 0,
+            "candidate_seconds_per_move": 0.0,
+            "opponent_seconds_per_move": 0.0,
+            "average_game_length_moves": 0.0,
+        },
+        "termination_mix": {},
+    }
 
 
 def _merge_progress(progresses: list[dict]) -> dict:
@@ -933,6 +965,45 @@ def _promote_candidate(version: int, model_key: str) -> None:
     )
 
 
+def _acquire_promotion_lease(
+    *,
+    run_id: str,
+    candidate_version: int,
+    approved_version: int,
+) -> bool:
+    lease_meta = storage.head(storage.EVAL_PROMOTION_LOCK)
+    if lease_meta is not None:
+        last_modified = lease_meta.get("last_modified")
+        if hasattr(last_modified, "tzinfo"):
+            age = (datetime.now(timezone.utc) - last_modified).total_seconds()
+            if age > PROMOTION_LEASE_STALE_SECONDS:
+                try:
+                    storage.delete(storage.EVAL_PROMOTION_LOCK)
+                except Exception:
+                    pass
+    try:
+        storage.put_json(
+            storage.EVAL_PROMOTION_LOCK,
+            {
+                "run_id": run_id,
+                "candidate_version": candidate_version,
+                "approved_version": approved_version,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            },
+            if_none_match="*",
+        )
+    except storage.ConditionalWriteFailed:
+        return False
+    return True
+
+
+def _release_promotion_lease() -> None:
+    try:
+        storage.delete(storage.EVAL_PROMOTION_LOCK)
+    except Exception:
+        pass
+
+
 def _run_pair(
     *,
     players: PlayerProvider,
@@ -962,7 +1033,14 @@ def _run_pair(
                 opening_seed=opening_seed,
             )
         except Exception as exc:  # noqa: BLE001
-            logger.error("{} pair game failed: {} vs {} ({})", eval_type, white_name, black_name, exc)
+            logger.error(
+                "{} pair game failed for candidate v{}: {} vs {} ({})",
+                eval_type,
+                candidate_version,
+                white_name,
+                black_name,
+                exc,
+            )
             return False
 
         record = _make_record(
@@ -1034,23 +1112,48 @@ def run_evaluation_service(simulations: int = 800) -> None:
         )
 
         if decision["status"] == "promote" and candidate_version == target_version:
-            _promote_candidate(candidate_version, versions[candidate_version])
-            gate_summary, benchmark_summary, decision = _refresh_artifacts(
-                version=target_version,
+            if not _acquire_promotion_lease(
+                run_id=cfg.run_id,
+                candidate_version=candidate_version,
                 approved_version=approved_version,
-                records=records,
-                include_gate=include_gate,
-            )
-            decision = dict(decision)
-            decision["status"] = "promoted"
-            decision["promoted_at"] = datetime.now(timezone.utc).isoformat()
-            _write_artifacts(
-                version=target_version,
-                gate_summary=gate_summary,
-                benchmark_summary=benchmark_summary,
-                decision=decision,
-            )
-            logger.info("Promoted v{} over v{}", candidate_version, approved_version)
+            ):
+                logger.info(
+                    "Promotion lease busy for v{} over v{}; waiting for peer",
+                    candidate_version,
+                    approved_version,
+                )
+                time.sleep(5)
+                continue
+            try:
+                current_approved_version = _read_approved_version()
+                if current_approved_version != approved_version:
+                    logger.info(
+                        "Approved pointer moved from v{} to v{} before promoting v{}; retrying",
+                        approved_version,
+                        current_approved_version,
+                        candidate_version,
+                    )
+                    continue
+                _promote_candidate(candidate_version, versions[candidate_version])
+                approved_version = _read_approved_version()
+                gate_summary, benchmark_summary, decision = _refresh_artifacts(
+                    version=target_version,
+                    approved_version=approved_version,
+                    records=records,
+                    include_gate=include_gate,
+                )
+                decision = dict(decision)
+                decision["status"] = "promoted"
+                decision["promoted_at"] = datetime.now(timezone.utc).isoformat()
+                _write_artifacts(
+                    version=target_version,
+                    gate_summary=gate_summary,
+                    benchmark_summary=benchmark_summary,
+                    decision=decision,
+                )
+                logger.info("Promoted v{} over v{}", candidate_version, current_approved_version)
+            finally:
+                _release_promotion_lease()
             continue
 
         if decision["status"] in {"rejected", "promoted", "baseline_ready"}:

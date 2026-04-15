@@ -1,3 +1,7 @@
+import pytest
+
+import training.evaluation_service as evaluation_service
+
 from training.evaluation_service import (
     BENCHMARK_MAX_GAMES,
     _build_benchmark_summary,
@@ -175,3 +179,88 @@ def test_build_decision_requires_gate_and_benchmarks_for_promotion():
 def test_pair_bucket_formats_half_scores():
     assert _pair_bucket(2.0) == "2.0"
     assert _pair_bucket(1.5) == "1.5"
+
+
+def test_run_service_refreshes_promoted_artifacts_with_new_approved_version(
+    monkeypatch,
+    tmp_path,
+):
+    class FakeConfig:
+        run_id = "run-1"
+        model_cache_dir = tmp_path
+
+        def ensure_cache_dirs(self) -> None:
+            pass
+
+    class FakeRecords:
+        def refresh(self, version: int) -> int:
+            return 0
+
+        def records(self, version: int) -> list[dict]:
+            return []
+
+    approved_versions = iter([5, 5, 6])
+    refresh_calls: list[int] = []
+    write_calls: list[dict] = []
+
+    monkeypatch.setattr(evaluation_service, "AsyncConfig", lambda: FakeConfig())
+    monkeypatch.setattr(evaluation_service, "setup_json_logging", lambda *args, **kwargs: None)
+    monkeypatch.setattr(evaluation_service, "log_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(evaluation_service, "PlayerProvider", lambda simulations, cache_dir: object())
+    monkeypatch.setattr(evaluation_service, "VersionRecordStore", lambda: FakeRecords())
+    monkeypatch.setattr(
+        evaluation_service,
+        "_discover_versions",
+        lambda: [(6, "models/versions/6.onnx")],
+    )
+    monkeypatch.setattr(
+        evaluation_service,
+        "_read_approved_version",
+        lambda: next(approved_versions),
+    )
+    monkeypatch.setattr(evaluation_service, "_needs_anchor_backfill", lambda approved_version: False)
+    monkeypatch.setattr(
+        evaluation_service,
+        "_acquire_promotion_lease",
+        lambda **kwargs: True,
+    )
+    monkeypatch.setattr(evaluation_service, "_release_promotion_lease", lambda: None)
+    monkeypatch.setattr(evaluation_service, "_promote_candidate", lambda version, model_key: None)
+
+    def fake_refresh_artifacts(*, version: int, approved_version: int, records, include_gate: bool):
+        refresh_calls.append(approved_version)
+        if len(refresh_calls) == 1:
+            return (
+                {"status": "approved", "games": 20, "approved_version": approved_version},
+                {"status": "approved", "reference_available": True},
+                {"status": "promote"},
+            )
+        return (
+            {"status": "approved", "games": 20, "approved_version": approved_version},
+            {"status": "approved", "reference_available": True},
+            {"status": "promote"},
+        )
+
+    def fake_write_artifacts(*, version: int, gate_summary: dict | None, benchmark_summary: dict, decision: dict):
+        write_calls.append(
+            {
+                "version": version,
+                "approved_version": None if gate_summary is None else gate_summary["approved_version"],
+                "status": decision["status"],
+            }
+        )
+        if decision["status"] == "promoted":
+            raise SystemExit
+
+    monkeypatch.setattr(evaluation_service, "_refresh_artifacts", fake_refresh_artifacts)
+    monkeypatch.setattr(evaluation_service, "_write_artifacts", fake_write_artifacts)
+
+    with pytest.raises(SystemExit):
+        evaluation_service.run_evaluation_service(simulations=800)
+
+    assert refresh_calls == [5, 6]
+    assert write_calls[-1] == {
+        "version": 6,
+        "approved_version": 6,
+        "status": "promoted",
+    }
