@@ -59,7 +59,7 @@ class _BaseConfig:
     # allowed very weak nets to replace self-play before the replay window had
     # enough fresh signal to stabilize, so we now wait for a meaningfully
     # larger tranche of new data between promotions.
-    promote_every_new_positions: int = 1_000_000
+    promote_every_new_positions: int = 2_500_000
     runtime_health_check_every_steps: int = 500
 
     # --- Imitation mix (bootstrap → decay → off) ---
