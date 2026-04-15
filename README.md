@@ -16,7 +16,7 @@ Python wheels are available for Linux, macOS, and Windows (3.9–3.13); the npm 
 ## Structure
 
 - **`engine/`** — Rust engine: board representation (91-cell hex grid, axial coordinates), move generation, MCTS search, minimax search, and neural network inference
-- **`training/`** — Async distributed AlphaZero loop: self-play workers, continuous trainer, Elo rating service, dashboard
+- **`training/`** — Async distributed AlphaZero loop: self-play workers, continuous trainer, evaluation service, dashboard
 - **`bindings/wasm/`** — WASM bindings for browser play (uses tract for inference)
 - **`bindings/python/`** — PyO3 bindings for the training pipeline (uses ONNX Runtime)
 - **`docs/`** — Documentation site with interactive playground (Fumadocs)
@@ -34,7 +34,8 @@ make setup
 # Start training (run in separate terminals — or `make docker-up`)
 make worker      # self-play worker (run N of these)
 make trainer     # continuous trainer (run 1)
-make elo         # Elo rating service (scale via replicas)
+make eval        # evaluation service (scale via replicas)
+make elo         # deprecated alias
 make dashboard   # status dashboard
 
 # Quick CLI status
@@ -50,7 +51,7 @@ The pipeline has three asynchronous components that coordinate purely through **
 
 1. **Workers** generate self-play games using MCTS + the latest model and flush `.npz` batches to S3.
 2. **Trainer** maintains a sliding-window replay buffer over recent self-play data, trains a multi-head network, exports ONNX, and promotes a new model version once enough fresh data has accumulated.
-3. **Elo service** plays continuous matches between model versions and baselines, persisting per-game results to S3 and rating models with OpenSkill (Weng-Lin / Plackett-Luce).
+3. **Evaluation service** gates the newest candidate against the approved model, checks fixed-anchor regressions, and writes immutable per-game evidence plus version-scoped summaries to S3.
 
 On first run (no model exists), the trainer bootstraps by training on minimax-supervised imitation data before switching to self-play. The production model consumes a **22-channel side-to-move tensor** and predicts five heads: main policy, terminal WDL value, moves-left, short-term value, and an auxiliary opponent-policy target.
 
@@ -82,7 +83,7 @@ All parameters live in `training/config.py`. Key dials:
 | `reload_interval` | 1,000 | Re-scan S3 every N steps to pick up fresh worker output and re-check promotion eligibility. |
 | `max_train_steps_per_new_data` | 4.0 | KataGo-style token bucket: target training passes per new data point. Throttles the trainer when workers fall behind. |
 | `min_positions_to_start` | 200,000 | Bootstrap gate: self-play training won't start until this many positions exist. |
-| `promote_every_new_positions` | 300,000 | Minimum fresh self-play positions required between promotions. |
+| `promote_every_new_positions` | 2,500,000 | Minimum fresh self-play positions required between promotions. |
 | `imitation_mix_start` / `imitation_mix_end` / `imitation_mix_decay_end_version` | 0.3 / 0.0 / 5 | Early versions mix in minimax imitation data, then decay to pure self-play. |
 
 #### Bootstrap (Imitation)
@@ -134,8 +135,10 @@ data/
   imitation/{ts}_{rand}_n{count}.npz       # bootstrap minimax batches
 
 state/
-  elo.json                 # Elo projection (rebuilt from elo_games/)
-  elo_games/{ts}_{rand}.json  # one immutable object per played game (race-free writes)
+  evals/v{N}/gate_summary.json
+  evals/v{N}/benchmark_summary.json
+  evals/v{N}/decision.json
+  evals/v{N}/games/{ts}_{rand}.json
   trainer_metrics.json     # latest trainer telemetry for the dashboard
 
 heartbeats/

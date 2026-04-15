@@ -1,14 +1,15 @@
 ---
 title: Evaluation
-description: Elo tracking, model gating, and paired-color candidate testing
+description: Candidate gating, fixed-anchor regression checks, and auditable paired-color evidence
 ---
 
-The training stack uses the Elo service for two related but distinct jobs:
+The evaluation path is intentionally narrow. It does **not** maintain a standing rating league, a cross-version ladder, or a global `elo.json` projection.
 
-1. **Monitoring**: keep a running strength picture for baselines and recent model versions
-2. **Gating**: decide whether a newly exported candidate is allowed to replace the current self-play model
+Its job is only to answer one question for each newly exported candidate:
 
-Those jobs share the same game runner and immutable game log, but they use different decision logic.
+- does this candidate beat the currently approved model?
+- does it avoid regressing against the fixed anchor suite?
+- can we explain the decision with immutable, version-scoped artifacts?
 
 ## Two pointers: `latest` vs `approved`
 
@@ -20,7 +21,7 @@ models/latest.meta.json
 models/versions/{N}.onnx
 ```
 
-Workers do **not** automatically follow `latest`. Self-play uses:
+Workers do **not** automatically follow `latest`. Self-play follows:
 
 ```text
 models/approved.onnx
@@ -32,49 +33,44 @@ That split matters:
 - `latest`: newest exported candidate from the trainer
 - `approved`: incumbent model allowed to generate self-play
 
-If a candidate fails the gate, `latest` advances but `approved` does not.
+If a candidate fails evaluation, `latest` advances but `approved` does not.
 
-## Ordinary Elo tracking
+## Core loop
 
-Outside of gating, the Elo service keeps a small active pool:
+For each new candidate version, the service does this:
 
-- fixed anchors: `Heuristic`, `Minimax-2`, `Minimax-3`, `Minimax-4`
-- the current approved model
-- one pending candidate, if any
-- a short rolling window of recent versions for trend visibility
+1. Discover the current `approved` version and the newest candidate snapshot.
+2. Run paired-color gate mini-matches: `candidate vs approved`.
+3. Run paired-color benchmark mini-matches: `candidate vs Heuristic / Minimax-2 / Minimax-3 / Minimax-4`.
+4. Persist every game as an immutable record with metadata including `eval_type`, `candidate`, `opponent`, `pair_id`, `pair_game_index`, `opening_seed`, and `opening_plies`.
+5. Rebuild version-scoped summaries from the append-only record log.
+6. Promote only if the gate passes and the benchmark regression checks pass.
 
-Every Elo replica writes immutable game objects under:
+Artifacts live under:
 
 ```text
-state/elo_games/{ts}_{rand}.json
+state/evals/v{N}/gate_summary.json
+state/evals/v{N}/benchmark_summary.json
+state/evals/v{N}/decision.json
+state/evals/v{N}/games/{ts}_{rand}.json
 ```
 
-`state/elo.json` is then rebuilt from that log with OpenSkill. This is for **monitoring**, not for promotion decisions.
+There is no global league output. Each candidate version carries its own evidence bundle.
 
-## Why gating is separate
+## Paired-color opening diversification
 
-Global pool ratings are useful for dashboards and anchor comparisons, but they are not the right promotion rule:
+Each mini-match is a **two-game pair**:
 
-- pool ratings drift over time as the active set changes
-- direct `candidate vs incumbent` evidence is what matters for a replacement decision
-- draw-heavy deterministic matches need stronger controls than “did the newest model get a higher μ?”
+1. candidate as White, opponent as Black
+2. opponent as White, candidate as Black
 
-So gating uses a dedicated direct match between the candidate and the incumbent.
+Both games reuse the same opening prefix via a shared `opening_seed`, then swap colors.
 
-## Paired-color gate
+That matters because evaluation should measure the model, not one repeated deterministic opening or an asymmetric first-mover disadvantage. This diversification is for **measurement**, not for training data generation.
 
-When a candidate is pending, an Elo replica that selects the gate matchup plays a **2-game mini-match**:
+## Gate evidence
 
-1. candidate as White, incumbent as Black
-2. incumbent as White, candidate as Black
-
-Both games share the same `gate_pair_id`. The gate only counts a pair once **both** games exist in the immutable log.
-
-This reduces color bias without needing a separate coordinator or leader election.
-
-## Pentanomial buckets
-
-Each completed pair is reduced to one of five outcomes from the candidate's perspective:
+The direct gate is `candidate vs approved`. Each completed pair is reduced to one of five pentanomial buckets from the candidate's perspective:
 
 | Pair result | Candidate score over 2 games | Bucket |
 |-------------|-------------------------------|--------|
@@ -84,51 +80,68 @@ Each completed pair is reduced to one of five outcomes from the candidate's pers
 | win + draw | `1.5` | `1.5` |
 | win + win | `2.0` | `2.0` |
 
-The gate stores counts of those five buckets instead of flattening everything into independent games.
-
-## Gate decision rule
-
-The production gate uses a **paired pentanomial-style GSPRT**:
+The shipping gate uses a paired pentanomial SPRT:
 
 - minimum sample: `20` games
 - hard cap: `100` games
 - score hypotheses: `0.50` vs `0.55`
 - error rates: `alpha = beta = 0.05`
 
-Internally, the gate profiles the observed five-bucket distribution under the null and alternative score hypotheses and compares the resulting log-likelihoods.
+The service also records a simple confidence interval view alongside the SPRT state so the dashboard can show both the formal decision and an easier-to-scan score band.
 
-This is more conservative than the old `55% + confidence interval` rule, especially in draw-heavy matchups.
+## Fixed-anchor benchmark suite
 
-### Why this helps
+The benchmark suite uses the same paired-color format against fixed opponents:
 
-- **Color-balanced evidence**: each sample contains both color assignments
-- **Better draw handling**: `draw/draw` and `win/loss` are no longer treated like unrelated individual games
-- **Cleaner decisions**: a candidate needs sustained evidence, not just an early unbeaten streak
+- `Heuristic`
+- `Minimax-2`
+- `Minimax-3`
+- `Minimax-4`
 
-## Reading gate state
+For the current approved model, the service first backfills a benchmark baseline so future candidates have a reference point. For later candidates, each anchor check compares the candidate's score against the approved model's anchor score minus the configured regression tolerance.
 
-Gate decisions are persisted in:
+Each summary includes:
 
-```text
-state/gate.json
-```
-
-Each candidate entry includes:
-
-- `status`: `approved` or `rejected`
-- `approved_against`: incumbent version name
 - `wins`, `losses`, `draws`
-- `completed_pairs`
+- paired-color bucket counts
+- color split
+- confidence / SPRT status
+- per-opponent results
+- move-time stats
+- termination mix
+
+## Promotion rule
+
+The production rule is explicit:
+
+- the candidate must pass the direct gate against the approved model
+- the candidate must not regress beyond tolerance against the anchor suite
+
+If either condition fails, the candidate is rejected and `approved` stays unchanged.
+
+## Reading artifacts
+
+`gate_summary.json`, `benchmark_summary.json`, and `decision.json` are version-scoped and auditable. They are rebuilt from immutable game records, so a restart or a second replica does not require trusting local in-memory state.
+
+Per-game records include:
+
+- `eval_type`
+- `candidate`
+- `candidate_version`
+- `approved_version`
+- `opponent`
+- `pair_id`
+- `pair_game_index`
+- `opening_seed`
+- `opening_plies`
 - `pair_buckets`
-- `sprt_llr`
-- `sprt_lower_bound`, `sprt_upper_bound`
-- `resolved_at`
 
-The dashboard reads this directly so you can tell:
+The dashboard reads those summaries directly so you can answer:
 
-- newest exported candidate (`latest`)
-- currently active self-play model (`approved`)
-- whether a candidate passed or failed
+- which candidate is under review
+- whether gate evidence is still pending, rejected, or promoted
+- which anchor caused a regression failure
+- whether weird artifacts are coming from color split, termination mix, or time usage
 
 ## Local replay tool
 
@@ -157,8 +170,8 @@ uv run python -m training.evaluate_gate \
 
 The script prints:
 
-- the legacy gate view
-- the paired pentanomial GSPRT view
+- the direct gate summary
+- the paired pentanomial SPRT view
 - cumulative pair-bucket counts after every mini-match
 
-That makes it useful for tuning gate parameters before changing the live Elo service.
+That makes it useful for tuning thresholds or debugging a surprising promotion decision before changing the live evaluation service.

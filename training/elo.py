@@ -109,25 +109,30 @@ def baselines(simulations: int = 800) -> list[Player]:
 # ---------------------------------------------------------------------------
 
 
-def play_game(white: Player, black: Player, max_moves: int = 600,
-              random_opening_plies: int = 0) -> dict:
+def play_game(
+    white: Player,
+    black: Player,
+    max_moves: int = 600,
+    random_opening_plies: int = 0,
+    opening_seed: int | None = None,
+) -> dict:
     """Play one game. Returns dict with outcome and per-player timing stats.
 
-    If random_opening_plies > 0, plays that many random moves before handing
-    off to the players. Randomizes +/-1 ply so both sides get an equal chance
-    of making the first non-random move.
+    If random_opening_plies > 0, plays exactly that many random opening moves
+    before handing off to the players. Callers that want color balancing
+    should run paired-color mini-matches with the same opening seed.
     """
     import random
 
     game = hexchess.Game()
+    rng = random.Random(opening_seed) if opening_seed is not None else random
 
     if random_opening_plies > 0:
-        n_random = random_opening_plies + random.randint(-1, 0)
-        for _ in range(n_random):
+        for _ in range(random_opening_plies):
             if game.is_game_over():
                 break
             moves = game.legal_moves()
-            mv = random.choice(moves)
+            mv = rng.choice(moves)
             game.apply(mv)
 
     move_count = 0
@@ -161,11 +166,14 @@ def play_game(white: Player, black: Player, max_moves: int = 600,
 
     return {
         "outcome": outcome,
+        "termination": status,
         "moves": move_count,
         "white_time": round(white_time, 2),
         "black_time": round(black_time, 2),
         "white_moves": white_moves,
         "black_moves": black_moves,
+        "opening_seed": opening_seed,
+        "opening_plies": random_opening_plies,
     }
 
 

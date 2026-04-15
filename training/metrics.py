@@ -1,23 +1,31 @@
-"""Progress tracking for the training pipeline.
-
-Reads Elo state from S3 and displays a summary.
-"""
+"""Progress tracking for the training pipeline."""
 
 from __future__ import annotations
 
 from . import storage
-from .elo import format_elo_table
 
 
 def print_progress() -> None:
     """Print current training status from S3."""
-    # Model version
+    approved_version = 0
     try:
-        meta = storage.get_json(storage.LATEST_META)
-        print(f"Model: v{meta.get('version', '?')} "
-              f"(promoted {meta.get('timestamp', '?')})")
+        approved = storage.get_json(storage.APPROVED_META)
+        approved_version = int(approved.get("version", 0))
+        print(
+            f"Approved: v{approved_version} "
+            f"(promoted {approved.get('timestamp', '?')})"
+        )
     except KeyError:
-        print("Model: none (no model yet)")
+        print("Approved: none (no approved model yet)")
+
+    try:
+        latest = storage.get_json(storage.LATEST_META)
+        print(
+            f"Latest: v{latest.get('version', '?')} "
+            f"(exported {latest.get('timestamp', '?')})"
+        )
+    except KeyError:
+        print("Latest: none (no candidate yet)")
 
     # Data stats
     sp_count = storage.count_positions(storage.SELFPLAY_PREFIX)
@@ -25,16 +33,33 @@ def print_progress() -> None:
     print(f"Self-play: {sp_count:,} positions")
     print(f"Imitation: {im_count:,} positions")
 
-    # Elo rankings
-    try:
-        elo_state = storage.get_json(storage.ELO_STATE)
-        ratings = elo_state.get("ratings", {})
-        total_games = elo_state.get("total_games", 0)
-        if ratings:
-            print(f"\nElo rankings ({total_games} games):")
-            print(format_elo_table(ratings))
-    except KeyError:
-        print("\nNo Elo data yet.")
+    eval_versions = storage.list_eval_versions()
+    candidate_versions = [v for v in eval_versions if v > approved_version]
+    candidate_version = max(candidate_versions) if candidate_versions else None
+
+    if candidate_version is not None:
+        print(f"\nCurrent evaluation: v{candidate_version} vs approved v{approved_version}")
+        try:
+            gate = storage.get_json(storage.eval_gate_summary_key(candidate_version))
+            print(
+                "  gate: "
+                f"{gate.get('status', 'pending')} "
+                f"({gate.get('wins', 0)}-{gate.get('losses', 0)}-{gate.get('draws', 0)}, "
+                f"score={gate.get('score', 0.0):.3f})"
+            )
+        except KeyError:
+            print("  gate: no data yet")
+        try:
+            bench = storage.get_json(storage.eval_benchmark_summary_key(candidate_version))
+            print(
+                "  benchmark: "
+                f"{bench.get('status', 'pending')} "
+                f"({bench.get('games', 0)} games across anchors)"
+            )
+        except KeyError:
+            print("  benchmark: no data yet")
+    elif approved_version:
+        print(f"\nNo pending candidate. Approved model is v{approved_version}.")
 
     # Worker heartbeats
     heartbeats = storage.ls(storage.HEARTBEATS_PREFIX)

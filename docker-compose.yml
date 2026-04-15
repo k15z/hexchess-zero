@@ -21,9 +21,9 @@ services:
     deploy:
       replicas: 1
 
-  elo-service:
+  evaluation-service:
     build: .
-    command: ["elo-service"]
+    command: ["evaluation-service"]
     env_file: .env
     restart: unless-stopped
 

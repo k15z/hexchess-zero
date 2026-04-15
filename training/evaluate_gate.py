@@ -5,7 +5,7 @@ production gate. It downloads immutable model snapshots from S3, runs paired
 mini-matches locally, and reports two gate views as evidence accumulates:
 
 1. The legacy score-threshold + confidence-interval rule
-2. The current paired pentanomial-style GSPRT used by the Elo service
+2. The current paired pentanomial-style GSPRT used by the evaluation service
 
 Example:
 
@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 
 from .config import AsyncConfig
 from .elo import MctsPlayer, hexchess, play_game
-from .elo_service import _gate_decision, _gate_pentanomial_llr, _sprt_bounds
+from .evaluation_service import _gate_decision, _gate_pentanomial_llr, _sprt_bounds
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 

@@ -14,6 +14,7 @@ def test_defaults_instantiate_and_validate():
     assert cfg.batch_size > 0
     assert 0 < cfg.pcr_p_full <= 1.0
     assert cfg.window_c > 0
+    assert cfg.promote_every_new_positions == 2_500_000
 
 
 def test_run_id_env_override(monkeypatch):

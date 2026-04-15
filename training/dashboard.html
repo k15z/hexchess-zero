@@ -3,1218 +3,828 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>hexchess training</title>
+<title>hexchess evaluation</title>
 <link rel="icon" type="image/png" href="/icon.png">
 <style>
   :root {
-    --bg: #ffffff;
-    --bg-subtle: #fafafa;
-    --bg-muted: #f4f4f4;
-    --bg-invert: #111111;
-    --border: #e4e4e4;
-    --border-strong: #d0d0d0;
-    --text: #111111;
-    --text-secondary: #555555;
-    --text-muted: #666666;
-    --text-invert: #ffffff;
-    --mono: ui-monospace, 'SF Mono', 'Cascadia Mono', 'Consolas', monospace;
+    --bg: #f2efe8;
+    --paper: rgba(255, 251, 242, 0.86);
+    --paper-strong: rgba(255, 249, 238, 0.94);
+    --ink: #1f241f;
+    --muted: #6d6a61;
+    --line: rgba(58, 55, 48, 0.14);
+    --accent: #245e4a;
+    --accent-soft: rgba(36, 94, 74, 0.12);
+    --warn: #8a5a18;
+    --warn-soft: rgba(138, 90, 24, 0.14);
+    --danger: #8c2d2d;
+    --danger-soft: rgba(140, 45, 45, 0.12);
+    --shadow: 0 20px 60px rgba(49, 42, 25, 0.08);
+    --display: "Avenir Next Condensed", "Arial Narrow", "Helvetica Neue", sans-serif;
+    --sans: "Avenir Next", "Segoe UI", sans-serif;
+    --mono: "IBM Plex Mono", "SF Mono", "Cascadia Mono", monospace;
   }
 
-  * { margin: 0; padding: 0; box-sizing: border-box; }
+  * { box-sizing: border-box; }
 
   body {
-    font-family: var(--mono);
-    background: var(--bg);
-    color: var(--text);
-    font-size: 12px;
-    line-height: 1.55;
+    margin: 0;
     min-height: 100vh;
+    color: var(--ink);
+    background:
+      radial-gradient(circle at top left, rgba(36, 94, 74, 0.18), transparent 30%),
+      radial-gradient(circle at top right, rgba(138, 90, 24, 0.15), transparent 32%),
+      linear-gradient(180deg, #ece7dd 0%, var(--bg) 35%, #f7f3eb 100%);
+    font-family: var(--sans);
     -webkit-font-smoothing: antialiased;
   }
 
-  .container {
-    max-width: 1080px;
+  .shell {
+    max-width: 1280px;
     margin: 0 auto;
-    padding: 0 24px 64px;
+    padding: 28px 20px 60px;
   }
 
-  /* --- Header --- */
-  .header {
-    position: sticky;
-    top: 0;
-    z-index: 100;
-    background: rgba(255,255,255,0.92);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    border-bottom: 1px solid var(--border);
-    padding: 20px 0 16px;
-    margin-bottom: 24px;
+  .hero {
+    padding: 28px;
+    border: 1px solid var(--line);
+    border-radius: 28px;
+    background: linear-gradient(135deg, var(--paper-strong), rgba(255, 249, 238, 0.7));
+    box-shadow: var(--shadow);
+    overflow: hidden;
+    position: relative;
   }
 
-  .header-row {
+  .hero::after {
+    content: "";
+    position: absolute;
+    inset: auto -10% -25% 45%;
+    height: 260px;
+    background: radial-gradient(circle, rgba(36, 94, 74, 0.12), transparent 70%);
+    pointer-events: none;
+  }
+
+  .hero-top {
     display: flex;
     justify-content: space-between;
-    align-items: flex-end;
-    gap: 16px;
+    gap: 24px;
+    align-items: flex-start;
+    position: relative;
+    z-index: 1;
   }
 
-  .header-left {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-  }
-
-  .logo {
-    font-size: 20px;
-    font-weight: 700;
-    letter-spacing: -0.5px;
-    color: var(--text);
-  }
-
-  .logo span {
-    font-weight: 400;
-    color: var(--text-secondary);
-  }
-
-  .model-badge {
-    display: inline-flex;
-    align-items: center;
-    background: var(--bg-invert);
-    color: var(--text-invert);
-    padding: 4px 10px;
-    border-radius: 4px;
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-  }
-
-  .header-meta {
-    display: flex;
-    gap: 16px;
-    font-size: 11px;
-    color: var(--text-muted);
-  }
-
-  .header-meta strong {
-    color: var(--text);
-    font-weight: 600;
-  }
-
-  /* --- Overview cards --- */
-  .overview {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 1px;
-    background: var(--border);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    overflow: hidden;
-    margin-bottom: 32px;
-  }
-
-  .snapshot {
-    padding: 16px 18px;
-    background: var(--bg);
-  }
-
-  .snapshot-label {
-    display: block;
-    margin-bottom: 8px;
-    color: var(--text-muted);
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.1em;
+  .eyebrow {
+    font: 700 12px/1 var(--mono);
+    letter-spacing: 0.16em;
     text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 12px;
   }
 
-  .snapshot-value {
-    font-size: 26px;
-    font-weight: 700;
-    letter-spacing: -0.04em;
-    line-height: 1;
-    color: var(--text);
+  .hero h1 {
+    margin: 0;
+    font-family: var(--display);
+    font-size: clamp(42px, 7vw, 82px);
+    line-height: 0.94;
+    letter-spacing: -0.05em;
+    max-width: 760px;
   }
 
-  .snapshot-meta {
-    margin-top: 6px;
-    color: var(--text-muted);
-    font-size: 11px;
+  .hero-sub {
+    margin-top: 16px;
+    max-width: 760px;
+    font-size: 15px;
+    line-height: 1.55;
+    color: var(--muted);
   }
 
-  .snapshot-status {
+  .hero-meta {
+    display: grid;
+    gap: 10px;
+    min-width: 220px;
+  }
+
+  .pill {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    color: var(--text-secondary);
-    font-size: 11px;
+    gap: 8px;
+    padding: 8px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: rgba(255, 252, 246, 0.75);
+    font: 700 12px/1 var(--mono);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    width: fit-content;
   }
 
-  .snapshot-status .dot { margin-right: 0; }
+  .pill.pass { background: var(--accent-soft); color: var(--accent); border-color: rgba(36, 94, 74, 0.22); }
+  .pill.pending { background: var(--warn-soft); color: var(--warn); border-color: rgba(138, 90, 24, 0.22); }
+  .pill.fail { background: var(--danger-soft); color: var(--danger); border-color: rgba(140, 45, 45, 0.22); }
 
-  /* --- Panels --- */
+  .hero-strip {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 14px;
+    margin-top: 28px;
+    position: relative;
+    z-index: 1;
+  }
+
+  .stat {
+    padding: 18px;
+    border: 1px solid var(--line);
+    border-radius: 20px;
+    background: rgba(255, 252, 246, 0.68);
+    min-height: 128px;
+  }
+
+  .stat-label {
+    font: 700 11px/1 var(--mono);
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    margin-bottom: 14px;
+  }
+
+  .stat-value {
+    font-family: var(--display);
+    font-size: clamp(28px, 5vw, 42px);
+    line-height: 0.96;
+    letter-spacing: -0.05em;
+  }
+
+  .stat-meta {
+    margin-top: 10px;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.45;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 1.2fr 0.8fr;
+    gap: 18px;
+    margin-top: 20px;
+  }
+
+  .stack {
+    display: grid;
+    gap: 18px;
+  }
+
   .panel {
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    margin-bottom: 12px;
+    border: 1px solid var(--line);
+    border-radius: 24px;
+    background: var(--paper);
+    box-shadow: 0 10px 30px rgba(41, 35, 22, 0.04);
     overflow: hidden;
-    background: var(--bg);
   }
 
-  .panel-header {
-    appearance: none;
+  .panel-head {
     display: flex;
-    align-items: center;
     justify-content: space-between;
-    width: 100%;
-    padding: 12px 16px;
-    background: var(--bg-subtle);
-    border: 0;
-    border-bottom: 1px solid var(--border);
-    cursor: pointer;
-    user-select: none;
-    transition: background 0.15s ease;
-    text-align: left;
-    color: inherit;
-    font: inherit;
+    gap: 16px;
+    align-items: center;
+    padding: 18px 20px 14px;
+    border-bottom: 1px solid var(--line);
   }
-
-  .panel-header:hover { background: var(--bg-muted); }
-
-  .panel-header:focus-visible {
-    outline: none;
-    box-shadow: inset 0 0 0 2px var(--text);
-  }
-
-  .panel-header > * { pointer-events: none; }
 
   .panel-title {
+    font: 700 14px/1 var(--mono);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+
+  .panel-sub {
     font-size: 12px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--text);
+    color: var(--muted);
   }
 
-  .panel-badge {
-    font-size: 10px;
-    color: var(--text-secondary);
-    font-weight: 600;
-    padding: 2px 7px;
-    background: var(--bg-muted);
-    border-radius: 4px;
-    border: 1px solid var(--border);
+  .panel-body {
+    padding: 18px 20px 20px;
   }
 
-  .panel-chevron {
-    color: var(--text-muted);
-    font-size: 10px;
-    transition: transform 0.2s ease;
-  }
-
-  .panel.collapsed .panel-chevron { transform: rotate(-90deg); }
-  .panel.collapsed .panel-body { display: none; }
-  .panel.collapsed .panel-header { border-bottom-color: transparent; }
-
-  .panel-body { padding: 16px; }
-
-  /* --- Two-column grid --- */
-  .two-col {
+  .summary-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 12px;
+    margin-bottom: 16px;
   }
-  .two-col .panel { margin-bottom: 0; }
 
-  /* --- Tables --- */
-  table { width: 100%; border-collapse: collapse; }
+  .mini {
+    padding: 14px;
+    border-radius: 18px;
+    background: rgba(255, 252, 246, 0.72);
+    border: 1px solid var(--line);
+  }
 
-  th {
-    text-align: left;
-    font-size: 10px;
-    font-weight: 600;
+  .mini .label {
+    font: 700 10px/1 var(--mono);
+    letter-spacing: 0.12em;
     text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--text-muted);
-    padding: 8px 8px;
-    border-bottom: 2px solid var(--text);
+    color: var(--muted);
+    margin-bottom: 10px;
   }
 
-  th.r, td.r { text-align: right; }
-  th.c, td.c { text-align: center; }
-
-  td {
-    padding: 7px 8px;
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-    border-bottom: 1px solid var(--bg-muted);
+  .mini .value {
+    font-family: var(--display);
+    font-size: 28px;
+    letter-spacing: -0.05em;
+    line-height: 0.95;
   }
 
-  tr:last-child td { border-bottom: none; }
-  tbody tr:hover td { background: var(--bg-subtle); }
-
-  /* --- Eval badges --- */
-  .eval-badge {
-    display: inline-block;
-    font-size: 9px;
-    font-weight: 600;
-    padding: 1px 5px;
-    border-radius: 3px;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
-    border: 1px solid transparent;
-  }
-  .eval-badge.eval {
-    color: var(--text);
-    border-color: var(--text);
-    background: transparent;
-  }
-  .eval-badge.prov {
-    color: var(--text);
-    border-color: var(--text);
-    background: transparent;
+  .mini .meta {
+    margin-top: 8px;
+    color: var(--muted);
+    font-size: 12px;
   }
 
-  /* --- Rating bars --- */
-  .rating-bar-track {
-    flex: 1;
-    height: 12px;
-    background: var(--bg-muted);
-    border-radius: 2px;
+  .meter {
+    margin-top: 16px;
+  }
+
+  .meter-track {
+    height: 14px;
+    border-radius: 999px;
+    background: rgba(36, 94, 74, 0.08);
     position: relative;
     overflow: hidden;
-    min-width: 60px;
   }
 
-  .rating-bar {
+  .meter-fill {
     position: absolute;
-    top: 0; bottom: 0; left: 0;
-    border-radius: 2px;
-    transition: width 0.4s ease;
-    min-width: 2px;
+    inset: 0 auto 0 0;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #20463c, #2a6b56);
   }
 
-  .rating-bar-ci {
-    position: absolute;
-    top: 2px; bottom: 2px;
-    border-radius: 1px;
-    opacity: 0.25;
+  .row-list {
+    display: grid;
+    gap: 10px;
   }
 
-  /* --- Worker dots --- */
-  .dot {
-    display: inline-block;
-    width: 7px; height: 7px;
-    border-radius: 50%;
-    margin-right: 4px;
-  }
-  .dot.fresh { background: var(--text); }
-  .dot.stale { background: var(--text-muted); }
-  .dot.dead { background: var(--border-strong); }
-
-  /* --- H2H --- */
-  .h2h-wrap { overflow-x: auto; }
-
-  .h2h-table th, .h2h-table td {
-    text-align: center;
-    padding: 3px 4px;
-    font-size: 10px;
-    min-width: 56px;
-  }
-
-  .h2h-table th {
-    font-size: 9px;
-    max-width: 64px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .h2h-table td.self {
-    background: var(--bg-muted);
-    color: var(--text-muted);
-  }
-
-  .h2h-cell {
-    border-radius: 2px;
-    padding: 2px 4px;
-    font-size: 10px;
-    font-weight: 500;
-  }
-  .h2h-cell.dominant { color: var(--text); font-weight: 700; }
-  .h2h-cell.losing { color: var(--text-muted); }
-  .h2h-cell.even { color: var(--text-secondary); }
-  .h2h-cell.none { color: var(--text-muted); opacity: 0.3; }
-
-  /* --- Game log --- */
-  .game-outcome { font-weight: 600; font-size: 11px; }
-  .game-outcome.w { color: var(--text); }
-  .game-outcome.b { color: var(--text-muted); }
-  .game-outcome.d { color: var(--text-secondary); }
-
-  /* --- KV rows --- */
-  .kv-row {
+  .row {
     display: flex;
     justify-content: space-between;
-    gap: 16px;
-    padding: 4px 0;
-  }
-  .kv-row .k { color: var(--text-muted); }
-  .kv-row .v { color: var(--text); font-weight: 500; text-align: right; }
-
-  /* --- Misc --- */
-  .empty { color: var(--text-muted); font-style: italic; padding: 12px 0; }
-  .muted { color: var(--text-muted); }
-
-  /* --- Animations --- */
-  @keyframes fadeUp {
-    from { opacity: 0; transform: translateY(4px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-  .initial .panel { animation: fadeUp 0.25s ease both; }
-  .initial .panel:nth-child(2) { animation-delay: 0.03s; }
-  .initial .panel:nth-child(3) { animation-delay: 0.06s; }
-  .initial .panel:nth-child(4) { animation-delay: 0.09s; }
-  .initial .two-col .panel { animation: fadeUp 0.25s ease both; animation-delay: 0.12s; }
-  .initial .two-col .panel:nth-child(2) { animation-delay: 0.15s; }
-
-  /* --- Responsive --- */
-  @media (max-width: 960px) {
-    .overview { grid-template-columns: repeat(2, 1fr); }
-    .header-row { flex-direction: column; align-items: flex-start; }
-    .header-meta { flex-direction: column; gap: 2px; }
+    gap: 18px;
+    padding: 12px 14px;
+    border-radius: 16px;
+    border: 1px solid var(--line);
+    background: rgba(255, 252, 246, 0.64);
   }
 
-  @media (max-width: 640px) {
-    body { font-size: 11px; }
-    .container { padding: 0 16px 48px; }
-    .header { padding: 16px 0 12px; }
-    .logo { font-size: 17px; }
-    .overview { grid-template-columns: 1fr; }
-    .snapshot-value { font-size: 22px; }
-    .panel-header, .panel-body { padding-left: 12px; padding-right: 12px; }
-    .two-col { grid-template-columns: 1fr; }
+  .row strong {
+    display: block;
+    font-size: 14px;
+  }
+
+  .row span {
+    display: block;
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 4px;
+  }
+
+  .row .right {
+    text-align: right;
+    min-width: 120px;
+  }
+
+  .kv {
+    display: grid;
+    gap: 10px;
+  }
+
+  .kv-line {
+    display: flex;
+    justify-content: space-between;
+    gap: 18px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .kv-line:last-child {
+    padding-bottom: 0;
+    border-bottom: 0;
+  }
+
+  .kv-key {
+    color: var(--muted);
+    font: 700 11px/1 var(--mono);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+
+  .kv-value {
+    text-align: right;
+    font-size: 13px;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  th, td {
+    text-align: left;
+    padding: 11px 10px;
+    border-bottom: 1px solid var(--line);
+    font-size: 13px;
+    vertical-align: top;
+  }
+
+  th {
+    font: 700 11px/1 var(--mono);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  tr:last-child td { border-bottom: 0; }
+  td.r, th.r { text-align: right; }
+
+  .tag {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: rgba(255, 252, 246, 0.7);
+    font: 700 11px/1 var(--mono);
+  }
+
+  .tag.pass { color: var(--accent); border-color: rgba(36, 94, 74, 0.18); background: var(--accent-soft); }
+  .tag.pending { color: var(--warn); border-color: rgba(138, 90, 24, 0.18); background: var(--warn-soft); }
+  .tag.fail { color: var(--danger); border-color: rgba(140, 45, 45, 0.18); background: var(--danger-soft); }
+
+  .empty {
+    padding: 20px;
+    border-radius: 18px;
+    border: 1px dashed var(--line);
+    color: var(--muted);
+    font-size: 14px;
+    background: rgba(255, 252, 246, 0.5);
+  }
+
+  .mono { font-family: var(--mono); }
+
+  @media (max-width: 1080px) {
+    .hero-top,
+    .grid {
+      grid-template-columns: 1fr;
+      display: grid;
+    }
+    .hero-strip {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @media (max-width: 720px) {
+    .shell { padding: 16px 14px 36px; }
+    .hero { padding: 20px; border-radius: 22px; }
+    .hero-strip,
+    .summary-grid {
+      grid-template-columns: 1fr;
+    }
+    .panel,
+    .stat,
+    .mini { border-radius: 18px; }
+    .panel-head,
+    .panel-body { padding-left: 16px; padding-right: 16px; }
+    th:nth-child(4), td:nth-child(4),
+    th:nth-child(5), td:nth-child(5) {
+      display: none;
+    }
   }
 </style>
 </head>
 <body>
-<div class="container">
-
-<div class="header">
-  <div class="header-row">
-    <div class="header-left">
-      <div class="logo">hexchess <span>training</span></div>
-      <span class="model-badge" id="model-badge">&mdash;</span>
-      <span class="model-badge" id="approved-badge">&mdash;</span>
-    </div>
-    <div class="header-meta">
-      <div id="promoted-at"></div>
-      <div id="last-refresh"></div>
-    </div>
-  </div>
-</div>
-
-<div class="overview" id="overview"></div>
-<div id="panels"></div>
-
-</div>
+<div class="shell" id="app"></div>
 
 <script>
 const REFRESH_MS = 60000;
-const CONSERVATIVE_Z = 2.0;
-const EVALUATED_SIGMA_THRESHOLD = 2.5;
-const BASELINES = new Set(['Minimax-2', 'Minimax-3', 'Minimax-4', 'Heuristic']);
 
-function conservRating(mu, sigma) { return mu - CONSERVATIVE_Z * sigma; }
-function isEvaluated(sigma) { return sigma <= EVALUATED_SIGMA_THRESHOLD; }
-
-// Sublinear KataGo replay window: c=25_000, alpha=0.75, beta=0.4.
-// Mirrors training/replay_window.py.
-const _WC = 25000, _WA = 0.75, _WB = 0.4;
-function windowSize(n) {
-  if (n <= 0) return 0;
-  if (n <= _WC) return n;
-  const t = Math.pow(n / _WC, _WA);
-  return Math.round(_WC * (1 + _WB * (t - 1) / _WA));
+function fmt(n, digits = 0) {
+  if (n == null || Number.isNaN(n)) return '\u2014';
+  if (typeof n === 'number') {
+    return digits ? n.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits }) : n.toLocaleString();
+  }
+  return String(n);
 }
 
 function ago(ts) {
-  if (!ts) return '';
-  const s = (Date.now() - new Date(ts).getTime()) / 1000;
-  if (s < 0) return 'just now';
-  if (s < 60) return Math.floor(s) + 's ago';
-  if (s < 3600) return Math.floor(s / 60) + 'm ago';
-  if (s < 86400) return Math.floor(s / 3600) + 'h ago';
-  return Math.floor(s / 86400) + 'd ago';
+  if (!ts) return '\u2014';
+  const seconds = (Date.now() - new Date(ts).getTime()) / 1000;
+  if (!Number.isFinite(seconds)) return '\u2014';
+  if (seconds < 60) return `${Math.max(0, Math.floor(seconds))}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
 }
 
-function fmt(n) {
-  if (n == null) return '\u2014';
-  return typeof n === 'number' ? n.toLocaleString() : n;
+function statusClass(status) {
+  if (['approved', 'promote', 'promoted', 'baseline_ready', 'complete'].includes(status)) return 'pass';
+  if (['rejected', 'fail'].includes(status)) return 'fail';
+  return 'pending';
 }
 
-function freshness(ts) {
-  if (!ts) return 'dead';
-  const age = (Date.now() - new Date(ts).getTime()) / 1000;
-  if (age < 120) return 'fresh';
-  if (age < 600) return 'stale';
-  return 'dead';
+function statusLabel(status) {
+  if (!status) return 'pending';
+  if (status === 'approved') return 'pass';
+  if (status === 'rejected') return 'fail';
+  if (status === 'promote') return 'ready';
+  if (status === 'baseline_ready') return 'baseline ready';
+  return status.replaceAll('_', ' ');
 }
 
-function pairKey(a, b) { return [a, b].sort().join(':'); }
-function shorten(s) { return s.length > 7 ? s.slice(0, 6) + '\u2026' : s; }
-function versionNumber(name) {
-  const m = /^v(\d+)$/.exec(name || '');
-  return m ? Number(m[1]) : -1;
-}
-function latestGateDecision(gate) {
-  const decisions = Object.entries((gate && gate.decisions) || {});
-  if (!decisions.length) return null;
-  decisions.sort((a, b) => versionNumber(b[0]) - versionNumber(a[0]));
-  const [name, info] = decisions[0];
-  return { name, ...info };
-}
+function renderHeader(data, focus) {
+  const model = data.model || {};
+  const approved = data.approved_model || {};
+  const decision = (focus && focus.decision) || {};
+  const gate = (focus && focus.gate) || {};
+  const benchmark = (focus && focus.benchmark) || {};
+  const focusVersion = focus ? focus.version : null;
 
-const panelState = {};
-const panelDefaults = {};
-function togglePanel(id) {
-  const defaultOpen = panelDefaults[id] !== undefined ? panelDefaults[id] : true;
-  const currentCollapsed = panelState[id] !== undefined ? panelState[id] : !defaultOpen;
-  panelState[id] = !currentCollapsed;
-  render(lastData);
-}
+  const headline = focusVersion && focusVersion > (approved.version || 0)
+    ? `v${focusVersion} is on trial`
+    : approved.version
+      ? `v${approved.version} is the current baseline`
+      : 'waiting for the first approved model';
 
-let lastData = null;
-let firstRender = true;
+  const sub = focusVersion && focusVersion > (approved.version || 0)
+    ? `The service is only tracking one decision path: candidate v${focusVersion} against approved v${approved.version}. Gate evidence and anchor regressions below are the promotion record.`
+    : 'No newer immutable snapshot is currently ahead of the approved model. The dashboard stays focused on evaluation evidence, not standings.';
 
-function panelHtml(id, title, badge, body, defaultOpen = true) {
-  panelDefaults[id] = defaultOpen;
-  const collapsed = panelState[id] !== undefined ? panelState[id] : !defaultOpen;
-  return `<div class="panel ${collapsed ? 'collapsed' : ''}" id="panel-${id}">
-    <button type="button" class="panel-header" onclick="togglePanel('${id}')" aria-expanded="${collapsed ? 'false' : 'true'}">
-      <div style="display:flex;align-items:center;gap:8px">
-        <span class="panel-title">${title}</span>
-        ${badge ? `<span class="panel-badge">${badge}</span>` : ''}
-      </div>
-      <span class="panel-chevron">&#9660;</span>
-    </button>
-    <div class="panel-body">${body}</div>
-  </div>`;
-}
-
-function renderRatingTable(players, ratings, playerStats) {
-  if (!players.length) return '';
-
-  const items = players
-    .filter(n => ratings[n])
-    .map(n => {
-      const r = ratings[n];
-      return {
-        name: n,
-        mu: r.mu,
-        sigma: r.sigma,
-        cr: conservRating(r.mu, r.sigma),
-        evaluated: isEvaluated(r.sigma),
-      };
-    })
-    .sort((a, b) => b.cr - a.cr);
-
-  if (!items.length) return '';
-
-  const minCr = Math.min(...items.map(i => i.cr - i.sigma));
-  const maxCr = Math.max(...items.map(i => i.cr + i.sigma));
-  const range = Math.max(maxCr - minCr, 1);
-  const base = minCr - range * 0.05;
-  const span = range * 1.1;
-
-  let html = '<table><tr><th style="width:24px">#</th><th>player</th><th class="r">rating</th><th class="r" style="width:56px">\u03bc</th><th class="r" style="width:48px">\u00b1\u03c3</th><th class="c" style="width:52px">state</th><th class="r" style="width:52px">s/mv</th><th style="min-width:100px"></th></tr>';
-
-  for (let i = 0; i < items.length; i++) {
-    const it = items[i];
-    const ps = playerStats[it.name];
-    const avg = ps && ps.total_moves > 0 ? (ps.total_time / ps.total_moves).toFixed(2) : '\u2014';
-
-    const barLeft = Math.max(0, ((it.cr - it.sigma) - base) / span * 100);
-    const barRight = Math.min(100, ((it.cr + it.sigma) - base) / span * 100);
-    const barCenter = (it.cr - base) / span * 100;
-
-    const barColor = '#111';
-    const stateBadge = it.evaluated
-      ? `<span class="eval-badge eval" title="sigma \u2264 ${EVALUATED_SIGMA_THRESHOLD}">eval</span>`
-      : `<span class="eval-badge prov" title="sigma > ${EVALUATED_SIGMA_THRESHOLD}">prov</span>`;
-
-    html += `<tr>
-      <td class="r">${i + 1}</td>
-      <td>${it.name}</td>
-      <td class="r" style="font-weight:600">${it.cr >= 0 ? '+' : ''}${it.cr.toFixed(2)}</td>
-      <td class="r">${it.mu.toFixed(2)}</td>
-      <td class="r">${it.sigma.toFixed(2)}</td>
-      <td class="c">${stateBadge}</td>
-      <td class="r">${avg}</td>
-      <td>
-        <div class="rating-bar-track">
-          <div class="rating-bar-ci" style="left:${barLeft}%;width:${barRight - barLeft}%;background:${barColor}"></div>
-          <div class="rating-bar" style="left:${Math.max(0, barCenter - 0.5)}%;width:3px;background:${barColor}"></div>
+  return `
+    <section class="hero">
+      <div class="hero-top">
+        <div>
+          <div class="eyebrow">Hexchess Evaluation Service</div>
+          <h1>${headline}</h1>
+          <div class="hero-sub">${sub}</div>
         </div>
-      </td>
-    </tr>`;
-  }
-  html += '</table>';
-  return html;
-}
-
-function renderHeader(data) {
-  const m = data.model;
-  const approved = data.approved_model || {};
-  const gate = data.gate || {};
-  const latestDecision = latestGateDecision(gate);
-  document.getElementById('model-badge').textContent = m.version ? `latest v${m.version}` : 'latest none';
-  document.getElementById('approved-badge').textContent = approved.version ? `approved v${approved.version}` : 'approved none';
-  if (m.version && approved.version && m.version !== approved.version) {
-    document.getElementById('promoted-at').innerHTML = `candidate <strong>v${m.version}</strong> gating against v${approved.version}`;
-  } else if (latestDecision) {
-    const against = latestDecision.approved_against ? ` vs ${latestDecision.approved_against}` : '';
-    document.getElementById('promoted-at').innerHTML = `latest gate <strong>${latestDecision.name} ${latestDecision.status}</strong>${against}`;
-  } else if (m.promoted_at) {
-    document.getElementById('promoted-at').innerHTML = `latest exported <strong>${ago(m.promoted_at)}</strong>`;
-  } else {
-    document.getElementById('promoted-at').innerHTML = '<strong>bootstrap</strong>';
-  }
-  document.getElementById('last-refresh').innerHTML = `refreshed <strong>${ago(data.timestamp)}</strong>`;
-}
-
-function buildOverview(data) {
-  const e = data.elo || {};
-  const d = data.data || {};
-  const gate = data.gate || {};
-  const sp = d.selfplay || {};
-  const im = d.imitation || {};
-  const workers = Object.values(data.workers || {});
-  const activeWorkers = workers.filter(w => freshness(w.timestamp) === 'fresh').length;
-  const staleWorkers = workers.filter(w => freshness(w.timestamp) === 'stale').length;
-  const totalPositions = (sp.total_positions || 0) + (im.total_positions || 0);
-  const summaries = (((data.trainer_metrics || {}).summaries) || ((data.trainer_metrics || {}).cycles) || []);
-  const latestSummary = summaries.length ? summaries[summaries.length - 1] : null;
-  const latestSummaryId = latestSummary ? (latestSummary.summary ?? latestSummary.cycle) : null;
-  const latest = data.model || {};
-  const approved = data.approved_model || {};
-  const latestDecision = latestGateDecision(gate);
-  const gateMeta = latest.version && approved.version && latest.version !== approved.version
-    ? `pending: v${latest.version} vs v${approved.version}`
-    : latestDecision
-      ? `${latestDecision.name} ${latestDecision.status}`
-      : 'no gate yet';
-
-  const items = [
-    {
-      label: 'Models',
-      value: latest.version ? `v${latest.version} / v${approved.version || 0}` : 'none',
-      meta: `latest / approved &middot; ${gateMeta}`,
-    },
-    {
-      label: 'Replay',
-      value: fmt(totalPositions),
-      meta: `${fmt(sp.total_positions || 0)} self-play &middot; ${fmt(im.total_positions || 0)} imitation`,
-    },
-    {
-      label: 'Workers',
-      value: fmt(workers.length),
-      meta: `<span class="snapshot-status"><span class="dot fresh"></span>${activeWorkers} active</span>${staleWorkers ? ` &middot; <span class="snapshot-status"><span class="dot stale"></span>${staleWorkers} stale</span>` : ''}`,
-    },
-    {
-      label: 'Evaluation',
-      value: fmt(e.total_games || 0),
-      meta: latestSummary
-        ? `summary ${latestSummaryId} &middot; ${fmt(latestSummary.total_steps)} steps`
-        : `${fmt((e.active_players || []).length)} active &middot; ${fmt((e.retired_players || []).length)} retired`,
-    },
-  ];
-
-  document.getElementById('overview').innerHTML = items.map(item => `
-    <section class="snapshot">
-      <span class="snapshot-label">${item.label}</span>
-      <div class="snapshot-value">${item.value}</div>
-      <div class="snapshot-meta">${item.meta}</div>
+        <div class="hero-meta">
+          <div class="pill ${statusClass(decision.status)}">${statusLabel(decision.status)}</div>
+          <div class="pill">latest v${fmt(model.version)}</div>
+          <div class="pill">approved v${fmt(approved.version)}</div>
+          <div class="pill">synced ${ago(data.timestamp)}</div>
+        </div>
+      </div>
+      <div class="hero-strip">
+        <div class="stat">
+          <div class="stat-label">Current Candidate</div>
+          <div class="stat-value">${focusVersion && focusVersion > (approved.version || 0) ? `v${focusVersion}` : 'none'}</div>
+          <div class="stat-meta">${focusVersion ? `decision ${statusLabel(decision.status)}` : 'no pending candidate above approved'}</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Gate Record</div>
+          <div class="stat-value">${gate.games ? `${gate.wins}-${gate.losses}-${gate.draws}` : '\u2014'}</div>
+          <div class="stat-meta">${gate.games ? `score ${fmt(gate.score, 3)} over ${fmt(gate.games)} games` : 'no gate games yet'}</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Anchor Coverage</div>
+          <div class="stat-value">${benchmark.games ? fmt(benchmark.games) : '\u2014'}</div>
+          <div class="stat-meta">${benchmark.status ? `${statusLabel(benchmark.status)} across fixed anchors` : 'anchor suite not started'}</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Promotion Pointer</div>
+          <div class="stat-value">${approved.version ? `v${approved.version}` : '\u2014'}</div>
+          <div class="stat-meta">${approved.promoted_at ? `approved ${ago(approved.promoted_at)}` : 'no approved pointer yet'}</div>
+        </div>
+      </div>
     </section>
+  `;
+}
+
+function renderGate(focus) {
+  const gate = focus && focus.gate;
+  if (!gate) {
+    return `<section class="panel"><div class="panel-head"><div><div class="panel-title">Gate</div><div class="panel-sub">Direct candidate vs approved evidence</div></div></div><div class="panel-body"><div class="empty">No gate summary for the focused version yet.</div></div></section>`;
+  }
+
+  const confidence = gate.confidence || {};
+  const sprt = gate.sprt || {};
+  const progress = Math.min(100, Math.round(((gate.games || 0) / 100) * 100));
+  return `
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <div class="panel-title">Gate</div>
+          <div class="panel-sub">Candidate ${gate.candidate} vs approved ${gate.approved}</div>
+        </div>
+        <span class="tag ${statusClass(gate.status)}">${statusLabel(gate.status)}</span>
+      </div>
+      <div class="panel-body">
+        <div class="summary-grid">
+          <div class="mini">
+            <div class="label">Score</div>
+            <div class="value">${fmt(gate.score, 3)}</div>
+            <div class="meta">${fmt(gate.wins)} wins, ${fmt(gate.losses)} losses, ${fmt(gate.draws)} draws</div>
+          </div>
+          <div class="mini">
+            <div class="label">Confidence</div>
+            <div class="value">\u00b1${fmt(confidence.ci_half_width, 3)}</div>
+            <div class="meta">interval ${fmt(confidence.lower, 3)} to ${fmt(confidence.upper, 3)}</div>
+          </div>
+          <div class="mini">
+            <div class="label">SPRT</div>
+            <div class="value">${fmt(sprt.llr, 3)}</div>
+            <div class="meta">${statusLabel(sprt.status)} against ${fmt(sprt.null_score, 2)} / ${fmt(sprt.alt_score, 2)}</div>
+          </div>
+        </div>
+        <div class="meter">
+          <div class="kv-line"><span class="kv-key">Games Collected</span><span class="kv-value">${fmt(gate.games)} / 100</span></div>
+          <div class="meter-track"><div class="meter-fill" style="width:${progress}%"></div></div>
+        </div>
+        <div class="kv" style="margin-top:16px">
+          <div class="kv-line"><span class="kv-key">Paired Buckets</span><span class="kv-value mono">${Object.entries(gate.pair_buckets || {}).map(([k, v]) => `${k}:${v}`).join(' ')}</span></div>
+          <div class="kv-line"><span class="kv-key">Color Split</span><span class="kv-value">white ${fmt(gate.color_split?.candidate_white?.games || 0)} / black ${fmt(gate.color_split?.candidate_black?.games || 0)}</span></div>
+          <div class="kv-line"><span class="kv-key">Move Time</span><span class="kv-value">${fmt(gate.move_time_stats?.candidate_seconds_per_move, 3)}s/move candidate</span></div>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderBenchmark(focus) {
+  const benchmark = focus && focus.benchmark;
+  if (!benchmark) {
+    return `<section class="panel"><div class="panel-head"><div><div class="panel-title">Benchmarks</div><div class="panel-sub">Fixed anchors</div></div></div><div class="panel-body"><div class="empty">No benchmark summary for the focused version yet.</div></div></section>`;
+  }
+
+  const rows = Object.values(benchmark.per_opponent || {}).map(entry => `
+    <tr>
+      <td><strong>${entry.opponent}</strong><br><span class="mono">${statusLabel(entry.status)}</span></td>
+      <td class="r">${fmt(entry.score, 3)}</td>
+      <td class="r">${entry.target_score == null ? '\u2014' : fmt(entry.target_score, 3)}</td>
+      <td class="r">${fmt(entry.games)}</td>
+      <td class="r">${fmt(entry.confidence?.ci_half_width, 3)}</td>
+    </tr>
   `).join('');
+
+  return `
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <div class="panel-title">Benchmarks</div>
+          <div class="panel-sub">Candidate vs fixed anchors</div>
+        </div>
+        <span class="tag ${statusClass(benchmark.status)}">${statusLabel(benchmark.status)}</span>
+      </div>
+      <div class="panel-body">
+        <div class="summary-grid">
+          <div class="mini">
+            <div class="label">Aggregate Score</div>
+            <div class="value">${fmt(benchmark.score, 3)}</div>
+            <div class="meta">${fmt(benchmark.games)} total games</div>
+          </div>
+          <div class="mini">
+            <div class="label">Regression Rule</div>
+            <div class="value">${benchmark.reference_available ? 'live' : 'seed'}</div>
+            <div class="meta">${benchmark.reference_available ? 'candidate must stay within anchor tolerance' : 'collecting baseline anchor fingerprints'}</div>
+          </div>
+          <div class="mini">
+            <div class="label">Termination Mix</div>
+            <div class="value">${Object.keys(benchmark.termination_mix || {}).length}</div>
+            <div class="meta">${Object.entries(benchmark.termination_mix || {}).map(([k, v]) => `${k}:${v}`).join(' ') || 'no games yet'}</div>
+          </div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Anchor</th>
+              <th class="r">Score</th>
+              <th class="r">Floor</th>
+              <th class="r">Games</th>
+              <th class="r">CI</th>
+            </tr>
+          </thead>
+          <tbody>${rows || `<tr><td colspan="5" class="empty">No anchor data yet.</td></tr>`}</tbody>
+        </table>
+      </div>
+    </section>
+  `;
 }
 
-function buildRatings(data) {
-  const e = data.elo;
-  const ratings = e.ratings || {};
-  const active = e.active_players || [];
-  const ps = e.player_stats || {};
+function renderDecision(focus) {
+  const decision = (focus && focus.decision) || {};
+  const reasons = (decision.reasons || []).map(reason => `
+    <div class="row">
+      <div><strong>${reason}</strong></div>
+      <div class="right"><span>${ago(decision.updated_at)}</span></div>
+    </div>
+  `).join('');
 
-  if (!Object.keys(ratings).length) {
-    return panelHtml('ratings', 'Ratings', null,
-      `<div class="empty">No ratings yet (${e.total_games} games played)</div>`);
-  }
-
-  let body = `<div class="kv-row"><span class="k">total games</span><span class="v">${fmt(e.total_games)}</span></div>`;
-  body += `<div class="kv-row"><span class="k">active window</span><span class="v">${fmt(active.length)} active &middot; ${fmt((e.retired_players || []).length)} retired</span></div>`;
-  body += renderRatingTable(active, ratings, ps);
-
-  return panelHtml('ratings', 'Ratings', `${active.length} players`, body);
+  return `
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <div class="panel-title">Decision</div>
+          <div class="panel-sub">Promotion result for the focused version</div>
+        </div>
+        <span class="tag ${statusClass(decision.status)}">${statusLabel(decision.status)}</span>
+      </div>
+      <div class="panel-body">
+        <div class="kv">
+          <div class="kv-line"><span class="kv-key">Candidate</span><span class="kv-value">${decision.candidate || '\u2014'}</span></div>
+          <div class="kv-line"><span class="kv-key">Gate</span><span class="kv-value">${statusLabel(decision.gate_status)}</span></div>
+          <div class="kv-line"><span class="kv-key">Benchmarks</span><span class="kv-value">${statusLabel(decision.benchmark_status)}</span></div>
+          <div class="kv-line"><span class="kv-key">Updated</span><span class="kv-value">${ago(decision.updated_at)}</span></div>
+        </div>
+        <div class="row-list" style="margin-top:16px">
+          ${reasons || '<div class="empty">No decision reasons recorded yet.</div>'}
+        </div>
+      </div>
+    </section>
+  `;
 }
 
-function buildGate(data) {
-  const latest = data.model || {};
-  const approved = data.approved_model || {};
-  const gate = data.gate || {};
-  const decisions = Object.entries(gate.decisions || {}).sort(
-    (a, b) => versionNumber(b[0]) - versionNumber(a[0]),
-  );
-
-  let html = '';
-  if (latest.version && approved.version && latest.version !== approved.version) {
-    html += `<div class="kv-row"><span class="k">current gate</span><span class="v">v${latest.version} vs v${approved.version}</span></div>`;
-    html += `<div class="kv-row"><span class="k">self-play source</span><span class="v">approved v${approved.version}</span></div>`;
-  } else if (approved.version) {
-    html += `<div class="kv-row"><span class="k">current gate</span><span class="v">none pending</span></div>`;
-    html += `<div class="kv-row"><span class="k">self-play source</span><span class="v">approved v${approved.version}</span></div>`;
-  } else {
-    html += `<div class="empty">awaiting first approved model</div>`;
-  }
-
-  if (!decisions.length) {
-    return panelHtml('gate', 'Gate', null, html);
-  }
-
-  html += '<table style="margin-top:8px"><tr><th>candidate</th><th>decision</th><th>against</th><th class="r">record</th><th class="r">score</th><th class="r">when</th></tr>';
-  for (const [name, info] of decisions.slice(0, 6)) {
-    const against = info.approved_against || '\u2014';
-    const record = `${info.wins ?? 0}-${info.draws ?? 0}-${info.losses ?? 0}`;
-    const score = info.score != null ? info.score.toFixed(3) : '\u2014';
-    html += `<tr>
-      <td>${name}</td>
-      <td style="font-weight:600">${info.status || '\u2014'}</td>
-      <td>${against}</td>
-      <td class="r">${record}</td>
-      <td class="r">${score}</td>
-      <td class="r">${info.resolved_at ? ago(info.resolved_at) : '\u2014'}</td>
-    </tr>`;
-  }
-  html += '</table>';
-
-  return panelHtml('gate', 'Gate', `${decisions.length} decisions`, html);
-}
-
-function buildData(data) {
-  const d = data.data;
-  const sp = d.selfplay;
-  const im = d.imitation;
-
-  let html = '';
-  html += `<div class="kv-row"><span class="k">self-play</span><span class="v">${fmt(sp.total_files)} files &middot; ${fmt(sp.total_positions)} positions</span></div>`;
-
-  const versions = Object.entries(sp.by_version || {});
-  if (versions.length) {
-    html += '<table><tr><th>version</th><th class="r">files</th><th class="r">positions</th></tr>';
-    for (const [ver, info] of versions) {
-      html += `<tr><td>${ver}</td><td class="r">${fmt(info.count)}</td><td class="r">${fmt(info.positions)}</td></tr>`;
-    }
-    html += '</table>';
-  }
-
-  html += `<div class="kv-row" style="margin-top:6px"><span class="k">imitation</span><span class="v">${fmt(im.total_files)} files &middot; ${fmt(im.total_positions)} positions</span></div>`;
-
-  if (d.models.length) {
-    html += `<div class="kv-row"><span class="k">snapshots</span><span class="v">${d.models.length} versions</span></div>`;
-  }
-
-  return panelHtml('data', 'Training Data', null, html);
-}
-
-function buildH2H(data) {
-  const e = data.elo;
-  const active = e.active_players || [];
-  const pairs = e.pair_results || {};
-
-  if (active.length < 2) {
-    return panelHtml('h2h', 'Head-to-Head', null, '<div class="empty">Not enough players</div>');
-  }
-
-  const ratings = e.ratings || {};
-  const sorted = [...active].sort((a, b) => {
-    const ra = ratings[a], rb = ratings[b];
-    if (!ra || !rb) return 0;
-    return conservRating(rb.mu, rb.sigma) - conservRating(ra.mu, ra.sigma);
-  });
-
-  let html = '<div class="h2h-wrap"><table class="h2h-table"><tr><th></th>';
-  for (const p of sorted) {
-    html += `<th title="${p}">${shorten(p)}</th>`;
-  }
-  html += '</tr>';
-
-  for (const row of sorted) {
-    html += `<tr><th title="${row}" style="text-align:right">${shorten(row)}</th>`;
-    for (const col of sorted) {
-      if (row === col) {
-        html += '<td class="self">\u2014</td>';
-        continue;
-      }
-      const key = pairKey(row, col);
-      const pr = pairs[key];
-      if (!pr) {
-        html += '<td><span class="h2h-cell none">\u2014</span></td>';
-        continue;
-      }
-      const a_name = key.split(':')[0];
-      const rowIsA = row === a_name;
-      const wins = rowIsA ? pr.a_wins : pr.b_wins;
-      const losses = rowIsA ? pr.b_wins : pr.a_wins;
-      const draws = pr.draws;
-      const total = wins + losses + draws;
-      const winRate = total > 0 ? wins / total : 0.5;
-
-      let cls = 'even';
-      if (total >= 3) {
-        if (winRate >= 0.6) cls = 'dominant';
-        else if (winRate <= 0.4) cls = 'losing';
-      }
-
-      html += `<td><span class="h2h-cell ${cls}" title="${row} vs ${col}: ${wins}W ${draws}D ${losses}L">${wins}-${draws}-${losses}</span></td>`;
-    }
-    html += '</tr>';
-  }
-  html += '</table></div>';
-
-  return panelHtml('h2h', 'Head-to-Head', `${Object.keys(pairs).length} pairs`, html);
-}
-
-function buildGames(data) {
+function renderGames(data) {
   const games = data.recent_games || [];
   if (!games.length) {
-    return panelHtml('games', 'Recent Games', null, '<div class="empty">No games recorded</div>');
+    return `<section class="panel"><div class="panel-head"><div><div class="panel-title">Recent Games</div><div class="panel-sub">Immutable evaluation records</div></div></div><div class="panel-body"><div class="empty">No evaluation games have been recorded for the focused version yet.</div></div></section>`;
   }
-
-  const show = games.slice(-20).reverse();
-
-  let html = '<table><tr><th>white</th><th>black</th><th>result</th><th class="r">moves</th><th class="r">when</th></tr>';
-  for (const g of show) {
-    let outcomeHtml;
-    if (g.outcome === 'white') outcomeHtml = `<span class="game-outcome w">1-0</span>`;
-    else if (g.outcome === 'black') outcomeHtml = `<span class="game-outcome b">0-1</span>`;
-    else outcomeHtml = `<span class="game-outcome d">\u00bd-\u00bd</span>`;
-
-    html += `<tr>
-      <td>${g.white}</td>
-      <td>${g.black}</td>
-      <td>${outcomeHtml}</td>
-      <td class="r">${g.moves}</td>
-      <td class="r muted">${ago(g.timestamp)}</td>
-    </tr>`;
-  }
-  html += '</table>';
-
-  return panelHtml('games', 'Recent Games', `${games.length}`, html);
+  const rows = [...games].reverse().map(game => `
+    <tr>
+      <td><span class="tag ${statusClass(game.eval_type)}">${game.eval_type}</span></td>
+      <td>${game.white} vs ${game.black}<br><span class="mono">pair ${game.pair_id || '\u2014'} / game ${game.pair_game_index ?? '\u2014'}</span></td>
+      <td class="r">${game.outcome}</td>
+      <td class="r">${fmt(game.moves)}</td>
+      <td class="r">${ago(game.timestamp)}</td>
+    </tr>
+  `).join('');
+  return `
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <div class="panel-title">Recent Games</div>
+          <div class="panel-sub">Latest immutable records under the focused evaluation version</div>
+        </div>
+      </div>
+      <div class="panel-body">
+        <table>
+          <thead>
+            <tr>
+              <th>Type</th>
+              <th>Players</th>
+              <th class="r">Outcome</th>
+              <th class="r">Moves</th>
+              <th class="r">Age</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </section>
+  `;
 }
 
-function buildWorkers(data) {
-  const w = data.workers || {};
-  const names = Object.keys(w).sort();
-  if (!names.length) return panelHtml('workers', 'Workers', null, '<div class="empty">No worker heartbeats</div>');
-
-  let html = `<table><tr><th></th><th>worker</th><th>model</th><th class="r">games</th><th class="r">pos</th><th class="r">seen</th></tr>`;
-  for (const name of names) {
-    const hb = w[name];
-    const cls = freshness(hb.timestamp);
-    html += `<tr>
-      <td><span class="dot ${cls}"></span></td>
-      <td>${name}</td>
-      <td>v${hb.model_version ?? '?'}</td>
-      <td class="r">${fmt(hb.total_games)}</td>
-      <td class="r">${fmt(hb.total_positions)}</td>
-      <td class="r muted">${ago(hb.timestamp)}</td>
-    </tr>`;
-  }
-  html += '</table>';
-  return panelHtml('workers', 'Workers', `${names.length}`, html);
+function renderVersions(data) {
+  const evals = data.evaluations || {};
+  const summaries = evals.summaries || {};
+  const rows = (evals.versions || []).slice().reverse().map(version => {
+    const summary = summaries[`v${version}`] || {};
+    const decision = summary.decision || {};
+    const gate = summary.gate || {};
+    const benchmark = summary.benchmark || {};
+    return `
+      <div class="row">
+        <div>
+          <strong>v${version}</strong>
+          <span>gate ${statusLabel(gate.status)} · benchmark ${statusLabel(benchmark.status)}</span>
+        </div>
+        <div class="right">
+          <strong>${statusLabel(decision.status)}</strong>
+          <span>${ago(decision.updated_at)}</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+  return `
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <div class="panel-title">Version History</div>
+          <div class="panel-sub">Latest evaluation artifacts by version</div>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="row-list">
+          ${rows || '<div class="empty">No evaluation summaries found yet.</div>'}
+        </div>
+      </div>
+    </section>
+  `;
 }
 
-function buildRetired(data) {
-  const e = data.elo;
-  const retired = e.retired_players || [];
-  const ratings = e.ratings || {};
-  const ps = e.player_stats || {};
-
-  if (!retired.length) return '';
-
-  const body = renderRatingTable(retired, ratings, ps);
-  if (!body) return '';
-  return panelHtml('retired', 'Retired Ratings', `${retired.length}`, body);
-}
-
-// --- Pages 1-7 ---
-
-function _sparkline(values, width, height, color) {
-  const finite = values.filter(v => isFinite(v));
-  if (finite.length < 2) return '<span class="muted">\u2014</span>';
-  const min = Math.min(...finite);
-  const max = Math.max(...finite);
-  const range = max - min || 1;
-  const pts = finite.map((v, i) => {
-    const x = (i / (finite.length - 1)) * width;
-    const y = height - 2 - ((v - min) / range) * (height - 4);
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(' ');
-  return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="display:block;overflow:visible"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
-}
-
-function _stackedBar(parts, total) {
-  if (!total) return '<div class="empty">no data</div>';
-  const grays = ['#111', '#555', '#999', '#bbb', '#ddd'];
-  let bar = '<div style="display:flex;height:12px;border-radius:3px;overflow:hidden;background:var(--bg-muted);">';
-  let legend = '<div style="display:flex;gap:10px;font-size:11px;margin-top:4px;color:var(--text-secondary);">';
-  for (let idx = 0; idx < parts.length; idx++) {
-    const p = parts[idx];
-    const pct = (100 * p.value) / total;
-    const c = p.color ?? grays[idx % grays.length];
-    if (pct > 0) {
-      bar += `<div style="width:${pct.toFixed(2)}%;background:${c};" title="${p.label}: ${p.value}"></div>`;
-    }
-    legend += `<span><span style="display:inline-block;width:8px;height:8px;background:${c};margin-right:3px;border-radius:1px;"></span>${p.label} ${p.value}</span>`;
-  }
-  bar += '</div>';
-  legend += '</div>';
-  return bar + legend;
-}
-
-function buildRunHealth(data) {
-  const games = data.recent_games || [];
-  let html = '';
-
-  let w = 0, l = 0, d = 0;
-  let lengths = [];
-  for (const g of games) {
-    const winner = g.outcome || g.winner || g.result;
-    if (winner === 'draw' || winner === 'd') d++;
-    else if (winner === 'white' || winner === 'w') w++;
-    else if (winner === 'black' || winner === 'b') l++;
-    const ml = (g.white_moves || 0) + (g.black_moves || 0);
-    if (ml > 0) lengths.push(ml);
-  }
-  const total = w + d + l;
-  html += `<div class="kv-row"><span class="k">recent W/D/L</span><span class="v">${total} games</span></div>`;
-  html += _stackedBar([
-    {label: 'W', value: w, color: '#111'},
-    {label: 'D', value: d, color: '#999'},
-    {label: 'L', value: l, color: '#ddd'},
-  ], total);
-
-  if (lengths.length) {
-    lengths.sort((a, b) => a - b);
-    const median = lengths[Math.floor(lengths.length / 2)];
-    const p5 = lengths[Math.floor(lengths.length * 0.05)];
-    const p95 = lengths[Math.floor(lengths.length * 0.95)];
-    const mean = (lengths.reduce((s, x) => s + x, 0) / lengths.length).toFixed(1);
-    html += `<div class="kv-row" style="margin-top:8px"><span class="k">game length (plies)</span><span class="v">mean ${mean} &middot; median ${median} &middot; p5 ${p5} &middot; p95 ${p95}</span></div>`;
-  }
-
+function renderWorkers(data) {
   const workers = Object.entries(data.workers || {});
-  if (workers.length) {
-    html += '<table style="margin-top:6px;font-size:12px;"><tr><th>worker</th><th class="r">games</th><th class="r">positions</th></tr>';
-    workers.sort((a, b) => (b[1].total_games || 0) - (a[1].total_games || 0));
-    for (const [name, w] of workers) {
-      html += `<tr><td>${name}</td><td class="r">${fmt(w.total_games || 0)}</td><td class="r">${fmt(w.total_positions || 0)}</td></tr>`;
-    }
-    html += '</table>';
-  }
+  const rows = workers.map(([name, info]) => `
+    <div class="row">
+      <div>
+        <strong>${name}</strong>
+        <span>model v${fmt(info.model_version)} · ${fmt(info.total_games)} games</span>
+      </div>
+      <div class="right">
+        <strong>${ago(info.timestamp)}</strong>
+        <span>${info.hostname || ''}</span>
+      </div>
+    </div>
+  `).join('');
 
-  if (!html) html = '<div class="empty">awaiting first games</div>';
-  return panelHtml('run-health', 'Run Health', `${total}`, html);
+  const selfplay = data.data?.selfplay || {};
+  const imitation = data.data?.imitation || {};
+  return `
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <div class="panel-title">Throughput</div>
+          <div class="panel-sub">Training data and worker liveness</div>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="summary-grid">
+          <div class="mini">
+            <div class="label">Self-play</div>
+            <div class="value">${fmt(selfplay.total_positions || 0)}</div>
+            <div class="meta">${fmt(selfplay.total_files || 0)} files</div>
+          </div>
+          <div class="mini">
+            <div class="label">Imitation</div>
+            <div class="value">${fmt(imitation.total_positions || 0)}</div>
+            <div class="meta">${fmt(imitation.total_files || 0)} files</div>
+          </div>
+          <div class="mini">
+            <div class="label">Workers</div>
+            <div class="value">${fmt(workers.length)}</div>
+            <div class="meta">active heartbeats</div>
+          </div>
+        </div>
+        <div class="row-list">
+          ${rows || '<div class="empty">No worker heartbeats available.</div>'}
+        </div>
+      </div>
+    </section>
+  `;
 }
 
-function buildDataPage(data) {
-  const sp = (data.data && data.data.selfplay) || {};
-  const im = (data.data && data.data.imitation) || {};
-  const nTotal = (sp.total_positions || 0) + (im.total_positions || 0);
-  const window = windowSize(nTotal);
-  const reuse = nTotal > 0 ? (window / nTotal) : 0;
+function renderTrainer(data) {
+  const summaries = data.trainer_metrics?.summaries || [];
+  const rows = summaries.slice(-6).reverse().map(entry => `
+    <div class="row">
+      <div>
+        <strong>summary ${fmt(entry.summary)}</strong>
+        <span>v${fmt(entry.version)} · loss_policy ${fmt(entry.loss_policy, 4)}</span>
+      </div>
+      <div class="right">
+        <strong>${fmt(entry.positions_seen || entry.positions || 0)}</strong>
+        <span>positions</span>
+      </div>
+    </div>
+  `).join('');
 
-  let html = '';
-  html += `<div class="kv-row"><span class="k">N_total</span><span class="v">${fmt(nTotal)} positions</span></div>`;
-  html += `<div class="kv-row"><span class="k">replay window</span><span class="v">${fmt(window)} (${(100 * reuse).toFixed(1)}% of N_total)</span></div>`;
-
-  const byVer = sp.by_version || {};
-  const entries = Object.entries(byVer).sort((a, b) => Number(a[0]) - Number(b[0]));
-  if (entries.length) {
-    const total = entries.reduce((s, [, v]) => s + (v.positions || 0), 0);
-    const parts = entries.map(([ver, info], i) => ({
-      label: `v${ver}`,
-      value: info.positions || 0,
-    }));
-    html += '<div class="kv-row" style="margin-top:8px"><span class="k">per-version contribution</span></div>';
-    html += _stackedBar(parts, total);
-  }
-
-  return panelHtml('data-page', 'Data', `${fmt(nTotal)}`, html);
-}
-
-function buildModelBehavior(data) {
-  const tm = data.trainer_metrics || {};
-  const summaries = (tm.summaries || tm.cycles || []).slice(-100);
-
-  if (!summaries.length) {
-    return panelHtml('model-behavior', 'Model Behavior', 'waiting',
-      '<div class="empty">awaiting first trainer summary</div>');
-  }
-
-  const latest = summaries[summaries.length - 1];
-  const latestSummary = latest.summary ?? latest.cycle;
-  const grays = ['#111', '#444', '#777', '#aaa', '#ccc'];
-  const lossDefs = [
-    {name: 'policy', key: 'loss_policy', color: grays[0]},
-    {name: 'value',  key: 'loss_value',  color: grays[1]},
-    {name: 'mlh',    key: 'loss_mlh',    color: grays[2]},
-    {name: 'stv',    key: 'loss_stv',    color: grays[3]},
-    {name: 'aux',    key: 'loss_aux',    color: grays[4]},
-  ];
-
-  let html = '';
-  html += `<div class="kv-row"><span class="k">latest summary</span><span class="v">${latestSummary} &middot; v${latest.version} &middot; ${latest.steps} steps</span></div>`;
-  html += `<div class="kv-row"><span class="k">total steps</span><span class="v">${fmt(latest.total_steps)}</span></div>`;
-  html += `<div class="kv-row"><span class="k">N_total</span><span class="v">${fmt(latest.n_total)} positions</span></div>`;
-
-  html += `<table style="margin-top:8px"><tr><th>loss</th><th class="r">current</th><th class="r">best</th><th style="width:110px;padding-left:8px">trend (${summaries.length})</th></tr>`;
-  for (const {name, key, color} of lossDefs) {
-    const vals = summaries.map(c => c[key]).filter(v => v != null);
-    const cur = vals[vals.length - 1];
-    const best = Math.min(...vals);
-    html += `<tr>
-      <td>${name}</td>
-      <td class="r">${cur != null ? cur.toFixed(5) : '\u2014'}</td>
-      <td class="r muted">${best != null ? best.toFixed(5) : '\u2014'}</td>
-      <td style="padding-left:8px">${_sparkline(vals, 100, 22, color)}</td>
-    </tr>`;
-  }
-  html += '</table>';
-
-
-  return panelHtml('model-behavior', 'Model Behavior', `summary ${latestSummary}`, html);
-}
-
-function buildSearch(data) {
-  const workers = Object.entries(data.workers || {});
-  const withStats = workers.filter(([, w]) => w.recent_mean_root_q != null);
-
-  let html = '';
-  if (withStats.length) {
-    html += '<table><tr><th>worker</th><th class="r">mean Q</th><th class="r">mean H</th><th class="r">game len</th><th class="r">window</th></tr>';
-    for (const [name, w] of withStats) {
-      html += `<tr>
-        <td>${name}</td>
-        <td class="r">${w.recent_mean_root_q.toFixed(4)}</td>
-        <td class="r">${w.recent_mean_root_entropy.toFixed(4)}</td>
-        <td class="r">${w.recent_mean_game_length.toFixed(0)}</td>
-        <td class="r muted">${w.recent_games_window}</td>
-      </tr>`;
-    }
-    html += '</table>';
-  } else if (workers.length) {
-    html += '<div class="empty">workers present but no games played yet</div>';
-  } else {
-    html += '<div class="empty">awaiting worker heartbeats</div>';
-  }
-
-
-  const badge = withStats.length ? `${withStats.length} worker${withStats.length > 1 ? 's' : ''}` : 'waiting';
-  return panelHtml('search', 'Search', badge, html);
-}
-
-function buildBenchmarks(data) {
-  const bvs = (data.benchmark_versions || []).slice().sort((a, b) => a.version - b.version);
-  const br = data.benchmark_results || {};
-
-  if (!bvs.length) {
-    return panelHtml('benchmarks', 'Benchmarks', 'waiting',
-      '<div class="empty">awaiting first benchmark run</div>');
-  }
-
-  const vkeys = bvs.map(vs => vs.name.slice(0, -5));
-
-  const posOrder = [];
-  const posMeta = {};
-  for (const vk of vkeys) {
-    for (const r of ((br[vk] || {}).results || [])) {
-      if (!posMeta[r.id]) {
-        posMeta[r.id] = {category: r.category};
-        posOrder.push(r.id);
-      }
-    }
-  }
-
-  if (!posOrder.length) {
-    return panelHtml('benchmarks', 'Benchmarks', `${bvs.length}v`, '<div class="empty">no position results found</div>');
-  }
-
-  const lkp = {};
-  for (const vk of vkeys) {
-    lkp[vk] = {};
-    for (const r of ((br[vk] || {}).results || [])) lkp[vk][r.id] = r;
-  }
-
-  let html = '<div style="overflow-x:auto"><table class="h2h-table" style="font-size:10px">';
-  html += '<tr><th style="text-align:left;min-width:90px">position</th><th>cat</th>';
-  for (const vk of vkeys) html += `<th>${vk}</th>`;
-  html += '</tr>';
-
-  for (const posId of posOrder) {
-    const meta = posMeta[posId];
-    html += `<tr><td style="font-size:10px;max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${posId}">${posId}</td><td class="muted">${meta.category.slice(0, 4)}</td>`;
-    const refMove = vkeys.map(vk => lkp[vk][posId]).find(r => r)?.best_move ?? null;
-    for (const vk of vkeys) {
-      const r = lkp[vk][posId];
-      if (!r) { html += '<td class="muted" style="opacity:0.3">\u2014</td>'; continue; }
-      const t = Math.max(0, Math.min(1, (r.value + 1) / 2));
-      const g = Math.round(40 + 180 * (1 - t));
-      const bg = `rgba(${g},${g},${g},0.35)`;
-      const flag = r.best_move !== refMove ? '\u26a1' : '';
-      html += `<td style="background:${bg};font-size:9px;white-space:nowrap" title="${r.best_move} (val=${r.value.toFixed(3)})">${r.best_move}${flag}</td>`;
-    }
-    html += '</tr>';
-  }
-  html += '</table></div>';
-
-  return panelHtml('benchmarks', 'Benchmarks', `${bvs.length}v \u00d7 ${posOrder.length}pos`, html);
-}
-
-function buildDiffViewer(data) {
-  const bvs = (data.benchmark_versions || []).slice().sort((a, b) => a.version - b.version);
-  const br = data.benchmark_results || {};
-
-  if (bvs.length < 2) {
-    return panelHtml('diff-viewer', 'Diff Viewer', 'waiting', '<div class="empty">awaiting \u22652 benchmark runs</div>');
-  }
-
-  const prev = bvs[bvs.length - 2];
-  const curr = bvs[bvs.length - 1];
-  const pk = prev.name.replace('.json', '');
-  const ck = curr.name.replace('.json', '');
-  const prevRes = (br[pk] || {}).results || [];
-  const currRes = (br[ck] || {}).results || [];
-
-  if (!prevRes.length || !currRes.length) {
-    return panelHtml('diff-viewer', 'Diff Viewer', `${pk} \u2192 ${ck}`, '<div class="empty">results not yet loaded</div>');
-  }
-
-  const pm = Object.fromEntries(prevRes.map(r => [r.id, r]));
-  const cm = Object.fromEntries(currRes.map(r => [r.id, r]));
-
-  const diffs = [];
-  for (const id of [...new Set([...Object.keys(pm), ...Object.keys(cm)])]) {
-    const p = pm[id]; const c = cm[id];
-    if (!p || !c) continue;
-    const moveChanged = p.best_move !== c.best_move;
-    const dv = c.value - p.value;
-    if (moveChanged || Math.abs(dv) > 0.05) diffs.push({id, p, c, moveChanged, dv});
-  }
-
-  let html = `<div class="kv-row" style="margin-bottom:8px"><span class="k">comparing</span><span class="v">${pk} \u2192 ${ck}</span></div>`;
-
-  if (!diffs.length) {
-    html += '<div style="color:var(--text);font-size:12px">\u2714 no changes \u2014 all positions stable</div>';
-  } else {
-    html += `<div style="margin-bottom:6px;font-size:11px;color:var(--text-muted)">${diffs.length} position${diffs.length !== 1 ? 's' : ''} changed</div>`;
-    html += '<table><tr><th>position</th><th>cat</th><th>prev move</th><th>curr move</th><th class="r">\u0394value</th></tr>';
-    for (const {id, p, c, moveChanged, dv} of diffs) {
-      const dc = dv > 0.01 ? 'var(--text)' : dv < -0.01 ? 'var(--text-muted)' : 'var(--text-secondary)';
-      html += `<tr>
-        <td style="font-size:10px;max-width:80px;overflow:hidden;text-overflow:ellipsis" title="${id}">${id}</td>
-        <td class="muted">${p.category.slice(0, 4)}</td>
-        <td style="${moveChanged ? 'color:var(--text-secondary)' : ''}">${p.best_move}</td>
-        <td style="${moveChanged ? 'font-weight:600' : ''}">${c.best_move}</td>
-        <td class="r" style="color:${dc}">${dv > 0 ? '+' : ''}${dv.toFixed(3)}</td>
-      </tr>`;
-    }
-    html += '</table>';
-  }
-
-  return panelHtml('diff-viewer', 'Diff Viewer', `${pk} \u2192 ${ck}`, html);
-}
-
-function buildReplayAudit(data) {
-  const sp = (data.data && data.data.selfplay) || {};
-  const byVer = sp.by_version || {};
-  const entries = Object.entries(byVer).sort((a, b) => {
-    const an = parseInt(a[0].replace(/[^0-9]/g, ''), 10) || 0;
-    const bn = parseInt(b[0].replace(/[^0-9]/g, ''), 10) || 0;
-    return an - bn;
-  });
-
-  if (!entries.length) {
-    return panelHtml('replay-audit', 'Replay Audit', 'waiting', '<div class="empty">awaiting self-play data</div>');
-  }
-
-  const nTotal = sp.total_positions || 0;
-  const window = windowSize(nTotal);
-
-  let html = '';
-  html += `<div class="kv-row"><span class="k">N_total</span><span class="v">${fmt(nTotal)} positions</span></div>`;
-  html += `<div class="kv-row" style="margin-bottom:8px"><span class="k">window</span><span class="v">${fmt(window)} (${nTotal > 0 ? (100 * window / nTotal).toFixed(1) : 0}% of N_total)</span></div>`;
-
-  const maxPos = entries.reduce((m, [, v]) => Math.max(m, v.positions || 0), 0);
-  html += '<table><tr><th>version</th><th class="r">files</th><th class="r">positions</th><th class="r">% of total</th><th style="min-width:80px"></th></tr>';
-  for (const [ver, info] of entries) {
-    const pos = info.positions || 0;
-    const pct = nTotal > 0 ? (100 * pos / nTotal) : 0;
-    const bw = maxPos > 0 ? (100 * pos / maxPos).toFixed(1) : 0;
-    html += `<tr>
-      <td style="font-weight:500">${ver}</td>
-      <td class="r muted">${fmt(info.count)}</td>
-      <td class="r">${fmt(pos)}</td>
-      <td class="r muted">${pct.toFixed(1)}%</td>
-      <td><div style="height:8px;background:var(--bg-muted);border-radius:2px;overflow:hidden"><div style="width:${bw}%;height:100%;background:var(--text);border-radius:2px"></div></div></td>
-    </tr>`;
-  }
-  html += '</table>';
-
-  return panelHtml('replay-audit', 'Replay Audit', `${entries.length}v`, html);
+  return `
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <div class="panel-title">Trainer</div>
+          <div class="panel-sub">Most recent trainer summaries</div>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="row-list">
+          ${rows || '<div class="empty">No trainer summaries available yet.</div>'}
+        </div>
+      </div>
+    </section>
+  `;
 }
 
 function render(data) {
-  if (!data) return;
-  lastData = data;
-  renderHeader(data);
-  buildOverview(data);
-
-  const panels = document.getElementById('panels');
-  if (firstRender) panels.classList.add('initial');
-
-  const retiredHtml = buildRetired(data);
-
-  panels.innerHTML = [
-    buildRatings(data),
-    buildGate(data),
-    buildData(data),
-    buildRunHealth(data),
-    buildDataPage(data),
-    buildModelBehavior(data),
-    buildSearch(data),
-    buildBenchmarks(data),
-    buildDiffViewer(data),
-    buildReplayAudit(data),
-    buildH2H(data),
-    retiredHtml,
-    `<div class="two-col">
-      ${buildGames(data)}
-      ${buildWorkers(data)}
-    </div>`,
-  ].join('');
-
-  if (firstRender) {
-    firstRender = false;
-    setTimeout(() => panels.classList.remove('initial'), 500);
-  }
+  const focus = data.evaluations?.focus || null;
+  document.getElementById('app').innerHTML = `
+    ${renderHeader(data, focus)}
+    <div class="grid">
+      <div class="stack">
+        ${renderGate(focus)}
+        ${renderBenchmark(focus)}
+        ${renderGames(data)}
+      </div>
+      <div class="stack">
+        ${renderDecision(focus)}
+        ${renderVersions(data)}
+        ${renderWorkers(data)}
+        ${renderTrainer(data)}
+      </div>
+    </div>
+  `;
 }
 
 async function refresh() {
-  try {
-    const resp = await fetch('/api/status');
-    const data = await resp.json();
-    render(data);
-  } catch (e) {
-    document.getElementById('last-refresh').textContent = `error: ${e.message}`;
-  }
+  const res = await fetch('/api/status', { cache: 'no-store' });
+  const data = await res.json();
+  render(data);
 }
 
 refresh();

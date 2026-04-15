@@ -1,4 +1,4 @@
-.PHONY: setup worker trainer elo dashboard status test bench lint docs-dev docs-build clean
+.PHONY: setup worker trainer eval elo dashboard status test bench lint docs-dev docs-build clean
 
 # --- Training pipeline ---
 
@@ -12,8 +12,10 @@ worker: ## Run a self-play worker
 trainer: ## Run the continuous trainer
 	uv run python -m training trainer
 
-elo: ## Run the Elo rating service
-	uv run python -m training elo-service
+eval: ## Run the evaluation service
+	uv run python -m training evaluation-service
+
+elo: eval ## Deprecated alias for the evaluation service
 
 dashboard: ## Run the training dashboard
 	uv run python -m training dashboard

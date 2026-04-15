@@ -28,7 +28,7 @@ Uses [ONNX Runtime](https://onnxruntime.ai/) for production inference. Feature-g
 
 - Supports batched inference for better throughput
 - Configurable thread count via `from_path_with_threads()`
-- Used by the training pipeline (workers and Elo service)
+- Used by the training pipeline (workers and the evaluation service)
 
 ### TractEvaluator
 
@@ -45,4 +45,4 @@ A model-free evaluator that uses the same evaluation function as minimax:
 - **Policy**: one-ply lookahead with softmax over move scores (using `EvalWeights` — material, mobility, pawn structure, king safety, etc.)
 - **Value**: positional evaluation passed through `tanh(cp / 750)`
 
-Used when no trained model is available, or as a baseline for Elo measurements. Significantly stronger than a uniform-policy evaluator because the search is guided by actual move quality.
+Used when no trained model is available, or as a baseline for evaluation matches. Significantly stronger than a uniform-policy evaluator because the search is guided by actual move quality.
