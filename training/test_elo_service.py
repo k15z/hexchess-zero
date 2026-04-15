@@ -5,6 +5,7 @@ import json
 from training import storage
 from training.elo_service import (
     BASELINE_NAMES,
+    _assign_colors,
     _build_state,
     _gate_decision,
     _gate_progress_from_records,
@@ -126,6 +127,22 @@ def test_select_pair_prefers_gate_matchup():
     }
 
     assert _select_pair(state, approved_name="v3", gate_candidate="v4") == ("v3", "v4")
+
+
+def test_assign_colors_maps_sorted_pair_counts_back_to_requested_order():
+    state = {
+        "pair_results": {
+            "v1:v4": {
+                "a_wins": 0,
+                "b_wins": 0,
+                "draws": 0,
+                "a_as_white": 0,
+                "b_as_white": 5,
+            },
+        },
+    }
+
+    assert _assign_colors(state, "v4", "v1") == ("v1", "v4")
 
 
 def test_gate_decision_approves_early_for_clear_winner():
