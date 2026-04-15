@@ -21,7 +21,6 @@ import math
 import os
 import random
 import time
-from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -34,7 +33,6 @@ from .elo import (
     MctsPlayer,
     MinimaxPlayer,
     Player,
-    baselines,
     format_elo_table,
     new_rating,
     play_game,
@@ -215,74 +213,37 @@ def _gate_pentanomial_llr(
 
 
 # ---------------------------------------------------------------------------
-# Player cache (LRU to bound memory)
+# Player construction
 # ---------------------------------------------------------------------------
 
 
-class PlayerCache:
-    """LRU cache for Player objects. Evicts least-recently-used when full."""
+def _build_player(
+    name: str,
+    simulations: int,
+    cache_dir: Path,
+    s3_model_key: str | None,
+) -> Player:
+    """Construct a Player, downloading the ONNX model on first use.
 
-    def __init__(self, simulations: int, cache_dir: Path, max_size: int = 6):
-        self.simulations = simulations
-        self.cache_dir = cache_dir
-        self.max_size = max(max_size, 4)
-        self._cache: OrderedDict[str, Player] = OrderedDict()
-        self._baselines: dict[str, Player] = {}
-        self._hits = 0
-        self._misses = 0
-
-    def _init_baselines(self) -> None:
-        if self._baselines:
-            return
-        for p in baselines(self.simulations):
-            self._baselines[p.name] = p
-            self._cache[p.name] = p
-
-    def get(self, name: str, s3_model_key: str | None = None) -> Player:
-        self._init_baselines()
-
-        if name in self._cache:
-            self._hits += 1
-            self._cache.move_to_end(name)
-            return self._cache[name]
-        self._misses += 1
-
-        if name in self._baselines:
-            player = self._baselines[name]
-        elif name.startswith("Minimax"):
-            depth = int(name.split("-")[1])
-            player = MinimaxPlayer(name=name, depth=depth)
-        else:
-            local_path = self.cache_dir / f"{name}.onnx"
-            if not local_path.exists() and s3_model_key:
-                storage.get_file(s3_model_key, local_path)
-            player = MctsPlayer(
-                name=name,
-                simulations=self.simulations,
-                model_path=str(local_path),
-            )
-
-        while len(self._cache) >= self.max_size:
-            oldest_name, _ = next(iter(self._cache.items()))
-            if oldest_name in self._baselines:
-                self._cache.move_to_end(oldest_name)
-                continue
-            self._cache.pop(oldest_name)
-            logger.debug("Evicted player {} from cache", oldest_name)
-
-        self._cache[name] = player
-        return player
-
-    def stats(self) -> dict[str, float]:
-        total = self._hits + self._misses
-        hit_rate = (self._hits / total) if total else 0.0
-        return {
-            "size": float(len(self._cache)),
-            "max_size": float(self.max_size),
-            "hits": float(self._hits),
-            "misses": float(self._misses),
-            "hit_rate": hit_rate,
-        }
+    Players are built per game rather than cached: ``MctsPlayer`` owns an ONNX
+    runtime session, and keeping several of them resident (one per active
+    version) was the dominant contributor to worker RSS growth and OOM kills.
+    The model file stays on disk under ``cache_dir``, so rebuild cost is a
+    session init rather than an S3 fetch.
+    """
+    if name == "Heuristic":
+        return MctsPlayer(name=name, simulations=simulations)
+    if name.startswith("Minimax"):
+        depth = int(name.split("-")[1])
+        return MinimaxPlayer(name=name, depth=depth)
+    local_path = cache_dir / f"{name}.onnx"
+    if not local_path.exists() and s3_model_key:
+        storage.get_file(s3_model_key, local_path)
+    return MctsPlayer(
+        name=name,
+        simulations=simulations,
+        model_path=str(local_path),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -914,8 +875,6 @@ def _persist_record(records: GameRecordStore, state: dict, record: dict) -> bool
 # ---------------------------------------------------------------------------
 
 
-PLAYER_CACHE_SIZE = 6
-
 # How often to re-LIST per-game objects from S3 to absorb peer replica writes.
 # Kept short so the saturation cap and predict_draw matchmaking see roughly
 # global game counts: with N replicas and a 5-minute lag, a near-saturated
@@ -948,7 +907,9 @@ def run_elo_service(
     cache_dir = cfg.model_cache_dir / "elo"
     cache_dir.mkdir(parents=True, exist_ok=True)
 
-    players_cache = PlayerCache(simulations, cache_dir, max_size=PLAYER_CACHE_SIZE)
+    def get_player(name: str) -> Player:
+        return _build_player(name, simulations, cache_dir, version_keys.get(name))
+
     records = GameRecordStore()
 
     # Slack notifications should fire from at most one replica; gate on an
@@ -1095,8 +1056,8 @@ def run_elo_service(
             gate_failed = False
             for white_name, black_name, gate_game_index in gate_games:
                 try:
-                    white = players_cache.get(white_name, version_keys.get(white_name))
-                    black = players_cache.get(black_name, version_keys.get(black_name))
+                    white = get_player(white_name)
+                    black = get_player(black_name)
                     result = play_game(white, black)
                 except Exception as e:
                     logger.error("Gate game {} vs {} failed: {}", white_name, black_name, e)
@@ -1141,8 +1102,8 @@ def run_elo_service(
             )
 
             try:
-                white = players_cache.get(white_name, version_keys.get(white_name))
-                black = players_cache.get(black_name, version_keys.get(black_name))
+                white = get_player(white_name)
+                black = get_player(black_name)
                 result = play_game(white, black)
             except Exception as e:
                 logger.error("Game {} vs {} failed: {}", white_name, black_name, e)
@@ -1184,11 +1145,6 @@ def run_elo_service(
                 "Ratings (game {}):\n{}",
                 state["total_games"],
                 format_elo_table(state["ratings"]),
-            )
-            cs = players_cache.stats()
-            logger.info(
-                "Player cache: size={:.0f}/{:.0f} hit_rate={:.1%} hits={:.0f} misses={:.0f}",
-                cs["size"], cs["max_size"], cs["hit_rate"], cs["hits"], cs["misses"],
             )
 
         # Periodically write the derived projection for the dashboard/metrics.
