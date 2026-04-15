@@ -144,7 +144,7 @@ class AsyncConfig(_BaseConfig):
         4.0  # target passes per data point (KataGo-style bucket)
     )
     min_positions_to_start: int = (
-        200_000  # bootstrap gate — workers can generate more after the trainer starts
+        2_000_000  # use the full preserved imitation corpus for a stronger v1 bootstrap
     )
 
     # --- Imitation bootstrap ---
@@ -159,7 +159,7 @@ class AsyncConfig(_BaseConfig):
     )
     imitation_wdl_lambda: float = 0.5  # blend: λ*sigmoid(eval) + (1-λ)*game_outcome
     bootstrap_steps: int = (
-        50_000  # training steps for imitation bootstrap (before self-play)
+        150_000  # more optimization passes now that bootstrap uses ~2M imitation positions
     )
     bootstrap_learning_rate: float = (
         0.003  # higher LR for clean supervised signal (3x self-play LR)
