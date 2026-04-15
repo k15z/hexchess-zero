@@ -123,6 +123,25 @@ def test_build_benchmark_summary_rejects_regression():
     assert summary["status"] == "rejected"
 
 
+def test_build_benchmark_summary_uses_regression_floor_at_max_games():
+    records = _paired_records(
+        "v6",
+        "Minimax-4",
+        [("draw", "draw")] * 11 + [("black", "draw")],
+    )
+
+    summary = _build_benchmark_summary(
+        candidate_version=6,
+        approved_version=5,
+        records=records,
+        reference_scores={"Minimax-4": 0.52},
+    )
+
+    assert summary["per_opponent"]["Minimax-4"]["score"] > 0.47
+    assert summary["per_opponent"]["Minimax-4"]["score"] < 0.50
+    assert summary["per_opponent"]["Minimax-4"]["status"] == "approved"
+
+
 def test_build_benchmark_summary_without_reference_completes_after_full_suite():
     records = []
     for opponent in ("Heuristic", "Minimax-2", "Minimax-3", "Minimax-4"):

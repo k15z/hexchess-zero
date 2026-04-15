@@ -264,6 +264,7 @@ def _paired_sprt_decision(
     max_games: int,
     p0: float,
     p1: float,
+    final_threshold: float | None = None,
     alpha: float = GATE_SPRT_ALPHA,
     beta: float = GATE_SPRT_BETA,
 ) -> tuple[str | None, float, float, float]:
@@ -277,7 +278,8 @@ def _paired_sprt_decision(
         return "rejected", llr, lower, upper
     if total_games >= max_games:
         mean_score, _ = _pair_bucket_mean(pair_buckets)
-        return ("approved" if mean_score >= p1 else "rejected"), llr, lower, upper
+        threshold = p1 if final_threshold is None else final_threshold
+        return ("approved" if mean_score >= threshold else "rejected"), llr, lower, upper
     return None, llr, lower, upper
 
 
@@ -626,6 +628,7 @@ def _build_benchmark_opponent_summary(
             max_games=BENCHMARK_MAX_GAMES,
             p0=target_score,
             p1=alt_score,
+            final_threshold=target_score,
         )
         decision = sprt_status or ci_status or "pending"
         sprt = {
