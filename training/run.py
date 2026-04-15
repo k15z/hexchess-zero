@@ -88,11 +88,27 @@ def main() -> None:
     dash_parser = subparsers.add_parser("dashboard", help="Run training dashboard web UI")
     dash_parser.add_argument("--port", type=int, default=8080, help="HTTP port")
 
-    # --- Elo service (continuous) ---
-    elo_svc_parser = subparsers.add_parser("elo-service", help="Run continuous Elo rating service")
-    elo_svc_parser.add_argument("--simulations", type=int, default=800, help="MCTS simulations per move")
-    elo_svc_parser.add_argument("--max-versions", type=int, default=20, help="Max model versions in pool")
-    elo_svc_parser.add_argument("--notify-interval", type=int, default=20, help="Games between Slack notifications")
+    # --- Evaluation service (continuous) ---
+    eval_svc_parser = subparsers.add_parser(
+        "evaluation-service",
+        help="Run continuous candidate evaluation service",
+    )
+    eval_svc_parser.add_argument(
+        "--simulations",
+        type=int,
+        default=800,
+        help="MCTS simulations per move",
+    )
+    legacy_eval_parser = subparsers.add_parser(
+        "elo-service",
+        help="Deprecated alias for evaluation-service",
+    )
+    legacy_eval_parser.add_argument(
+        "--simulations",
+        type=int,
+        default=800,
+        help="MCTS simulations per move",
+    )
 
     args = parser.parse_args()
 
@@ -112,14 +128,11 @@ def main() -> None:
     elif args.command == "dashboard":
         from .dashboard import run_dashboard
         run_dashboard(AsyncConfig(), port=args.port)
-    elif args.command == "elo-service":
+    elif args.command in {"evaluation-service", "elo-service"}:
         _configure_logging()
-        from .elo_service import run_elo_service
-        run_elo_service(
-            simulations=args.simulations,
-            max_versions=args.max_versions,
-            notify_interval=args.notify_interval,
-        )
+        from .evaluation_service import run_evaluation_service
+
+        run_evaluation_service(simulations=args.simulations)
 
 
 if __name__ == "__main__":

@@ -4,19 +4,22 @@ All shared state goes through this module. Uses S3-compatible object storage
 (DigitalOcean Spaces, Cloudflare R2, AWS S3, MinIO, etc.).
 
 Bucket layout:
-    models/latest.onnx              Latest trainer-exported candidate
-    models/latest.meta.json         {"version": N, "timestamp": "..."}
-    models/approved.onnx            Model currently approved for self-play
-    models/approved.meta.json       {"version": N, "timestamp": "..."}
-    models/checkpoint.pt            PyTorch training checkpoint
-    models/versions/{N}.onnx        Immutable version snapshots
+    models/latest.onnx                    Latest trainer-exported candidate
+    models/latest.meta.json               {"version": N, "timestamp": "..."}
+    models/approved.onnx                  Model currently approved for self-play
+    models/approved.meta.json             {"version": N, "timestamp": "..."}
+    models/checkpoint.pt                  PyTorch training checkpoint
+    models/versions/{N}.onnx              Immutable version snapshots
 
     data/selfplay/v{N}/{ts}_{rand}_n{count}.npz
     data/imitation/{ts}_{rand}_n{count}.npz
 
-    state/elo.json                  Elo ratings + pair results
+    state/evals/v{N}/gate_summary.json
+    state/evals/v{N}/benchmark_summary.json
+    state/evals/v{N}/decision.json
+    state/evals/v{N}/games/{ts}_{rand}.json
 
-    heartbeats/{hostname}.json      Worker liveness + stats
+    heartbeats/{hostname}.json            Worker liveness + stats
 """
 
 from __future__ import annotations
@@ -45,9 +48,7 @@ VERSIONS_PREFIX = "models/versions/"
 SELFPLAY_PREFIX = "data/selfplay/"
 SELFPLAY_TRACES_PREFIX = "data/selfplay_traces/"
 IMITATION_PREFIX = "data/imitation/"
-ELO_STATE = "state/elo.json"
-ELO_GAMES_PREFIX = "state/elo_games/"  # one object per game, race-free writes
-GATE_STATE = "state/gate.json"
+EVALS_PREFIX = "state/evals/"
 HEARTBEATS_PREFIX = "heartbeats/"
 TRAINER_METRICS = "state/trainer_metrics.json"
 BENCHMARK_RESULTS_PREFIX = "benchmarks/results/"
@@ -321,23 +322,61 @@ def upload_npz(key: str, *, boards: np.ndarray, policies: np.ndarray,
             os.unlink(tmp_path)
 
 
-def put_game_record(record: dict) -> str:
-    """Write one Elo game result as its own S3 object. Returns the key.
+def eval_version_prefix(version: int | str) -> str:
+    version_str = str(version)
+    if version_str.startswith("v"):
+        version_str = version_str[1:]
+    return f"{EVALS_PREFIX}v{version_str}/"
 
-    Per-game objects replace the old append-to-jsonl pattern so multiple
-    elo-service replicas can write concurrently without clobbering each other.
-    Key format: ``state/elo_games/{ts}_{rand:08x}.json``.
+
+def eval_games_prefix(version: int | str) -> str:
+    return f"{eval_version_prefix(version)}games/"
+
+
+def eval_gate_summary_key(version: int | str) -> str:
+    return f"{eval_version_prefix(version)}gate_summary.json"
+
+
+def eval_benchmark_summary_key(version: int | str) -> str:
+    return f"{eval_version_prefix(version)}benchmark_summary.json"
+
+
+def eval_decision_key(version: int | str) -> str:
+    return f"{eval_version_prefix(version)}decision.json"
+
+
+def put_eval_game_record(version: int | str, record: dict) -> str:
+    """Write one evaluation game result as its own S3 object. Returns the key.
+
+    Key format: ``state/evals/v{N}/games/{ts}_{rand:08x}.json``.
     """
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
     rand = np.random.default_rng().integers(0, 0xFFFF_FFFF)
-    key = f"{ELO_GAMES_PREFIX}{ts}_{int(rand):08x}.json"
+    key = f"{eval_games_prefix(version)}{ts}_{int(rand):08x}.json"
     put_json(key, record)
     return key
 
 
-def list_game_record_keys() -> list[str]:
-    """List all per-game Elo record keys, sorted (timestamp-prefixed)."""
-    return sorted(ls(ELO_GAMES_PREFIX))
+def list_eval_game_record_keys(version: int | str) -> list[str]:
+    """List all per-game evaluation record keys for one version."""
+    return sorted(ls(eval_games_prefix(version)))
+
+
+def list_eval_versions() -> list[int]:
+    """List versions that have any evaluation artifacts under ``state/evals/``."""
+    versions = set()
+    for key in ls(EVALS_PREFIX):
+        parts = key.split("/")
+        if len(parts) < 3:
+            continue
+        name = parts[2]
+        if not name.startswith("v"):
+            continue
+        try:
+            versions.add(int(name[1:]))
+        except ValueError:
+            continue
+    return sorted(versions)
 
 
 def key_basename(key: str) -> str:

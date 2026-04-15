@@ -1,410 +1,158 @@
-"""Tests for deterministic Elo projection rebuild behavior."""
-
-import json
-
-from training import storage
-from training.elo_service import (
-    BASELINE_NAMES,
-    _assign_colors,
-    _build_state,
-    _gate_decision,
-    _gate_progress_from_records,
-    _gate_sprt_decision,
-    _desired_active,
-    _maybe_resolve_gate,
-    _pending_candidate,
-    _select_pair,
+from training.evaluation_service import (
+    BENCHMARK_MAX_GAMES,
+    _build_benchmark_summary,
+    _build_decision,
+    _build_gate_summary,
+    _latest_candidate,
+    _pair_bucket,
+    _series_progress,
 )
 
 
-def test_build_state_deterministic_under_record_permutation():
-    # Intentionally share timestamps so tie-breakers matter.
-    records = [
-        {
-            "timestamp": "2026-04-11T00:00:00+00:00",
-            "white": "v2",
-            "black": "Minimax-2",
-            "outcome": "white",
-            "moves": 10,
-            "white_time": 1.1,
-            "black_time": 1.0,
-            "white_moves": 5,
-            "black_moves": 5,
-        },
-        {
-            "timestamp": "2026-04-11T00:00:00+00:00",
-            "white": "v1",
-            "black": "Minimax-2",
-            "outcome": "draw",
-            "moves": 12,
-            "white_time": 1.2,
-            "black_time": 1.3,
-            "white_moves": 6,
-            "black_moves": 6,
-        },
-        {
-            "timestamp": "2026-04-11T00:00:00+00:00",
-            "white": "v1",
-            "black": "v2",
-            "outcome": "black",
-            "moves": 14,
-            "white_time": 1.5,
-            "black_time": 1.4,
-            "white_moves": 7,
-            "black_moves": 7,
-        },
-    ]
-    active = ["Heuristic", "Minimax-2", "Minimax-3", "Minimax-4", "v1", "v2"]
-
-    a = _build_state(records, active)
-    b = _build_state(list(reversed(records)), active)
-
-    # Strong idempotence check: byte-identical JSON projection.
-    assert json.dumps(a, sort_keys=True, separators=(",", ":")) == json.dumps(
-        b, sort_keys=True, separators=(",", ":")
-    )
+def _paired_records(candidate: str, opponent: str, outcomes: list[tuple[str, str]]) -> list[dict]:
+    records = []
+    for idx, (first, second) in enumerate(outcomes):
+        pair_id = f"pair-{idx}"
+        records.extend(
+            [
+                {
+                    "candidate": candidate,
+                    "opponent": opponent,
+                    "white": candidate,
+                    "black": opponent,
+                    "outcome": first,
+                    "termination": "checkmate_white" if first == "white" else "draw",
+                    "moves": 30,
+                    "white_time": 3.0,
+                    "black_time": 2.0,
+                    "white_moves": 15,
+                    "black_moves": 15,
+                    "pair_id": pair_id,
+                    "pair_game_index": 0,
+                },
+                {
+                    "candidate": candidate,
+                    "opponent": opponent,
+                    "white": opponent,
+                    "black": candidate,
+                    "outcome": second,
+                    "termination": "checkmate_black" if second == "black" else "draw",
+                    "moves": 28,
+                    "white_time": 2.5,
+                    "black_time": 2.8,
+                    "white_moves": 14,
+                    "black_moves": 14,
+                    "pair_id": pair_id,
+                    "pair_game_index": 1,
+                },
+            ]
+        )
+    return records
 
 
-def test_desired_active_keeps_approved_candidate_and_recent_versions(monkeypatch):
-    monkeypatch.setattr(
-        "training.elo_service._discover_versions",
-        lambda: [
-            (1, "models/versions/1.onnx"),
-            (2, "models/versions/2.onnx"),
-            (3, "models/versions/3.onnx"),
-            (4, "models/versions/4.onnx"),
-            (5, "models/versions/5.onnx"),
-        ],
-    )
-    monkeypatch.setattr("training.elo_service._read_approved_version", lambda: 3)
-    monkeypatch.setattr(
-        "training.elo_service._load_gate_state",
-        lambda approved_version: {
-            "approved_version": approved_version,
-            "decisions": {"v4": {"status": "rejected"}},
-        },
-    )
-
-    active, version_keys, approved_name, pending, gate_state = _desired_active(5)
-
-    assert active == [*BASELINE_NAMES, "v3", "v5", "v4", "v2", "v1"]
-    assert version_keys["v5"] == "models/versions/5.onnx"
-    assert approved_name == "v3"
-    assert pending == "v5"
-    assert gate_state["approved_version"] == 3
-
-
-def test_desired_active_pins_old_approved_version_inside_window(monkeypatch):
-    monkeypatch.setattr(
-        "training.elo_service._discover_versions",
-        lambda: [
-            (1, "models/versions/1.onnx"),
-            (2, "models/versions/2.onnx"),
-            (3, "models/versions/3.onnx"),
-            (4, "models/versions/4.onnx"),
-            (5, "models/versions/5.onnx"),
-            (6, "models/versions/6.onnx"),
-        ],
-    )
-    monkeypatch.setattr("training.elo_service._read_approved_version", lambda: 1)
-    monkeypatch.setattr(
-        "training.elo_service._load_gate_state",
-        lambda approved_version: {"approved_version": approved_version, "decisions": {}},
-    )
-
-    active, _, approved_name, pending, _ = _desired_active(3)
-
-    assert active == [*BASELINE_NAMES, "v1", "v2", "v6"]
-    assert approved_name == "v1"
-    assert pending == "v2"
-
-
-def test_select_pair_prefers_gate_matchup():
-    state = {
-        "active_players": [*BASELINE_NAMES, "v3", "v4"],
-        "pair_results": {},
-        "ratings": {},
+def test_latest_candidate_picks_newest_version_above_approved():
+    versions = {
+        1: "models/versions/1.onnx",
+        2: "models/versions/2.onnx",
+        4: "models/versions/4.onnx",
+        5: "models/versions/5.onnx",
     }
 
-    assert _select_pair(state, approved_name="v3", gate_candidate="v4") == ("v3", "v4")
+    assert _latest_candidate(versions, 4) == 5
+    assert _latest_candidate(versions, 5) is None
 
 
-def test_assign_colors_maps_sorted_pair_counts_back_to_requested_order():
-    state = {
-        "pair_results": {
-            "v1:v4": {
-                "a_wins": 0,
-                "b_wins": 0,
-                "draws": 0,
-                "a_as_white": 0,
-                "b_as_white": 5,
-            },
-        },
-    }
+def test_series_progress_counts_completed_pairs_and_color_split():
+    records = _paired_records(
+        "v5",
+        "v4",
+        [("white", "black"), ("draw", "draw")],
+    )
 
-    assert _assign_colors(state, "v4", "v1") == ("v1", "v4")
+    progress = _series_progress(records, candidate="v5", opponent="v4")
 
-
-def test_gate_decision_approves_early_for_clear_winner():
-    decision, games, score, half_width = _gate_decision(18, 2, 0)
-
-    assert decision == "approved"
-    assert games == 20
-    assert score == 0.9
-    assert half_width < (score - 0.55)
-
-
-def test_gate_decision_rejects_early_for_clear_loser():
-    decision, games, score, half_width = _gate_decision(2, 18, 0)
-
-    assert decision == "rejected"
-    assert games == 20
-    assert score == 0.1
-    assert score + half_width < 0.55
-
-
-def test_gate_decision_waits_when_inconclusive():
-    decision, games, score, half_width = _gate_decision(12, 8, 0)
-
-    assert decision is None
-    assert games == 20
-    assert 0.0 < half_width
-    assert score - half_width < 0.55 < score + half_width
-
-
-def test_gate_decision_forces_result_at_max_games():
-    decision, games, score, half_width = _gate_decision(50, 50, 0)
-
-    assert decision == "rejected"
-    assert games == 100
-    assert score == 0.5
-    assert half_width > 0.0
-
-
-def test_gate_progress_counts_only_completed_pairs():
-    records = [
-        {
-            "white": "v2",
-            "black": "v1",
-            "outcome": "white",
-            "gate_candidate": "v2",
-            "gate_incumbent": "v1",
-            "gate_pair_id": "pair-a",
-            "gate_pair_game_index": 0,
-        },
-        {
-            "white": "v1",
-            "black": "v2",
-            "outcome": "draw",
-            "gate_candidate": "v2",
-            "gate_incumbent": "v1",
-            "gate_pair_id": "pair-a",
-            "gate_pair_game_index": 1,
-        },
-        {
-            "white": "v2",
-            "black": "v1",
-            "outcome": "black",
-            "gate_candidate": "v2",
-            "gate_incumbent": "v1",
-            "gate_pair_id": "pair-b",
-            "gate_pair_game_index": 0,
-        },
-    ]
-
-    progress = _gate_progress_from_records(records, "v1", "v2")
-
-    assert progress["completed_pairs"] == 1
-    assert progress["wins"] == 1
-    assert progress["draws"] == 1
+    assert progress["wins"] == 2
+    assert progress["draws"] == 2
     assert progress["losses"] == 0
-    assert progress["games"] == 2
-    assert progress["pair_buckets"]["1.5"] == 1
+    assert progress["completed_pairs"] == 2
+    assert progress["pair_buckets"]["2.0"] == 1
+    assert progress["pair_buckets"]["1.0"] == 1
+    assert progress["color_split"]["candidate_white"]["games"] == 2
+    assert progress["color_split"]["candidate_black"]["games"] == 2
 
 
-def test_gate_sprt_decision_waits_for_more_evidence():
-    decision, llr, lower, upper = _gate_sprt_decision(
-        {"2.0": 3, "1.5": 1, "1.0": 15, "0.5": 1, "0.0": 0},
-        40,
+def test_build_gate_summary_marks_clear_winner_approved():
+    records = _paired_records("v6", "v5", [("white", "black")] * 16)
+
+    summary = _build_gate_summary(
+        candidate_version=6,
+        approved_version=5,
+        records=records,
     )
 
-    assert decision is None
-    assert lower < llr < upper
+    assert summary["status"] == "approved"
+    assert summary["games"] == 32
+    assert summary["pair_buckets"]["2.0"] == 16
 
 
-def test_gate_sprt_decision_rejects_clear_loser():
-    decision, llr, lower, upper = _gate_sprt_decision(
-        {"2.0": 0, "1.5": 0, "1.0": 0, "0.5": 0, "0.0": 32},
-        64,
+def test_build_benchmark_summary_applies_reference_tolerance():
+    records = _paired_records("v6", "Minimax-2", [("draw", "draw")] * 12)
+
+    summary = _build_benchmark_summary(
+        candidate_version=6,
+        approved_version=5,
+        records=records,
+        reference_scores={"Minimax-2": 0.52},
     )
 
-    assert decision == "rejected"
-    assert llr <= lower
-    assert lower < upper
+    assert summary["per_opponent"]["Minimax-2"]["target_score"] == 0.47
+    assert summary["per_opponent"]["Minimax-2"]["status"] == "approved"
 
 
-def test_maybe_resolve_gate_waits_on_draw_heavy_positive_result(monkeypatch):
-    copied: list[tuple[str, str]] = []
-    writes: list[tuple[str, dict]] = []
+def test_build_benchmark_summary_rejects_regression():
+    records = _paired_records("v6", "Minimax-3", [("black", "white")] * 12)
 
-    monkeypatch.setattr(storage, "copy", lambda src, dst: copied.append((src, dst)))
-    monkeypatch.setattr(storage, "put_json", lambda key, obj: writes.append((key, obj)))
+    summary = _build_benchmark_summary(
+        candidate_version=6,
+        approved_version=5,
+        records=records,
+        reference_scores={"Minimax-3": 0.55},
+    )
 
+    assert summary["per_opponent"]["Minimax-3"]["status"] == "rejected"
+    assert summary["status"] == "rejected"
+
+
+def test_build_benchmark_summary_without_reference_completes_after_full_suite():
     records = []
-    pair_specs = (
-        [("white", "black")] * 3
-        + [("white", "draw")]
-        + [("draw", "draw")] * 15
-        + [("black", "draw")]
-    )
-    for i, (first_outcome, second_outcome) in enumerate(pair_specs):
-        pair_id = f"pair-{i}"
-        records.extend([
-            {
-                "white": "v2",
-                "black": "v1",
-                "outcome": first_outcome,
-                "gate_candidate": "v2",
-                "gate_incumbent": "v1",
-                "gate_pair_id": pair_id,
-                "gate_pair_game_index": 0,
-            },
-            {
-                "white": "v1",
-                "black": "v2",
-                "outcome": second_outcome,
-                "gate_candidate": "v2",
-                "gate_incumbent": "v1",
-                "gate_pair_id": pair_id,
-                "gate_pair_game_index": 1,
-            },
-        ])
+    for opponent in ("Heuristic", "Minimax-2", "Minimax-3", "Minimax-4"):
+        records.extend(_paired_records("v5", opponent, [("draw", "draw")] * (BENCHMARK_MAX_GAMES // 2)))
 
-    gate_state = {"approved_version": 1, "decisions": {}}
-    gate_state, changed = _maybe_resolve_gate(
-        records,
-        {"v2": "models/versions/2.onnx"},
-        "v1",
-        "v2",
-        gate_state,
+    summary = _build_benchmark_summary(
+        candidate_version=5,
+        approved_version=5,
+        records=records,
+        reference_scores=None,
     )
 
-    assert not changed
-    assert gate_state["approved_version"] == 1
-    assert gate_state["decisions"] == {}
-    assert copied == []
-    assert writes == []
+    assert summary["reference_available"] is False
+    assert summary["status"] == "complete"
 
 
-def test_maybe_resolve_gate_approves_candidate(monkeypatch):
-    copied: list[tuple[str, str]] = []
-    writes: list[tuple[str, dict]] = []
+def test_build_decision_requires_gate_and_benchmarks_for_promotion():
+    gate_summary = {"status": "approved"}
+    benchmark_summary = {"status": "approved", "reference_available": True}
 
-    monkeypatch.setattr(storage, "copy", lambda src, dst: copied.append((src, dst)))
-    monkeypatch.setattr(storage, "put_json", lambda key, obj: writes.append((key, obj)))
-
-    records = []
-    for i in range(32):
-        pair_id = f"pair-{i}"
-        records.extend([
-            {
-                "white": "v4",
-                "black": "v3",
-                "outcome": "white",
-                "gate_candidate": "v4",
-                "gate_incumbent": "v3",
-                "gate_pair_id": pair_id,
-                "gate_pair_game_index": 0,
-            },
-            {
-                "white": "v3",
-                "black": "v4",
-                "outcome": "black",
-                "gate_candidate": "v4",
-                "gate_incumbent": "v3",
-                "gate_pair_id": pair_id,
-                "gate_pair_game_index": 1,
-            },
-        ])
-    gate_state = {"approved_version": 3, "decisions": {}}
-
-    gate_state, changed = _maybe_resolve_gate(
-        records,
-        {"v4": "models/versions/4.onnx"},
-        "v3",
-        "v4",
-        gate_state,
+    decision = _build_decision(
+        candidate_version=6,
+        approved_version=5,
+        gate_summary=gate_summary,
+        benchmark_summary=benchmark_summary,
     )
 
-    assert changed
-    assert gate_state["approved_version"] == 4
-    assert gate_state["decisions"]["v4"]["status"] == "approved"
-    assert gate_state["decisions"]["v4"]["games"] == 64
-    assert gate_state["decisions"]["v4"]["completed_pairs"] == 32
-    assert copied == [("models/versions/4.onnx", storage.APPROVED_ONNX)]
-    assert writes[0][0] == storage.APPROVED_META
-    assert writes[1][0] == storage.GATE_STATE
+    assert decision["status"] == "promote"
 
 
-def test_maybe_resolve_gate_rejects_candidate(monkeypatch):
-    copied: list[tuple[str, str]] = []
-    writes: list[tuple[str, dict]] = []
-
-    monkeypatch.setattr(storage, "copy", lambda src, dst: copied.append((src, dst)))
-    monkeypatch.setattr(storage, "put_json", lambda key, obj: writes.append((key, obj)))
-
-    records = []
-    for i in range(32):
-        pair_id = f"pair-{i}"
-        records.extend([
-            {
-                "white": "v4",
-                "black": "v3",
-                "outcome": "black",
-                "gate_candidate": "v4",
-                "gate_incumbent": "v3",
-                "gate_pair_id": pair_id,
-                "gate_pair_game_index": 0,
-            },
-            {
-                "white": "v3",
-                "black": "v4",
-                "outcome": "white",
-                "gate_candidate": "v4",
-                "gate_incumbent": "v3",
-                "gate_pair_id": pair_id,
-                "gate_pair_game_index": 1,
-            },
-        ])
-    gate_state = {"approved_version": 3, "decisions": {}}
-
-    gate_state, changed = _maybe_resolve_gate(
-        records,
-        {"v4": "models/versions/4.onnx"},
-        "v3",
-        "v4",
-        gate_state,
-    )
-
-    assert changed
-    assert gate_state["approved_version"] == 3
-    assert gate_state["decisions"]["v4"]["status"] == "rejected"
-    assert copied == []
-    assert writes == [(storage.GATE_STATE, gate_state)]
-
-
-def test_pending_candidate_returns_none_when_everything_is_rejected():
-    version_keys = {
-        "v1": "models/versions/1.onnx",
-        "v2": "models/versions/2.onnx",
-        "v3": "models/versions/3.onnx",
-    }
-    gate_state = {
-        "approved_version": 1,
-        "decisions": {
-            "v2": {"status": "rejected"},
-            "v3": {"status": "rejected"},
-        },
-    }
-
-    assert _pending_candidate(version_keys, 1, gate_state) is None
+def test_pair_bucket_formats_half_scores():
+    assert _pair_bucket(2.0) == "2.0"
+    assert _pair_bucket(1.5) == "1.5"
