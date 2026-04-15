@@ -853,8 +853,13 @@ def _assign_colors(state: dict, a: str, b: str) -> tuple[str, str]:
     if result is None:
         return (a, b) if random.random() < 0.5 else (b, a)
 
-    a_as_white = result.get("a_as_white", 0)
-    b_as_white = result.get("b_as_white", 0)
+    sorted_a, sorted_b = sorted([a, b])
+    if a == sorted_a:
+        a_as_white = result.get("a_as_white", 0)
+        b_as_white = result.get("b_as_white", 0)
+    else:
+        a_as_white = result.get("b_as_white", 0)
+        b_as_white = result.get("a_as_white", 0)
 
     if a_as_white <= b_as_white:
         return a, b
