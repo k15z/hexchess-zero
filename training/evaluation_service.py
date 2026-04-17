@@ -184,6 +184,10 @@ def _empirical_likelihood_log_prob(
     return total
 
 
+def _finite(x: float, fallback: float = 0.0) -> float:
+    return x if math.isfinite(x) else fallback
+
+
 def _gate_pentanomial_llr(
     pair_buckets: dict[str, int],
     p0: float = GATE_SPRT_P0,
@@ -590,9 +594,9 @@ def _build_gate_summary(
         **progress,
         "sprt": {
             "status": "approved" if status == "approved" else "rejected" if status == "rejected" else "pending",
-            "llr": llr,
-            "lower_bound": lower_bound,
-            "upper_bound": upper_bound,
+            "llr": _finite(llr),
+            "lower_bound": _finite(lower_bound),
+            "upper_bound": _finite(upper_bound),
             "null_score": GATE_SPRT_P0,
             "alt_score": GATE_SPRT_P1,
         },
@@ -665,9 +669,9 @@ def _build_benchmark_opponent_summary(
         decision = sprt_status or ci_status or "pending"
         sprt = {
             "status": "approved" if sprt_status == "approved" else "rejected" if sprt_status == "rejected" else "pending",
-            "llr": llr,
-            "lower_bound": lower_bound,
-            "upper_bound": upper_bound,
+            "llr": _finite(llr),
+            "lower_bound": _finite(lower_bound),
+            "upper_bound": _finite(upper_bound),
             "null_score": target_score,
             "alt_score": alt_score,
         }
