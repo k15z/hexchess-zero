@@ -38,7 +38,7 @@ class _BaseConfig:
     )
     temperature_high: float = 1.0
     temperature_low: float = (
-        0.35  # Lc0-style floor — 0.01 produced one-hot targets in 65-70% of positions
+        0.1  # implementation plan §1.8; 0.35 kept τ too high through plies 21-60
     )
     dirichlet_alpha: float = 0.3
     dirichlet_epsilon: float = 0.25
