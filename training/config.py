@@ -83,7 +83,7 @@ class _BaseConfig:
 
     # --- SWA (plan §4.4) ---
     swa_snapshot_every_samples: int = 250_000
-    swa_buffer_size: int = 4
+    swa_buffer_size: int = 1
     swa_ema_decay: float = 0.75
     # Rolling number of recent training batches kept for re-estimating BN
     # running stats after SWA averaging. update_bn_stats uses cumulative
