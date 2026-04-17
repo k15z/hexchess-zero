@@ -695,6 +695,32 @@ def _maybe_promote(
 # Trainer metrics publishing (plan §7.6 page 3)
 # ---------------------------------------------------------------------------
 
+_STALL_WINDOW = 5
+_STALL_MIN_IMPROVEMENT = 0.005
+
+
+def _check_loss_stall(history: list[dict]) -> None:
+    """Warn via Slack if total loss hasn't improved over the last few summaries."""
+    if len(history) < _STALL_WINDOW + 1:
+        return
+    recent = history[-_STALL_WINDOW:]
+    older = history[-(_STALL_WINDOW + 1)]
+    def _total(entry: dict) -> float:
+        return entry.get("loss_policy", 0) + entry.get("loss_value", 0)
+    current = sum(_total(e) for e in recent) / len(recent)
+    baseline = _total(older)
+    improvement = baseline - current
+    if improvement < _STALL_MIN_IMPROVEMENT:
+        from . import slack
+        slack.notify_loss_stall(
+            window=_STALL_WINDOW,
+            baseline_loss=baseline,
+            current_loss=current,
+            improvement=improvement,
+            summary=recent[-1].get("summary", 0),
+        )
+
+
 def _publish_trainer_metrics(
     *,
     summary: int,
@@ -742,6 +768,8 @@ def _publish_trainer_metrics(
     if len(history) > 200:
         history = history[-200:]
     storage.put_json(storage.TRAINER_METRICS, {"summaries": history})
+
+    _check_loss_stall(history)
 
 
 # ---------------------------------------------------------------------------

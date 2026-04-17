@@ -784,30 +784,59 @@ function renderWorkers(data) {
   `;
 }
 
+function renderLossChart(summaries) {
+  if (summaries.length < 2) return '';
+  const W = 320, H = 100, PAD = 4;
+  const totals = summaries.map(e => (e.loss_policy || 0) + (e.loss_value || 0));
+  const mn = Math.min(...totals) - 0.01, mx = Math.max(...totals) + 0.01;
+  const scaleX = i => PAD + i / (totals.length - 1) * (W - 2 * PAD);
+  const scaleY = v => H - PAD - (v - mn) / (mx - mn) * (H - 2 * PAD);
+  const pts = totals.map((v, i) => `${scaleX(i).toFixed(1)},${scaleY(v).toFixed(1)}`).join(' ');
+  const latest = totals[totals.length - 1];
+  const oldest = totals[0];
+  const delta = latest - oldest;
+  const trend = delta < -0.01 ? '↓' : delta > 0.01 ? '↑' : '→';
+  return `
+    <div style="margin-bottom:8px">
+      <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:${H}px;background:var(--bg-muted);border-radius:4px">
+        <polyline points="${pts}" fill="none" stroke="var(--text)" stroke-width="1.5" stroke-linejoin="round"/>
+        <circle cx="${scaleX(totals.length-1)}" cy="${scaleY(latest)}" r="3" fill="var(--text)"/>
+        <text x="${W-PAD}" y="${PAD+8}" text-anchor="end" fill="var(--text-muted)" font-size="9"
+          font-family="var(--mono)">policy+value ${latest.toFixed(3)} ${trend} Δ${delta.toFixed(3)}</text>
+        <text x="${PAD}" y="${H-PAD}" fill="var(--text-muted)" font-size="9"
+          font-family="var(--mono)">${summaries.length} summaries</text>
+      </svg>
+    </div>`;
+}
+
 function renderTrainer(data) {
   const summaries = data.trainer_metrics?.summaries || [];
-  const rows = summaries.slice(-6).reverse().map(entry => `
+  const chart = renderLossChart(summaries);
+  const rows = summaries.slice(-6).reverse().map(entry => {
+    const total = ((entry.loss_policy || 0) + (entry.loss_value || 0)).toFixed(3);
+    return `
     <div class="row">
       <div>
-        <strong>summary ${fmt(entry.summary)}</strong>
-        <span>v${fmt(entry.version)} · loss_policy ${fmt(entry.loss_policy, 4)}</span>
+        <strong>#${fmt(entry.summary)}</strong>
+        <span>v${fmt(entry.version)} · P ${fmt(entry.loss_policy, 3)} V ${fmt(entry.loss_value, 3)} = ${total}</span>
       </div>
       <div class="right">
-        <strong>${fmt(entry.positions_seen || entry.positions || 0)}</strong>
+        <strong>${fmt(entry.n_total || entry.positions_seen || entry.positions || 0)}</strong>
         <span>positions</span>
       </div>
-    </div>
-  `).join('');
+    </div>`;
+  }).join('');
 
   return `
     <section class="panel">
       <div class="panel-head">
         <div>
           <div class="panel-title">Trainer</div>
-          <div class="panel-sub">Most recent trainer summaries</div>
+          <div class="panel-sub">Loss trend (policy + value)</div>
         </div>
       </div>
       <div class="panel-body">
+        ${chart}
         <div class="row-list">
           ${rows || '<div class="empty">No trainer summaries available yet.</div>'}
         </div>

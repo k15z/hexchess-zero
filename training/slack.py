@@ -68,6 +68,27 @@ def notify_elo_update(
     _post(f"{header}\n```\n{table}\n```\n({total_games} games played)")
 
 
+def notify_loss_stall(
+    *,
+    window: int,
+    baseline_loss: float,
+    current_loss: float,
+    improvement: float,
+    summary: int,
+) -> None:
+    """Alert when training loss has stalled over recent summaries."""
+    if not SLACK_WEBHOOK_URL:
+        return
+    text = (
+        f":warning: *Loss stall detected at summary {summary}*\n"
+        f"Total loss has not improved over the last {window} summaries\n"
+        f"Baseline: {baseline_loss:.4f} → Current: {current_loss:.4f} "
+        f"(Δ={improvement:+.4f}, need ≥0.005)\n"
+        f"Training may not be learning from self-play data."
+    )
+    _post(text)
+
+
 def _post(text: str) -> None:
     """Post a message to the configured Slack webhook."""
     payload = json.dumps({"text": text}).encode()

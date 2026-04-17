@@ -138,7 +138,7 @@ class AsyncConfig(_BaseConfig):
     worker_batch_size: int = (
         2  # games per flush (small so bootstrap data lands quickly)
     )
-    summary_interval_steps: int = 3000  # steps between trainer summaries; not a promotion gate
+    summary_interval_steps: int = 1000  # steps between trainer summaries; not a promotion gate
     reload_interval: int = 1000  # reload replay data and re-check promotion eligibility every N steps
     max_train_steps_per_new_data: float = (
         4.0  # target passes per data point (KataGo-style bucket)
