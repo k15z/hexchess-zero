@@ -54,6 +54,7 @@ GATE_Z_VALUE = NormalDist().inv_cdf(1.0 - GATE_SPRT_ALPHA / 2.0)
 BENCHMARK_MIN_GAMES = 12
 BENCHMARK_MAX_GAMES = 24
 BENCHMARK_REGRESSION_TOLERANCE = 0.05
+BENCHMARK_MINIMUM_SCORE = 0.10
 BENCHMARK_SPRT_MARGIN = 0.03
 
 OPENING_RANDOM_PLIES = 2
@@ -641,7 +642,7 @@ def _build_benchmark_opponent_summary(
         }
     else:
         target_score = round(
-            max(0.0, reference_score - BENCHMARK_REGRESSION_TOLERANCE),
+            max(BENCHMARK_MINIMUM_SCORE, reference_score - BENCHMARK_REGRESSION_TOLERANCE),
             6,
         )
         ci_status, _games, _score, _half_width = _threshold_decision(
