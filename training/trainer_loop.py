@@ -536,6 +536,7 @@ def _promote_model(
     export_to_onnx(local_pt, local_onnx, cfg)
 
     storage.put_file(f"{storage.VERSIONS_PREFIX}{version}.onnx", local_onnx)
+    storage.put_file(f"{storage.VERSIONS_PREFIX}{version}.pt", local_pt)
     storage.put_file(storage.CHECKPOINT_PT, local_pt)
     storage.copy(f"{storage.VERSIONS_PREFIX}{version}.onnx", storage.LATEST_ONNX)
     # Meta is the commit point — workers poll this, so write it last
@@ -805,9 +806,14 @@ def run_trainer(cfg: AsyncConfig) -> None:
     if current_version > 0:
         local_pt = cfg.model_cache_dir / "checkpoint.pt"
         local_onnx = cfg.model_cache_dir / "latest.onnx"
-        storage.get_file(storage.CHECKPOINT_PT, local_pt)
+        versioned_pt = f"{storage.VERSIONS_PREFIX}{current_version}.pt"
+        if storage.head(versioned_pt) is not None:
+            storage.get_file(versioned_pt, local_pt)
+            logger.info("Loading versioned checkpoint v{}", current_version)
+        else:
+            storage.get_file(storage.CHECKPOINT_PT, local_pt)
+            logger.info("Loading checkpoint v{} (no versioned .pt)", current_version)
         storage.get_file(storage.LATEST_ONNX, local_onnx)
-        logger.info("Loading checkpoint v{}", current_version)
         model.load_state_dict(torch.load(local_pt, map_location=device, weights_only=True))
 
     optimizer = _make_optimizer(model, cfg)
