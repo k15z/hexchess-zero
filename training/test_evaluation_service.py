@@ -146,6 +146,20 @@ def test_build_benchmark_summary_uses_regression_floor_at_max_games():
     assert summary["per_opponent"]["Minimax-4"]["status"] == "approved"
 
 
+def test_build_benchmark_summary_allows_zero_target_for_weak_reference():
+    records = _paired_records("v6", "Minimax-4", [("black", "white")] * 6)
+
+    summary = _build_benchmark_summary(
+        candidate_version=6,
+        approved_version=5,
+        records=records,
+        reference_scores={"Minimax-4": 0.0},
+    )
+
+    assert summary["per_opponent"]["Minimax-4"]["target_score"] == 0.0
+    assert summary["per_opponent"]["Minimax-4"]["status"] == "approved"
+
+
 def test_build_benchmark_summary_without_reference_completes_after_full_suite():
     records = []
     for opponent in ("Heuristic", "Minimax-2", "Minimax-3", "Minimax-4"):
@@ -160,6 +174,24 @@ def test_build_benchmark_summary_without_reference_completes_after_full_suite():
 
     assert summary["reference_available"] is False
     assert summary["status"] == "complete"
+
+
+def test_needs_anchor_backfill_requires_complete_baseline(monkeypatch):
+    monkeypatch.setattr(
+        evaluation_service.storage,
+        "get_json",
+        lambda key: {"status": "pending"},
+    )
+
+    assert evaluation_service._needs_anchor_backfill(5) is True
+
+    monkeypatch.setattr(
+        evaluation_service.storage,
+        "get_json",
+        lambda key: {"status": "complete"},
+    )
+
+    assert evaluation_service._needs_anchor_backfill(5) is False
 
 
 def test_build_decision_requires_gate_and_benchmarks_for_promotion():
