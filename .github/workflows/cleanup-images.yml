@@ -44,11 +44,12 @@ jobs:
           echo "Dry run: ${DRY_RUN:-false}"
           echo
 
-          # Fetch all versions of the container package, sorted newest first
-          # Note: --paginate outputs one JSON array per page, so we collect with -s and flatten
-          VERSIONS=$(gh api --paginate \
+          # Fetch all versions of the container package, sorted newest first.
+          # Use gh's native --slurp pagination mode so jq always receives one
+          # valid outer JSON array rather than a raw stream of page payloads.
+          VERSIONS=$(gh api --paginate --slurp \
             "/users/$OWNER/packages/container/${PACKAGE//\//%2F}/versions" | \
-            jq -s 'add | sort_by(.created_at) | reverse | .[] | {id: .id, created_at: .created_at, tags: .metadata.container.tags}')
+            jq -c 'map(.[]) | sort_by(.created_at) | reverse | .[] | {id: .id, created_at: .created_at, tags: .metadata.container.tags}')
 
           # Track how many pinned versions we've kept
           SHA_KEPT=0
