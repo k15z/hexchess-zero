@@ -440,7 +440,7 @@ function ago(ts) {
 
 function statusClass(status) {
   if (['approved', 'promote', 'promoted', 'baseline_ready', 'complete'].includes(status)) return 'pass';
-  if (['rejected', 'fail'].includes(status)) return 'fail';
+  if (['rejected', 'rejected_pending', 'fail'].includes(status)) return 'fail';
   return 'pending';
 }
 
@@ -448,6 +448,7 @@ function statusLabel(status) {
   if (!status) return 'pending';
   if (status === 'approved') return 'pass';
   if (status === 'rejected') return 'fail';
+  if (status === 'rejected_pending') return 'failing, collecting';
   if (status === 'promote') return 'ready';
   if (status === 'baseline_ready') return 'baseline ready';
   return status.replaceAll('_', ' ');

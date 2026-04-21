@@ -121,6 +121,8 @@ The production rule is explicit:
 
 If either condition fails, the candidate is rejected and `approved` stays unchanged.
 
+The service does not need to stop immediately when one track fails. A candidate can become non-promotable as soon as the gate or an anchor check fails, while the evaluator continues collecting the remaining scheduled evidence before marking the result as a final rejection.
+
 ## Reading artifacts
 
 `gate_summary.json`, `benchmark_summary.json`, and `decision.json` are version-scoped and auditable. They are rebuilt from immutable game records, so a restart or a second replica does not require trusting local in-memory state.
@@ -141,7 +143,7 @@ Per-game records include:
 The dashboard reads those summaries directly so you can answer:
 
 - which candidate is under review
-- whether gate evidence is still pending, rejected, or promoted
+- whether gate evidence is still pending, failing-but-still-collecting, rejected, or promoted
 - which anchor caused a regression failure
 - whether weird artifacts are coming from color split, termination mix, or time usage
 

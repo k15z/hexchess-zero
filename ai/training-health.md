@@ -100,6 +100,7 @@ Check:
 
 - `decision["status"] == "promoted"`: healthy candidate promotion path.
 - `decision["status"] == "pending"`: inspect whether gate evidence or anchor evidence is the bottleneck.
+- `decision["status"] == "rejected_pending"`: the candidate is already non-promotable, but the service is still finishing the scheduled gate / benchmark evidence.
 - `decision["status"] == "rejected"`: identify whether the rejection came from direct gate failure or anchor regression.
 - `decision["status"] == "baseline_ready"`: the approved model benchmark baseline exists, but no newer candidate is under review yet.
 

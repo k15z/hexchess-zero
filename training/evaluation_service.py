@@ -735,6 +735,15 @@ def _build_benchmark_summary(
     }
 
 
+def _benchmark_collection_complete(benchmark_summary: dict) -> bool:
+    if not benchmark_summary.get("reference_available", False):
+        return benchmark_summary["status"] == "complete"
+    return all(
+        summary["status"] != "pending"
+        for summary in benchmark_summary.get("per_opponent", {}).values()
+    )
+
+
 def _build_decision(
     *,
     candidate_version: int,
@@ -745,23 +754,40 @@ def _build_decision(
     candidate = f"v{candidate_version}"
     decision_status = "pending"
     reasons: list[str] = []
+    promotion_eligible = True
+    collection_complete = False
 
     if gate_summary is None:
         if benchmark_summary["status"] == "complete":
             decision_status = "baseline_ready"
+            collection_complete = True
         else:
             decision_status = "pending"
             reasons.append("collecting anchor baseline for current approved model")
     else:
-        if gate_summary["status"] == "rejected":
-            decision_status = "rejected"
+        gate_failed = gate_summary["status"] == "rejected"
+        benchmark_failed = (
+            benchmark_summary["reference_available"]
+            and benchmark_summary["status"] == "rejected"
+        )
+        promotion_eligible = not gate_failed and not benchmark_failed
+        gate_complete = gate_summary["status"] != "pending"
+        benchmark_complete = _benchmark_collection_complete(benchmark_summary)
+        collection_complete = gate_complete and benchmark_complete
+
+        if gate_failed:
             reasons.append("candidate failed direct gate against approved model")
-        elif benchmark_summary["reference_available"] and benchmark_summary["status"] == "rejected":
-            decision_status = "rejected"
+        if benchmark_failed:
             reasons.append("candidate regressed against fixed-anchor benchmark tolerance")
-        elif gate_summary["status"] == "approved" and benchmark_summary["status"] == "approved":
+
+        if gate_summary["status"] == "approved" and benchmark_summary["status"] == "approved":
             decision_status = "promote"
             reasons.append("candidate passed gate and anchor regression checks")
+        elif not promotion_eligible and collection_complete:
+            decision_status = "rejected"
+        elif not promotion_eligible:
+            decision_status = "rejected_pending"
+            reasons.append("continuing to collect remaining evaluation evidence")
         else:
             decision_status = "pending"
             if gate_summary["status"] != "approved":
@@ -775,6 +801,8 @@ def _build_decision(
         "approved_version": approved_version,
         "gate_status": None if gate_summary is None else gate_summary["status"],
         "benchmark_status": benchmark_summary["status"],
+        "promotion_eligible": promotion_eligible,
+        "collection_complete": collection_complete,
         "status": decision_status,
         "reasons": reasons,
         "updated_at": datetime.now(timezone.utc).isoformat(),
