@@ -208,6 +208,53 @@ def test_build_decision_requires_gate_and_benchmarks_for_promotion():
     assert decision["status"] == "promote"
 
 
+def test_build_decision_keeps_collecting_after_benchmark_failure():
+    gate_summary = {"status": "pending"}
+    benchmark_summary = {
+        "status": "rejected",
+        "reference_available": True,
+        "per_opponent": {
+            "Heuristic": {"status": "rejected"},
+            "Minimax-2": {"status": "pending"},
+        },
+    }
+
+    decision = _build_decision(
+        candidate_version=6,
+        approved_version=5,
+        gate_summary=gate_summary,
+        benchmark_summary=benchmark_summary,
+    )
+
+    assert decision["status"] == "rejected_pending"
+    assert decision["promotion_eligible"] is False
+    assert decision["collection_complete"] is False
+    assert "candidate regressed against fixed-anchor benchmark tolerance" in decision["reasons"]
+
+
+def test_build_decision_marks_final_rejection_once_collection_finishes():
+    gate_summary = {"status": "rejected"}
+    benchmark_summary = {
+        "status": "approved",
+        "reference_available": True,
+        "per_opponent": {
+            "Heuristic": {"status": "approved"},
+            "Minimax-2": {"status": "approved"},
+        },
+    }
+
+    decision = _build_decision(
+        candidate_version=6,
+        approved_version=5,
+        gate_summary=gate_summary,
+        benchmark_summary=benchmark_summary,
+    )
+
+    assert decision["status"] == "rejected"
+    assert decision["promotion_eligible"] is False
+    assert decision["collection_complete"] is True
+
+
 def test_pair_bucket_formats_half_scores():
     assert _pair_bucket(2.0) == "2.0"
     assert _pair_bucket(1.5) == "1.5"
