@@ -15,13 +15,17 @@ results plus benchmark non-regression checks against anchors.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import random
+import tempfile
 import time
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from statistics import NormalDist
+from typing import Callable
 
 from loguru import logger
 
@@ -57,7 +61,6 @@ BENCHMARK_REGRESSION_TOLERANCE = 0.05
 BENCHMARK_SPRT_MARGIN = 0.03
 
 OPENING_RANDOM_PLIES = 2
-MODEL_CACHE_LIMIT = 2
 SYNC_INTERVAL_SECONDS = 60
 IDLE_SECONDS = 60
 PROMOTION_LEASE_STALE_SECONDS = 15 * 60
@@ -835,34 +838,72 @@ class VersionRecordStore:
         return list(self._records_by_version.get(version, {}).values())
 
 
+@dataclass(frozen=True)
+class PlayerSpec:
+    name: str
+    create: Callable[[], Player]
+    model_key: str | None = None
+    model_etag: str | None = None
+    local_sha256: str | None = None
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 class PlayerProvider:
-    """Very small model cache: only the active candidate/incumbent sessions."""
+    """Build fresh eval players with per-pair model provenance."""
 
     def __init__(self, simulations: int, cache_dir: Path) -> None:
         self.simulations = simulations
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self._anchors = {player.name: player for player in baselines(simulations)}
-        self._models: dict[str, Player] = {}
+        self._anchor_factories: dict[str, Callable[[], Player]] = {}
+        for player in baselines(simulations):
+            if isinstance(player, MctsPlayer):
+                self._anchor_factories[player.name] = lambda player_name=player.name: MctsPlayer(
+                    name=player_name,
+                    simulations=self.simulations,
+                )
+            else:
+                self._anchor_factories[player.name] = lambda anchor=player: anchor.__class__(
+                    name=anchor.name,
+                    depth=anchor.depth,
+                )
 
-    def get(self, name: str, model_key: str | None = None) -> Player:
-        if name in self._anchors:
-            return self._anchors[name]
-        if name in self._models:
-            return self._models[name]
+    def get(
+        self,
+        name: str,
+        model_key: str | None = None,
+        *,
+        pair_dir: Path | None = None,
+    ) -> PlayerSpec:
+        if name in self._anchor_factories:
+            return PlayerSpec(name=name, create=self._anchor_factories[name])
         if model_key is None:
             raise KeyError(f"missing model key for {name}")
+        if pair_dir is None:
+            raise KeyError(f"missing pair_dir for model-backed player {name}")
 
-        while len(self._models) >= MODEL_CACHE_LIMIT:
-            stale_name = next(iter(self._models))
-            self._models.pop(stale_name, None)
-
-        local_path = self.cache_dir / f"{name}.onnx"
-        if not local_path.exists():
-            storage.get_file(model_key, local_path)
-        player = MctsPlayer(name=name, simulations=self.simulations, model_path=str(local_path))
-        self._models[name] = player
-        return player
+        local_path = pair_dir / f"{name}.onnx"
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        storage.get_file(model_key, local_path)
+        meta = storage.head(model_key)
+        return PlayerSpec(
+            name=name,
+            create=lambda local=str(local_path), player_name=name: MctsPlayer(
+                name=player_name,
+                simulations=self.simulations,
+                model_path=local,
+            ),
+            model_key=model_key,
+            model_etag=None if meta is None else str(meta.get("etag") or ""),
+            local_sha256=_sha256_file(local_path),
+        )
 
 
 def _pair_id() -> str:
@@ -881,6 +922,8 @@ def _make_record(
     pair_id: str,
     pair_game_index: int,
     opening_seed: int,
+    white_player: PlayerSpec,
+    black_player: PlayerSpec,
 ) -> dict:
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -902,6 +945,12 @@ def _make_record(
         "pair_game_index": pair_game_index,
         "opening_seed": opening_seed,
         "opening_plies": result.get("opening_plies", OPENING_RANDOM_PLIES),
+        "white_model_key": white_player.model_key,
+        "white_model_s3_etag": white_player.model_etag,
+        "white_model_sha256": white_player.local_sha256,
+        "black_model_key": black_player.model_key,
+        "black_model_s3_etag": black_player.model_etag,
+        "black_model_sha256": black_player.local_sha256,
     }
 
 
@@ -1057,42 +1106,63 @@ def _run_pair(
         (candidate_name, opponent, 0),
         (opponent, candidate_name, 1),
     ]
+    with tempfile.TemporaryDirectory(
+        dir=players.cache_dir,
+        prefix=f"pair-{candidate_version}-{pair_id}-",
+    ) as pair_tmp:
+        pair_dir = Path(pair_tmp)
+        specs: dict[str, PlayerSpec] = {}
+        for name in {candidate_name, opponent}:
+            try:
+                model_key = version_keys.get(int(name[1:])) if name.startswith("v") else None
+                specs[name] = players.get(name, model_key, pair_dir=pair_dir)
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "{} pair setup failed for candidate v{}: {} ({})",
+                    eval_type,
+                    candidate_version,
+                    name,
+                    exc,
+                )
+                return False
 
-    for white_name, black_name, pair_game_index in matchups:
-        try:
-            white = players.get(white_name, version_keys.get(int(white_name[1:])) if white_name.startswith("v") else None)
-            black = players.get(black_name, version_keys.get(int(black_name[1:])) if black_name.startswith("v") else None)
-            result = play_game(
-                white,
-                black,
-                random_opening_plies=OPENING_RANDOM_PLIES,
+        for white_name, black_name, pair_game_index in matchups:
+            white_spec = specs[white_name]
+            black_spec = specs[black_name]
+            try:
+                result = play_game(
+                    white_spec.create(),
+                    black_spec.create(),
+                    random_opening_plies=OPENING_RANDOM_PLIES,
+                    opening_seed=opening_seed,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "{} pair game failed for candidate v{}: {} vs {} ({})",
+                    eval_type,
+                    candidate_version,
+                    white_name,
+                    black_name,
+                    exc,
+                )
+                return False
+
+            record = _make_record(
+                eval_type=eval_type,
+                candidate_version=candidate_version,
+                approved_version=approved_version,
+                opponent=opponent,
+                white_name=white_name,
+                black_name=black_name,
+                result=result,
+                pair_id=pair_id,
+                pair_game_index=pair_game_index,
                 opening_seed=opening_seed,
+                white_player=white_spec,
+                black_player=black_spec,
             )
-        except Exception as exc:  # noqa: BLE001
-            logger.error(
-                "{} pair game failed for candidate v{}: {} vs {} ({})",
-                eval_type,
-                candidate_version,
-                white_name,
-                black_name,
-                exc,
-            )
-            return False
-
-        record = _make_record(
-            eval_type=eval_type,
-            candidate_version=candidate_version,
-            approved_version=approved_version,
-            opponent=opponent,
-            white_name=white_name,
-            black_name=black_name,
-            result=result,
-            pair_id=pair_id,
-            pair_game_index=pair_game_index,
-            opening_seed=opening_seed,
-        )
-        if _persist_record(records, candidate_version, record) is None:
-            return False
+            if _persist_record(records, candidate_version, record) is None:
+                return False
 
     return True
 

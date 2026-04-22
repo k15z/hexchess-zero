@@ -521,8 +521,8 @@ pub struct TtStats {
 }
 
 /// Transposition-table key. Positions with identical zobrist/side but
-/// different repetition counts are semantically distinct because a
-/// third occurrence is a forced draw.
+/// different repetition counts or halfmove clocks are semantically distinct
+/// because repetition and the 50-move rule can change the game result.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct TtKey {
     /// Raw zobrist hash of the board.
@@ -531,6 +531,8 @@ pub struct TtKey {
     pub side: u8,
     /// Repetition count of this exact position in the game history.
     pub repetition: u32,
+    /// Halfmove clock for the 50-move rule.
+    pub halfmove_clock: u32,
 }
 
 impl TtKey {
@@ -539,6 +541,7 @@ impl TtKey {
             zobrist: state.board.zobrist_hash,
             side: state.board.side_to_move.index() as u8,
             repetition: state.repetition_count(),
+            halfmove_clock: u32::from(state.board.halfmove_clock),
         }
     }
 }
@@ -2683,6 +2686,21 @@ mod tests {
         let mut map: HashMap<TtKey, i32> = HashMap::new();
         map.insert(k0, 1);
         map.insert(k_rep, 2);
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn tt_key_discriminates_by_halfmove_clock() {
+        let state = GameState::new();
+        let k0 = TtKey::from_state(&state);
+        let k_halfmove = TtKey {
+            halfmove_clock: k0.halfmove_clock + 1,
+            ..k0
+        };
+        assert_ne!(k0, k_halfmove);
+        let mut map: HashMap<TtKey, i32> = HashMap::new();
+        map.insert(k0, 1);
+        map.insert(k_halfmove, 2);
         assert_eq!(map.len(), 2);
     }
 

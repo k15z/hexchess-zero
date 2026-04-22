@@ -1,13 +1,19 @@
+import hashlib
+from pathlib import Path
+
 import pytest
 
 import training.evaluation_service as evaluation_service
 
 from training.evaluation_service import (
     BENCHMARK_MAX_GAMES,
+    PlayerSpec,
+    PlayerProvider,
     _build_benchmark_summary,
     _build_decision,
     _build_gate_summary,
     _latest_candidate,
+    _make_record,
     _pair_bucket,
     _series_progress,
 )
@@ -258,6 +264,80 @@ def test_build_decision_marks_final_rejection_once_collection_finishes():
 def test_pair_bucket_formats_half_scores():
     assert _pair_bucket(2.0) == "2.0"
     assert _pair_bucket(1.5) == "1.5"
+
+
+def test_make_record_includes_model_provenance():
+    record = _make_record(
+        eval_type="gate",
+        candidate_version=5,
+        approved_version=1,
+        opponent="v1",
+        white_name="v5",
+        black_name="v1",
+        result={
+            "outcome": "white",
+            "termination": "checkmate_white",
+            "moves": 41,
+            "white_time": 2.5,
+            "black_time": 2.1,
+            "white_moves": 21,
+            "black_moves": 20,
+        },
+        pair_id="pair-1",
+        pair_game_index=0,
+        opening_seed=123,
+        white_player=PlayerSpec(
+            name="v5",
+            create=lambda: None,
+            model_key="models/versions/5.onnx",
+            model_etag="etag-v5",
+            local_sha256="sha-v5",
+        ),
+        black_player=PlayerSpec(
+            name="v1",
+            create=lambda: None,
+            model_key="models/versions/1.onnx",
+            model_etag="etag-v1",
+            local_sha256="sha-v1",
+        ),
+    )
+
+    assert record["white_model_key"] == "models/versions/5.onnx"
+    assert record["white_model_s3_etag"] == "etag-v5"
+    assert record["white_model_sha256"] == "sha-v5"
+    assert record["black_model_key"] == "models/versions/1.onnx"
+    assert record["black_model_s3_etag"] == "etag-v1"
+    assert record["black_model_sha256"] == "sha-v1"
+
+
+def test_player_provider_downloads_model_and_reports_hash(monkeypatch, tmp_path: Path):
+    payload = b"model-bytes-v5"
+    calls: list[tuple[str, Path]] = []
+
+    def fake_get_file(key: str, local_path: str | Path) -> Path:
+        local_path = Path(local_path)
+        local_path.write_bytes(payload)
+        calls.append((key, local_path))
+        return local_path
+
+    monkeypatch.setattr(evaluation_service.storage, "get_file", fake_get_file)
+    monkeypatch.setattr(
+        evaluation_service.storage,
+        "head",
+        lambda key: {"etag": "etag-v5", "size": len(payload), "last_modified": None},
+    )
+
+    provider = PlayerProvider(simulations=800, cache_dir=tmp_path)
+    spec = provider.get(
+        "v5",
+        "models/versions/5.onnx",
+        pair_dir=tmp_path / "pair",
+    )
+
+    assert calls == [("models/versions/5.onnx", tmp_path / "pair" / "v5.onnx")]
+    assert spec.model_key == "models/versions/5.onnx"
+    assert spec.model_etag == "etag-v5"
+    assert spec.local_sha256 == hashlib.sha256(payload).hexdigest()
 
 
 def test_run_service_refreshes_promoted_artifacts_with_new_approved_version(
