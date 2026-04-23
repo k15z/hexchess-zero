@@ -202,7 +202,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--approved", type=int, required=True, help="Approved/incumbent model version")
     parser.add_argument("--candidate", type=int, required=True, help="Candidate model version")
-    parser.add_argument("--simulations", type=int, default=800, help="MCTS simulations per move")
+    parser.add_argument("--simulations", type=int, default=1200, help="MCTS simulations per move")
     parser.add_argument("--max-pairs", type=int, default=50, help="Maximum paired mini-matches to run")
     parser.add_argument("--sprt-alpha", type=float, default=0.05, help="SPRT false-positive rate")
     parser.add_argument("--sprt-beta", type=float, default=0.05, help="SPRT false-negative rate")

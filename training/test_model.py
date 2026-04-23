@@ -7,12 +7,14 @@ from training.model import build_model
 
 
 def test_param_count_in_target_range():
-    """Guard against accidental size blow-up. We deliberately picked an
-    8x144 trunk + narrow heads to land near 6M; alert loudly if this drifts."""
+    """Guard against accidental size blow-up for the current production net.
+
+    The current default is a 10x192 trunk, which should land around 10M params.
+    """
     model = build_model(_BaseConfig())
     n = sum(p.numel() for p in model.parameters())
-    assert 3_000_000 <= n <= 7_000_000, (
-        f"param count {n:,} outside [3M, 7M] — did the trunk or head sizes change?"
+    assert 9_000_000 <= n <= 12_000_000, (
+        f"param count {n:,} outside [9M, 12M] — did the trunk or head sizes change?"
     )
 
 

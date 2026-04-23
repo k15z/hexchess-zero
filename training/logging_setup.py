@@ -130,21 +130,16 @@ class S3RotatingFileSink(logging.Handler):
         self._current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         self._lock = threading.Lock()
 
-    def _rotate_if_needed(self) -> None:
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        if today == self._current_date:
-            return
-        rotated_date = self._current_date
-        self._current_date = today
+    def _upload_pending_file(self, log_date: str) -> None:
         if not self.local_path.exists() or self.local_path.stat().st_size == 0:
             return
         gz_path = self.local_path.with_suffix(
-            self.local_path.suffix + f".{rotated_date}.gz"
+            self.local_path.suffix + f".{log_date}.gz"
         )
         try:
             with open(self.local_path, "rb") as src, gzip.open(gz_path, "wb") as dst:
                 shutil.copyfileobj(src, dst)
-            key = f"logs/{self.service}/{self.host}/{rotated_date}/events.jsonl.gz"
+            key = f"logs/{self.service}/{self.host}/{log_date}/events.jsonl.gz"
             try:
                 from . import storage  # noqa: PLC0415
 
@@ -159,6 +154,14 @@ class S3RotatingFileSink(logging.Handler):
                 except OSError:
                     pass
 
+    def _rotate_if_needed(self) -> None:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if today == self._current_date:
+            return
+        rotated_date = self._current_date
+        self._current_date = today
+        self._upload_pending_file(rotated_date)
+
     def emit(self, record: logging.LogRecord) -> None:
         try:
             line = self.format(record)
@@ -168,6 +171,13 @@ class S3RotatingFileSink(logging.Handler):
                     f.write(line + "\n")
         except Exception:  # pragma: no cover
             self.handleError(record)
+
+    def close(self) -> None:
+        try:
+            with self._lock:
+                self._upload_pending_file(self._current_date)
+        finally:
+            super().close()
 
 
 def setup_json_logging(

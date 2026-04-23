@@ -96,7 +96,7 @@ def main() -> None:
     eval_svc_parser.add_argument(
         "--simulations",
         type=int,
-        default=800,
+        default=1200,
         help="MCTS simulations per move",
     )
     legacy_eval_parser = subparsers.add_parser(
@@ -106,7 +106,7 @@ def main() -> None:
     legacy_eval_parser.add_argument(
         "--simulations",
         type=int,
-        default=800,
+        default=1200,
         help="MCTS simulations per move",
     )
 

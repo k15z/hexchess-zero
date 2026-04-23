@@ -681,7 +681,7 @@ impl PyMctsSearch {
     /// defaults when provided; eval mode ignores them.
     #[new]
     #[pyo3(signature = (
-        simulations=800, c_puct=None, model_path=None, batch_size=32,
+        simulations=1200, c_puct=None, model_path=None, batch_size=32,
         tt_capacity=500_000, intra_threads=0,
         dirichlet_epsilon=0.0, dirichlet_alpha=0.3, eval_mode=false,
         pcr_p_full=None, pcr_n_full=None, pcr_n_fast=None,

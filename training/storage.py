@@ -10,6 +10,8 @@ Bucket layout:
     models/approved.meta.json             {"version": N, "timestamp": "..."}
     models/checkpoint.pt                  PyTorch training checkpoint
     models/versions/{N}.onnx              Immutable version snapshots
+    models/versions/{N}.pt                Immutable version checkpoints
+    models/versions/{N}.meta.json         Immutable per-version metadata
 
     data/selfplay/v{N}/{ts}_{rand}_n{count}.npz
     data/imitation/{ts}_{rand}_n{count}.npz
@@ -18,6 +20,7 @@ Bucket layout:
     state/evals/v{N}/benchmark_summary.json
     state/evals/v{N}/decision.json
     state/evals/v{N}/games/{ts}_{rand}.json
+    state/runs/v{N}/promotion_summary.json
 
     heartbeats/{hostname}.json            Worker liveness + stats
 """
@@ -49,6 +52,7 @@ SELFPLAY_PREFIX = "data/selfplay/"
 SELFPLAY_TRACES_PREFIX = "data/selfplay_traces/"
 IMITATION_PREFIX = "data/imitation/"
 EVALS_PREFIX = "state/evals/"
+RUNS_PREFIX = "state/runs/"
 HEARTBEATS_PREFIX = "heartbeats/"
 TRAINER_METRICS = "state/trainer_metrics.json"
 BENCHMARK_RESULTS_PREFIX = "benchmarks/results/"
@@ -366,11 +370,31 @@ def upload_npz(key: str, *, boards: np.ndarray, policies: np.ndarray,
             os.unlink(tmp_path)
 
 
-def eval_version_prefix(version: int | str) -> str:
+def _normalize_version(version: int | str) -> str:
     version_str = str(version)
     if version_str.startswith("v"):
         version_str = version_str[1:]
-    return f"{EVALS_PREFIX}v{version_str}/"
+    return version_str
+
+
+def version_onnx_key(version: int | str) -> str:
+    return f"{VERSIONS_PREFIX}{_normalize_version(version)}.onnx"
+
+
+def version_checkpoint_key(version: int | str) -> str:
+    return f"{VERSIONS_PREFIX}{_normalize_version(version)}.pt"
+
+
+def version_meta_key(version: int | str) -> str:
+    return f"{VERSIONS_PREFIX}{_normalize_version(version)}.meta.json"
+
+
+def eval_version_prefix(version: int | str) -> str:
+    return f"{EVALS_PREFIX}v{_normalize_version(version)}/"
+
+
+def run_version_prefix(version: int | str) -> str:
+    return f"{RUNS_PREFIX}v{_normalize_version(version)}/"
 
 
 def eval_games_prefix(version: int | str) -> str:
@@ -387,6 +411,10 @@ def eval_benchmark_summary_key(version: int | str) -> str:
 
 def eval_decision_key(version: int | str) -> str:
     return f"{eval_version_prefix(version)}decision.json"
+
+
+def promotion_summary_key(version: int | str) -> str:
+    return f"{run_version_prefix(version)}promotion_summary.json"
 
 
 def put_eval_game_record(version: int | str, record: dict) -> str:

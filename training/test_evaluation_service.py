@@ -102,6 +102,7 @@ def test_build_gate_summary_marks_clear_winner_approved():
 
     assert summary["status"] == "approved"
     assert summary["games"] == 32
+    assert summary["budget_complete"] is False
     assert summary["pair_buckets"]["2.0"] == 16
 
 
@@ -117,6 +118,7 @@ def test_build_benchmark_summary_applies_reference_tolerance():
 
     assert summary["per_opponent"]["Minimax-2"]["target_score"] == 0.47
     assert summary["per_opponent"]["Minimax-2"]["status"] == "approved"
+    assert summary["per_opponent"]["Minimax-2"]["budget_complete"] is True
 
 
 def test_build_benchmark_summary_rejects_regression():
@@ -201,8 +203,12 @@ def test_needs_anchor_backfill_requires_complete_baseline(monkeypatch):
 
 
 def test_build_decision_requires_gate_and_benchmarks_for_promotion():
-    gate_summary = {"status": "approved"}
-    benchmark_summary = {"status": "approved", "reference_available": True}
+    gate_summary = {"status": "approved", "budget_complete": True}
+    benchmark_summary = {
+        "status": "approved",
+        "reference_available": True,
+        "budget_complete": True,
+    }
 
     decision = _build_decision(
         candidate_version=6,
@@ -214,14 +220,39 @@ def test_build_decision_requires_gate_and_benchmarks_for_promotion():
     assert decision["status"] == "promote"
 
 
+def test_build_decision_waits_for_fixed_budget_even_after_early_approval():
+    gate_summary = {"status": "approved", "budget_complete": False}
+    benchmark_summary = {
+        "status": "approved",
+        "reference_available": True,
+        "budget_complete": False,
+        "per_opponent": {
+            "Heuristic": {"status": "approved", "budget_complete": False},
+        },
+    }
+
+    decision = _build_decision(
+        candidate_version=6,
+        approved_version=5,
+        gate_summary=gate_summary,
+        benchmark_summary=benchmark_summary,
+    )
+
+    assert decision["status"] == "pending"
+    assert decision["collection_complete"] is False
+    assert "gate fixed-budget collection still in progress" in decision["reasons"]
+    assert "benchmark fixed-budget collection still in progress" in decision["reasons"]
+
+
 def test_build_decision_keeps_collecting_after_benchmark_failure():
-    gate_summary = {"status": "pending"}
+    gate_summary = {"status": "pending", "budget_complete": False}
     benchmark_summary = {
         "status": "rejected",
         "reference_available": True,
+        "budget_complete": False,
         "per_opponent": {
-            "Heuristic": {"status": "rejected"},
-            "Minimax-2": {"status": "pending"},
+            "Heuristic": {"status": "rejected", "budget_complete": True},
+            "Minimax-2": {"status": "pending", "budget_complete": False},
         },
     }
 
@@ -239,13 +270,14 @@ def test_build_decision_keeps_collecting_after_benchmark_failure():
 
 
 def test_build_decision_marks_final_rejection_once_collection_finishes():
-    gate_summary = {"status": "rejected"}
+    gate_summary = {"status": "rejected", "budget_complete": True}
     benchmark_summary = {
         "status": "approved",
         "reference_available": True,
+        "budget_complete": True,
         "per_opponent": {
-            "Heuristic": {"status": "approved"},
-            "Minimax-2": {"status": "approved"},
+            "Heuristic": {"status": "approved", "budget_complete": True},
+            "Minimax-2": {"status": "approved", "budget_complete": True},
         },
     }
 
@@ -259,6 +291,53 @@ def test_build_decision_marks_final_rejection_once_collection_finishes():
     assert decision["status"] == "rejected"
     assert decision["promotion_eligible"] is False
     assert decision["collection_complete"] is True
+
+
+def test_next_benchmark_opponent_keeps_collecting_after_early_status():
+    summary = {
+        "per_opponent": {
+            "Heuristic": {"opponent": "Heuristic", "status": "approved", "games": 12, "budget_complete": False},
+            "Minimax-2": {"opponent": "Minimax-2", "status": "pending", "games": 8, "budget_complete": False},
+            "Minimax-3": {"opponent": "Minimax-3", "status": "approved", "games": 24, "budget_complete": True},
+        }
+    }
+
+    assert evaluation_service._next_benchmark_opponent(summary) == "Minimax-2"
+
+
+def test_promote_candidate_preserves_version_metadata_links(monkeypatch):
+    copies: list[tuple[str, str]] = []
+    written: dict[str, dict] = {}
+
+    monkeypatch.setattr(
+        evaluation_service.storage,
+        "copy",
+        lambda src, dst: copies.append((src, dst)),
+    )
+    monkeypatch.setattr(
+        evaluation_service.storage,
+        "get_json",
+        lambda key: {"positions_at_promote": 123},
+    )
+    monkeypatch.setattr(
+        evaluation_service.storage,
+        "put_json",
+        lambda key, obj: written.setdefault(key, obj),
+    )
+
+    evaluation_service._promote_candidate(6, "models/versions/6.onnx")
+
+    assert copies == [("models/versions/6.onnx", evaluation_service.storage.APPROVED_ONNX)]
+    assert written[evaluation_service.storage.APPROVED_META]["version"] == 6
+    assert written[evaluation_service.storage.APPROVED_META]["positions_at_promote"] == 123
+    assert (
+        written[evaluation_service.storage.APPROVED_META]["version_metadata_key"]
+        == evaluation_service.storage.version_meta_key(6)
+    )
+    assert (
+        written[evaluation_service.storage.APPROVED_META]["promotion_summary_key"]
+        == evaluation_service.storage.promotion_summary_key(6)
+    )
 
 
 def test_pair_bucket_formats_half_scores():

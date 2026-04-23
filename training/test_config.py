@@ -12,7 +12,17 @@ def test_defaults_instantiate_and_validate():
     cfg.validate()  # should not raise
     assert cfg.run_id  # non-empty
     assert cfg.batch_size > 0
+    assert cfg.num_simulations == 1200
     assert 0 < cfg.pcr_p_full <= 1.0
+    assert cfg.pcr_p_full == pytest.approx(1.0)
+    assert cfg.pcr_n_full == 1200
+    assert cfg.pcr_n_fast == 160
+    assert cfg.num_residual_blocks == 10
+    assert cfg.num_filters == 192
+    assert cfg.imitation_mix_start == pytest.approx(0.0)
+    assert cfg.imitation_mix_end == pytest.approx(0.0)
+    assert cfg.imitation_mix_for_version(1) == pytest.approx(0.0)
+    assert cfg.imitation_mix_for_version(5) == pytest.approx(0.0)
     assert cfg.window_c > 0
     assert cfg.promote_every_new_positions == 2_500_000
 
