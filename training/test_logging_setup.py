@@ -8,9 +8,10 @@ import logging
 
 import pytest
 
-from training import logging_setup
+from training import logging_setup, storage
 from training.logging_setup import (
     JsonLineFormatter,
+    S3RotatingFileSink,
     log_event,
     setup_json_logging,
 )
@@ -90,3 +91,38 @@ def test_json_formatter_coerces_numpy_values():
     payload = json.loads(buf.getvalue().splitlines()[-1])
     assert payload["mean"] == pytest.approx(0.5)
     assert payload["counts"] == [1, 2, 3]
+
+
+def test_setup_json_logging_attaches_s3_sink_when_path_provided(tmp_path):
+    sink_path = tmp_path / "logs" / "trainer" / "testrun.events.jsonl"
+
+    setup_json_logging("trainer", run_id="testrun", s3_sink_path=sink_path)
+
+    s3_handlers = [
+        h for h in logging.getLogger().handlers if isinstance(h, S3RotatingFileSink)
+    ]
+    assert len(s3_handlers) == 1
+    assert s3_handlers[0].local_path == sink_path
+
+
+def test_s3_sink_uploads_pending_file_on_close(tmp_path, monkeypatch):
+    sink_path = tmp_path / "logs" / "trainer" / "testrun.events.jsonl"
+    sink = S3RotatingFileSink(sink_path, service="trainer", host="test-host")
+    sink_path.write_text('{"event":"train.step"}\n', encoding="utf-8")
+
+    uploads: list[tuple[str, str]] = []
+
+    def fake_put_file(key: str, local_path: str) -> None:
+        uploads.append((key, str(local_path)))
+
+    monkeypatch.setattr(storage, "put_file", fake_put_file)
+
+    sink.close()
+
+    assert uploads == [
+        (
+            f"logs/trainer/test-host/{sink._current_date}/events.jsonl.gz",
+            str(sink_path.with_suffix(".jsonl." + sink._current_date + ".gz")),
+        )
+    ]
+    assert sink_path.read_text(encoding="utf-8") == ""

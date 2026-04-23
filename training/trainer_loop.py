@@ -15,11 +15,14 @@ All data exchange happens via S3 (DigitalOcean Spaces / R2 / etc).
 
 from __future__ import annotations
 
+import io
 import random
 import time
-from collections import deque
+from collections import Counter, deque
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TypeVar
 
 import numpy as np
 import torch
@@ -382,6 +385,193 @@ def _collate_samples(samples: list[dict]) -> dict[str, np.ndarray]:
     return out
 
 
+_PROMOTION_META_SAMPLE_FILES = 512
+_PROMOTION_ENTROPY_SAMPLE_FILES = 128
+_T = TypeVar("_T")
+
+
+def _sample_evenly(items: list[_T], max_items: int) -> list[_T]:
+    if max_items <= 0 or not items:
+        return []
+    if len(items) <= max_items:
+        return list(items)
+    if max_items == 1:
+        return [items[-1]]
+    step = (len(items) - 1) / (max_items - 1)
+    indices = sorted({round(i * step) for i in range(max_items)})
+    return [items[idx] for idx in indices]
+
+
+def _npz_meta_key(npz_key: str) -> str:
+    return npz_key[:-4] + ".meta.json" if npz_key.endswith(".npz") else f"{npz_key}.meta.json"
+
+
+def _parse_data_timestamp(value: str) -> datetime | None:
+    try:
+        return datetime.strptime(value, "%Y%m%dT%H%M%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _estimate_recent_root_entropy(selected: list[dict]) -> dict:
+    sampled = _sample_evenly(selected, _PROMOTION_ENTROPY_SAMPLE_FILES)
+    total_entropy = 0.0
+    total_positions = 0
+    load_failures = 0
+    for entry in sampled:
+        try:
+            payload = storage.get(entry["key"])
+            with np.load(io.BytesIO(payload), allow_pickle=False) as arrays:
+                root_entropy = np.asarray(arrays["root_entropy"], dtype=np.float64)
+        except (KeyError, OSError, ValueError):
+            load_failures += 1
+            continue
+        total_entropy += float(root_entropy.sum())
+        total_positions += int(root_entropy.size)
+    mean_entropy = total_entropy / total_positions if total_positions else 0.0
+    return {
+        "mean_root_entropy": round(mean_entropy, 6),
+        "sampled_files": len(sampled),
+        "sampled_positions": total_positions,
+        "load_failures": load_failures,
+    }
+
+
+def _build_recent_selfplay_summary(tranche_positions: int) -> dict:
+    selected = storage.select_recent_files(storage.SELFPLAY_PREFIX, tranche_positions)
+    sampled = _sample_evenly(selected, _PROMOTION_META_SAMPLE_FILES)
+    selected_full_positions = sum(int(entry["positions"]) for entry in selected)
+    producer_versions = Counter(str(entry["version"]) for entry in selected)
+    timestamps = [
+        dt
+        for entry in selected
+        if (dt := _parse_data_timestamp(str(entry["timestamp"]))) is not None
+    ]
+    span_seconds = 0.0
+    if len(timestamps) >= 2:
+        span_seconds = max(0.0, (timestamps[-1] - timestamps[0]).total_seconds())
+    positions_per_day = (
+        round(selected_full_positions * 86400.0 / span_seconds, 2)
+        if span_seconds > 0
+        else None
+    )
+
+    result_counts: Counter[str] = Counter()
+    termination_counts: Counter[str] = Counter()
+    sampled_total_positions = 0
+    sampled_full_positions = 0
+    missing_meta_files = 0
+
+    for entry in sampled:
+        sampled_full_positions += int(entry["positions"])
+        try:
+            meta = storage.get_json(_npz_meta_key(entry["key"]))
+        except KeyError:
+            missing_meta_files += 1
+            continue
+        sampled_total_positions += int(meta.get("num_total_positions", entry["positions"]))
+        result_counts[str(meta.get("result", "unknown"))] += 1
+        termination_counts[str(meta.get("termination", "unknown"))] += 1
+
+    sampled_games = sum(result_counts.values())
+    sampled_draw_rate = (
+        result_counts.get("draw", 0) / sampled_games if sampled_games else 0.0
+    )
+    sampled_mean_game_length = (
+        sampled_total_positions / sampled_games if sampled_games else 0.0
+    )
+    sampled_keep_ratio = (
+        sampled_full_positions / sampled_total_positions if sampled_total_positions else 0.0
+    )
+
+    entropy = _estimate_recent_root_entropy(selected)
+    return {
+        "selection_basis": "most recent self-play tranche since previous promotion",
+        "selection_is_exact": True,
+        "selected_files": len(selected),
+        "selected_full_positions": selected_full_positions,
+        "selected_versions": dict(sorted(producer_versions.items())),
+        "positions_per_day": positions_per_day,
+        "time_window": {
+            "start": timestamps[0].isoformat() if timestamps else None,
+            "end": timestamps[-1].isoformat() if timestamps else None,
+            "span_seconds": round(span_seconds, 2),
+        },
+        "sample_strategy": "deterministic_even_spacing_across_selected_files",
+        "sampled_metrics_are_estimated": len(sampled) < len(selected),
+        "sampled_files": len(sampled),
+        "sampled_games_with_meta": sampled_games,
+        "missing_meta_files_in_sample": missing_meta_files,
+        "sampled_total_positions": sampled_total_positions,
+        "sampled_full_positions": sampled_full_positions,
+        "sampled_mean_game_length": round(sampled_mean_game_length, 2),
+        "sampled_keep_ratio": round(sampled_keep_ratio, 4),
+        "sampled_draw_rate": round(sampled_draw_rate, 4),
+        "sampled_result_counts": dict(sorted(result_counts.items())),
+        "sampled_termination_counts": dict(sorted(termination_counts.items())),
+        "root_entropy": entropy,
+    }
+
+
+def _build_version_metadata(
+    cfg: AsyncConfig,
+    *,
+    version: int,
+    timestamp: str,
+    positions_at_promote: int | None,
+    source_version: int | None,
+    training_phase: str,
+    replay_window_size: int | None,
+    imitation_mix: float | None,
+    selfplay_tranche_positions: int,
+) -> dict:
+    return {
+        "version": version,
+        "timestamp": timestamp,
+        "positions_at_promote": positions_at_promote,
+        "source_version": source_version,
+        "training_phase": training_phase,
+        "replay_window_size": replay_window_size,
+        "imitation_mix": imitation_mix,
+        "selfplay_tranche_positions": selfplay_tranche_positions,
+        "config_snapshot": asdict(cfg),
+    }
+
+
+def _build_promotion_summary(
+    *,
+    version: int,
+    timestamp: str,
+    positions_at_promote: int | None,
+    source_version: int | None,
+    training_phase: str,
+    replay_window_size: int | None,
+    imitation_mix: float | None,
+    selfplay_tranche_positions: int,
+) -> dict:
+    summary = {
+        "version": version,
+        "timestamp": timestamp,
+        "positions_at_promote": positions_at_promote,
+        "source_version": source_version,
+        "training_phase": training_phase,
+        "replay_window_size": replay_window_size,
+        "imitation_mix": imitation_mix,
+        "selfplay_tranche_positions": selfplay_tranche_positions,
+    }
+    if training_phase == "bootstrap" or selfplay_tranche_positions <= 0:
+        summary["selfplay_summary"] = {
+            "selection_basis": "bootstrap_export_has_no_recent_self_play_tranche",
+            "selected_files": 0,
+            "selected_full_positions": 0,
+        }
+    else:
+        summary["selfplay_summary"] = _build_recent_selfplay_summary(
+            selfplay_tranche_positions
+        )
+    return summary
+
+
 # ---------------------------------------------------------------------------
 # Bootstrap training
 # ---------------------------------------------------------------------------
@@ -497,6 +687,11 @@ def _run_bootstrap(cfg: AsyncConfig, model: torch.nn.Module,
         new_version,
         positions_at_promote=bootstrap_selfplay_positions,
         publish_approved=True,
+        replay_window_size=None,
+        imitation_mix=1.0,
+        selfplay_tranche_positions=bootstrap_selfplay_positions,
+        source_version=0,
+        training_phase="bootstrap",
     )
 
     logger.info("Promoted bootstrap model to v{} ({:,} steps, {:.0f}s)",
@@ -516,6 +711,11 @@ def _promote_model(
     state_dict: dict[str, torch.Tensor] | None = None,
     positions_at_promote: int | None = None,
     publish_approved: bool = False,
+    replay_window_size: int | None = None,
+    imitation_mix: float | None = None,
+    selfplay_tranche_positions: int = 0,
+    source_version: int | None = None,
+    training_phase: str = "selfplay",
 ) -> None:
     """Export ``model`` (or an override ``state_dict``) and publish as latest.
 
@@ -535,25 +735,57 @@ def _promote_model(
     torch.save(sd, local_pt)
     export_to_onnx(local_pt, local_onnx, cfg)
 
-    storage.put_file(f"{storage.VERSIONS_PREFIX}{version}.onnx", local_onnx)
-    storage.put_file(f"{storage.VERSIONS_PREFIX}{version}.pt", local_pt)
+    version_onnx_key = storage.version_onnx_key(version)
+    version_checkpoint_key = storage.version_checkpoint_key(version)
+    timestamp = datetime.now(timezone.utc).isoformat()
+    version_meta = _build_version_metadata(
+        cfg,
+        version=version,
+        timestamp=timestamp,
+        positions_at_promote=positions_at_promote,
+        source_version=source_version,
+        training_phase=training_phase,
+        replay_window_size=replay_window_size,
+        imitation_mix=imitation_mix,
+        selfplay_tranche_positions=selfplay_tranche_positions,
+    )
+    promotion_summary = _build_promotion_summary(
+        version=version,
+        timestamp=timestamp,
+        positions_at_promote=positions_at_promote,
+        source_version=source_version,
+        training_phase=training_phase,
+        replay_window_size=replay_window_size,
+        imitation_mix=imitation_mix,
+        selfplay_tranche_positions=selfplay_tranche_positions,
+    )
+
+    storage.put_file(version_onnx_key, local_onnx)
+    storage.put_file(version_checkpoint_key, local_pt)
+    storage.put_json(storage.version_meta_key(version), version_meta)
+    storage.put_json(storage.promotion_summary_key(version), promotion_summary)
     storage.put_file(storage.CHECKPOINT_PT, local_pt)
-    storage.copy(f"{storage.VERSIONS_PREFIX}{version}.onnx", storage.LATEST_ONNX)
+    storage.copy(version_onnx_key, storage.LATEST_ONNX)
     # Meta is the commit point — workers poll this, so write it last
     meta: dict = {
         "version": version,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": timestamp,
+        "version_metadata_key": storage.version_meta_key(version),
+        "promotion_summary_key": storage.promotion_summary_key(version),
     }
     if positions_at_promote is not None:
         meta["positions_at_promote"] = positions_at_promote
     storage.put_json(storage.LATEST_META, meta)
     if publish_approved:
-        storage.copy(f"{storage.VERSIONS_PREFIX}{version}.onnx", storage.APPROVED_ONNX)
+        storage.copy(version_onnx_key, storage.APPROVED_ONNX)
         storage.put_json(
             storage.APPROVED_META,
             {
                 "version": version,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": timestamp,
+                "positions_at_promote": positions_at_promote,
+                "version_metadata_key": storage.version_meta_key(version),
+                "promotion_summary_key": storage.promotion_summary_key(version),
             },
         )
 
@@ -680,10 +912,18 @@ def _maybe_promote(
         del scratch
 
     new_version = current_version + 1
+    replay_window_size = sublinear_window_size(
+        n_total, c=cfg.window_c, alpha=cfg.window_alpha, beta=cfg.window_beta,
+    )
     _promote_model(
         cfg, model, new_version,
         state_dict=averaged_sd,
         positions_at_promote=n_total,
+        replay_window_size=replay_window_size,
+        imitation_mix=cfg.imitation_mix_for_version(current_version),
+        selfplay_tranche_positions=new_positions,
+        source_version=current_version,
+        training_phase="selfplay",
     )
     logger.info(
         "Promoted to v{} | total steps: {:,}",
@@ -781,7 +1021,8 @@ def run_trainer(cfg: AsyncConfig) -> None:
     """Run the continuous trainer loop."""
     cfg.ensure_cache_dirs()
     cfg.validate()
-    setup_json_logging("trainer", run_id=cfg.run_id)
+    trainer_log_path = cfg.cache_dir / "logs" / "trainer" / f"{cfg.run_id}.events.jsonl"
+    setup_json_logging("trainer", run_id=cfg.run_id, s3_sink_path=trainer_log_path)
     log_event("trainer.start", run_id=cfg.run_id,
               summary_interval_steps=cfg.summary_interval_steps,
               batch_size=cfg.batch_size)

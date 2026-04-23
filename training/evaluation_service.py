@@ -594,6 +594,8 @@ def _build_gate_summary(
         "approved_version": approved_version,
         "opponent": approved,
         "status": decision,
+        "budget_games": GATE_MAX_GAMES,
+        "budget_complete": progress["games"] >= GATE_MAX_GAMES,
         **progress,
         "sprt": {
             "status": "approved" if status == "approved" else "rejected" if status == "rejected" else "pending",
@@ -686,6 +688,8 @@ def _build_benchmark_opponent_summary(
         "regression_tolerance": BENCHMARK_REGRESSION_TOLERANCE if reference_score is not None else None,
         "target_score": target_score,
         "status": decision,
+        "budget_games": BENCHMARK_MAX_GAMES,
+        "budget_complete": progress["games"] >= BENCHMARK_MAX_GAMES,
         **progress,
         "sprt": sprt,
     }
@@ -732,6 +736,10 @@ def _build_benchmark_summary(
         "approved_version": approved_version,
         "status": overall_status,
         "reference_available": reference_scores is not None,
+        "budget_complete": all(
+            summary.get("budget_complete", False)
+            for summary in per_opponent.values()
+        ),
         "per_opponent": per_opponent,
         **aggregate,
         "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -740,9 +748,9 @@ def _build_benchmark_summary(
 
 def _benchmark_collection_complete(benchmark_summary: dict) -> bool:
     if not benchmark_summary.get("reference_available", False):
-        return benchmark_summary["status"] == "complete"
+        return bool(benchmark_summary.get("budget_complete", False))
     return all(
-        summary["status"] != "pending"
+        summary.get("budget_complete", False)
         for summary in benchmark_summary.get("per_opponent", {}).values()
     )
 
@@ -761,7 +769,7 @@ def _build_decision(
     collection_complete = False
 
     if gate_summary is None:
-        if benchmark_summary["status"] == "complete":
+        if _benchmark_collection_complete(benchmark_summary):
             decision_status = "baseline_ready"
             collection_complete = True
         else:
@@ -774,7 +782,7 @@ def _build_decision(
             and benchmark_summary["status"] == "rejected"
         )
         promotion_eligible = not gate_failed and not benchmark_failed
-        gate_complete = gate_summary["status"] != "pending"
+        gate_complete = bool(gate_summary.get("budget_complete", False))
         benchmark_complete = _benchmark_collection_complete(benchmark_summary)
         collection_complete = gate_complete and benchmark_complete
 
@@ -783,20 +791,28 @@ def _build_decision(
         if benchmark_failed:
             reasons.append("candidate regressed against fixed-anchor benchmark tolerance")
 
-        if gate_summary["status"] == "approved" and benchmark_summary["status"] == "approved":
+        if (
+            collection_complete
+            and gate_summary["status"] == "approved"
+            and benchmark_summary["status"] == "approved"
+        ):
             decision_status = "promote"
             reasons.append("candidate passed gate and anchor regression checks")
         elif not promotion_eligible and collection_complete:
             decision_status = "rejected"
         elif not promotion_eligible:
             decision_status = "rejected_pending"
-            reasons.append("continuing to collect remaining evaluation evidence")
+            reasons.append("continuing to collect remaining fixed-budget evaluation evidence")
         else:
             decision_status = "pending"
-            if gate_summary["status"] != "approved":
-                reasons.append("gate still collecting evidence")
-            if benchmark_summary["status"] != "approved":
-                reasons.append("benchmark suite still collecting evidence")
+            if not gate_complete:
+                reasons.append("gate fixed-budget collection still in progress")
+            elif gate_summary["status"] != "approved":
+                reasons.append("gate did not clear the promotion threshold")
+            if not benchmark_complete:
+                reasons.append("benchmark fixed-budget collection still in progress")
+            elif benchmark_summary["status"] != "approved":
+                reasons.append("benchmark suite did not clear regression checks")
 
     return {
         "candidate": candidate,
@@ -1030,7 +1046,7 @@ def _next_benchmark_opponent(summary: dict) -> str | None:
     pending = [
         entry
         for entry in summary["per_opponent"].values()
-        if entry["status"] == "pending"
+        if not entry.get("budget_complete", False)
     ]
     if not pending:
         return None
@@ -1041,12 +1057,21 @@ def _next_benchmark_opponent(summary: dict) -> str | None:
 def _promote_candidate(version: int, model_key: str) -> None:
     now = datetime.now(timezone.utc).isoformat()
     storage.copy(model_key, storage.APPROVED_ONNX)
+    approved_meta = {
+        "version": version,
+        "timestamp": now,
+        "version_metadata_key": storage.version_meta_key(version),
+        "promotion_summary_key": storage.promotion_summary_key(version),
+    }
+    try:
+        version_meta = storage.get_json(storage.version_meta_key(version))
+    except KeyError:
+        version_meta = {}
+    if "positions_at_promote" in version_meta:
+        approved_meta["positions_at_promote"] = version_meta["positions_at_promote"]
     storage.put_json(
         storage.APPROVED_META,
-        {
-            "version": version,
-            "timestamp": now,
-        },
+        approved_meta,
     )
 
 
@@ -1271,7 +1296,7 @@ def run_evaluation_service(simulations: int = 800) -> None:
             time.sleep(IDLE_SECONDS)
             continue
 
-        if include_gate and gate_summary is not None and gate_summary["status"] == "pending":
+        if include_gate and gate_summary is not None and not gate_summary.get("budget_complete", False):
             gate_progress = gate_summary["games"] / GATE_MAX_GAMES
         else:
             gate_progress = 1.0
@@ -1283,7 +1308,7 @@ def run_evaluation_service(simulations: int = 800) -> None:
                 benchmark_summary["per_opponent"][benchmark_opponent]["games"] / BENCHMARK_MAX_GAMES
             )
 
-        if include_gate and gate_summary is not None and gate_summary["status"] == "pending" and (
+        if include_gate and gate_summary is not None and not gate_summary.get("budget_complete", False) and (
             benchmark_opponent is None or gate_progress <= benchmark_progress
         ):
             logger.info(

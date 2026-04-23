@@ -136,7 +136,7 @@ def test_replay_default_search_factory_falls_back_to_async_config(monkeypatch):
 
     assert verified == 1
     assert created == [{
-        "simulations": 800,
+        "simulations": cfg.num_simulations,
         "model_path": "/tmp/model.onnx",
         "dirichlet_epsilon": cfg.dirichlet_epsilon,
         "dirichlet_alpha": cfg.dirichlet_alpha,

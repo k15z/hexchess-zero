@@ -140,7 +140,7 @@ def _current_model_version(cfg: AsyncConfig) -> tuple[int, str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--simulations", type=int, default=800)
+    parser.add_argument("--simulations", type=int, default=1200)
     parser.add_argument("--model-path", type=str, default=None,
                         help="Override local ONNX path (skips S3 download).")
     parser.add_argument("--version", type=int, default=None,

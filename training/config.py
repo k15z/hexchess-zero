@@ -29,7 +29,7 @@ class _BaseConfig:
 
     # --- MCTS ---
     num_simulations: int = (
-        800  # quality-over-speed default: deeper search for cleaner self-play targets
+        1200  # push target quality above the current 800-sim floor for cleaner self-play targets
     )
 
     # --- Self-play ---
@@ -62,19 +62,15 @@ class _BaseConfig:
     promote_every_new_positions: int = 2_500_000
     runtime_health_check_every_steps: int = 500
 
-    # --- Imitation mix (bootstrap → decay → off) ---
-    # Fraction of training batches sourced from minimax imitation data
-    # vs self-play. Anchors the policy to the teacher signal during early
-    # training when self-play is noisy — observed: without this, v2 was
-    # WORSE than heuristic. But holding the mix permanently at a fixed
-    # value pins the policy to the minimax teacher long after self-play
-    # has overtaken it; notes/13 calls for a "bootstrap then switch"
-    # schedule. We linearly decay from ``imitation_mix_start`` at v1 to
-    # ``imitation_mix_end`` by ``imitation_mix_decay_end_version``, after
-    # which the trainer is pure self-play.
-    imitation_mix_start: float = 0.3
+    # --- Imitation mix (bootstrap only; replay stays pure self-play) ---
+    # Keep the explicit minimax bootstrap to get a sane v1, but remove
+    # imitation from the replay buffer entirely for the next run. This
+    # isolates the main loop: if v2+ still fail, the cause is no longer
+    # "the trainer kept sampling the teacher" but something in self-play,
+    # search, promotion, or model capacity.
+    imitation_mix_start: float = 0.0
     imitation_mix_end: float = 0.0
-    imitation_mix_decay_end_version: int = 8
+    imitation_mix_decay_end_version: int = 1
 
     # --- Replay window (sublinear KataGo formula, plan §4.1) ---
     window_c: int = 25_000
@@ -94,30 +90,30 @@ class _BaseConfig:
     swa_bn_refresh_batches: int = 32
 
     # --- Playout Cap Randomization (plan §1.4/§5.4) ---
-    # Plan targets 800/160 for production. Observed on kevz-infra at kickoff:
-    # 800-sim self-play yields ~64 pos/min across 4 CPU workers, making the
-    # early promotion cadence multi-day. Dropping to 200/50 in early training gives ~4x
-    # throughput; the learned policy manifests fine at 200 sims for a near-
-    # random-init v1. Ratchet back to 800 once the NN is strong enough that
-    # sim depth limits performance.
-    pcr_p_full: float = 0.5
-    # Production target: 800 sims. Earlier reductions (200, 400) produced
-    # noisy policy targets — v6 self-play is 66% draws (43% insufficient
-    # material) because the search can't find winning tactics at low depth.
-    # At 800 sims the NN's learned prior compounds over the search tree,
-    # producing sharper visit distributions that the network can learn from.
-    # Throughput drops to ~90 pos/min with 22 workers — v7 promotion cadence ~2 days.
-    pcr_n_full: int = 800
+    # Disable PCR for the next run to simplify diagnosis: every training
+    # position comes from the same 1200-sim search regime. This costs
+    # throughput, but it removes the "fast path polluted the trajectory"
+    # confounder from postmortem analysis. Keep the fast-budget knobs wired so
+    # PCR can be re-enabled later without further code changes.
+    pcr_p_full: float = 1.0
+    # Production target: 1200 sims. Earlier reductions (200, 400) produced
+    # noisy policy targets — v6 self-play was 66% draws (43% insufficient
+    # material) because the search couldn't find winning tactics at low depth.
+    # 800 was a safer floor; 1200 is the next quality-focused bump.
+    pcr_n_full: int = 1200
     pcr_n_fast: int = 160
 
     # --- Network architecture ---
-    # Sized to ~5M params: small enough to iterate fast on the cluster + Mac
-    # Studio, big enough to learn the ~4200-move policy without bottlenecking.
-    num_residual_blocks: int = 8
-    num_filters: int = 144
+    # Move to a larger production trunk: 10 residual blocks × 192 filters.
+    # This is materially more expensive than the 8×144 net, so the bet here is
+    # that better policy/value capacity outweighs the self-play throughput hit.
+    num_residual_blocks: int = 10
+    num_filters: int = 192
+    # Keep SE/global-pool bottlenecks modest so the width increase lands mostly
+    # in the main trunk and heads rather than in squeeze/excitation overhead.
     se_channels: int = 32
     global_pool_channels: int = 32
-    global_pool_blocks: tuple[int, ...] = (2, 5)
+    global_pool_blocks: tuple[int, ...] = (3, 7)
     policy_channels: int = 4
     aux_policy_channels: int = 2  # narrower opponent-reply head
     value_channels: int = 32

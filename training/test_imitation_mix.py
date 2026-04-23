@@ -34,9 +34,9 @@ class TestImitationMixDecay:
         assert self.cfg.imitation_mix_for_version(v_far) == self.cfg.imitation_mix_end
 
     def test_hits_zero(self):
-        """With default config (end=0.0), the schedule must reach 0.0."""
-        v_end = self.cfg.imitation_mix_decay_end_version
-        assert self.cfg.imitation_mix_for_version(v_end) == 0.0
+        """With the current bootstrap-only config, replay mix is always 0.0."""
+        for v in (0, 1, self.cfg.imitation_mix_decay_end_version, 10):
+            assert self.cfg.imitation_mix_for_version(v) == 0.0
 
     def test_monotone_non_increasing(self):
         """The schedule must be monotone non-increasing over all versions."""
@@ -71,20 +71,20 @@ class TestImitationMixDecay:
 
     def test_pinned_values(self):
         """Pin exact expected values at key versions for the default config.
-        Default: start=0.3, end=0.0, decay_end_version=8."""
-        assert self.cfg.imitation_mix_start == 0.3
+        Default: bootstrap-only replay mix, so all versions are 0.0."""
+        assert self.cfg.imitation_mix_start == 0.0
         assert self.cfg.imitation_mix_end == 0.0
-        assert self.cfg.imitation_mix_decay_end_version == 8
+        assert self.cfg.imitation_mix_decay_end_version == 1
 
         expected = {
-            0: 0.3,
-            1: 0.3,
-            2: 0.2571428571428571,
-            3: 0.2142857142857143,
-            4: 0.17142857142857143,
-            5: 0.1285714285714286,
-            6: 0.08571428571428572,
-            7: 0.04285714285714287,
+            0: 0.0,
+            1: 0.0,
+            2: 0.0,
+            3: 0.0,
+            4: 0.0,
+            5: 0.0,
+            6: 0.0,
+            7: 0.0,
             8: 0.0,
             10: 0.0,
         }
