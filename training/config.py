@@ -144,11 +144,9 @@ class AsyncConfig(_BaseConfig):
     )
 
     # --- Imitation bootstrap ---
-    # Depth 5 is prohibitively slow on Glinski (>10 min per game observed).
-    # Depth 3 produces still-reasonable targets (captures, obvious tactics)
-    # and is ~30x faster, which lets us get through bootstrap in hours
-    # instead of days.
-    imitation_depth: int = 3
+    # Depth 5 is expensive on Glinski, but produces stronger bootstrap targets
+    # for a clean run when enough worker CPU is available.
+    imitation_depth: int = 5
     imitation_exploration_plies: int = 30  # plies using softmax sampling for diversity
     imitation_temperature: float = (
         200.0  # softmax temperature for policy targets and exploration sampling
