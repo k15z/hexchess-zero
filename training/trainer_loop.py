@@ -235,9 +235,16 @@ class ImitationBuffer(IterableDataset):
     SHUFFLE_BUFFER_SIZE = 20_000
     SAMPLE_PER_FILE = 2048
 
-    def __init__(self, cache_dir: Path, max_positions: int):
+    def __init__(
+        self,
+        cache_dir: Path,
+        max_positions: int,
+        *,
+        policy_sharpen_alpha: float = 1.0,
+    ):
         self.cache_dir = cache_dir
         self.max_positions = max_positions
+        self.policy_sharpen_alpha = policy_sharpen_alpha
         selected = storage.select_recent_files(
             storage.IMITATION_PREFIX, self.max_positions
         )
@@ -251,6 +258,7 @@ class ImitationBuffer(IterableDataset):
         return {
             "files": len(self.files),
             "positions": self.total_positions,
+            "policy_sharpen_alpha": self.policy_sharpen_alpha,
         }
 
     def __iter__(self):
@@ -262,7 +270,10 @@ class ImitationBuffer(IterableDataset):
         while True:
             [chosen] = random.choices(self.files, weights=self.file_weights, k=1)
             try:
-                batch = load_imitation_npz(chosen)
+                batch = load_imitation_npz(
+                    chosen,
+                    policy_sharpen_alpha=self.policy_sharpen_alpha,
+                )
             except (OSError, ValueError):
                 continue
             for sample in _yield_samples_from_batch(batch, self.SAMPLE_PER_FILE):
@@ -297,11 +308,13 @@ class ReplayBuffer(IterableDataset):
         s3_prefix: str = storage.SELFPLAY_PREFIX,
         *,
         imitation_mix: float = 0.0,
+        imitation_policy_sharpen_alpha: float = 1.0,
     ):
         self.cache_dir = cache_dir
         self.window_size = window_size
         self.s3_prefix = s3_prefix
         self.imitation_mix = imitation_mix
+        self.imitation_policy_sharpen_alpha = imitation_policy_sharpen_alpha
         selected = storage.select_recent_files(self.s3_prefix, self.window_size)
         self.files, self.file_weights, self.total_positions = _download_selected_files(
             self.cache_dir, selected
@@ -324,6 +337,7 @@ class ReplayBuffer(IterableDataset):
     def stats(self) -> dict:
         return {"files": len(self.files), "positions": self.total_positions,
                 "window_size": self.window_size,
+                "imitation_policy_sharpen_alpha": self.imitation_policy_sharpen_alpha,
                 "imitation_files": len(self.imitation_files)}
 
     def __iter__(self):
@@ -350,7 +364,10 @@ class ReplayBuffer(IterableDataset):
                     self.imitation_files, weights=self.imitation_weights, k=1
                 )
                 try:
-                    b = load_imitation_npz(chosen)
+                    b = load_imitation_npz(
+                        chosen,
+                        policy_sharpen_alpha=self.imitation_policy_sharpen_alpha,
+                    )
                 except (OSError, ValueError):
                     continue
             else:
@@ -383,6 +400,92 @@ def _collate_samples(samples: list[dict]) -> dict[str, np.ndarray]:
     for k in samples[0].keys():
         out[k] = np.stack([s[k] for s in samples])
     return out
+
+
+def _bootstrap_validation_snapshot(
+    model: torch.nn.Module,
+    dataloader: DataLoader,
+    device: torch.device,
+    *,
+    max_batches: int = 16,
+) -> dict:
+    """Evaluate bootstrap imitation fit on a bounded stream sample."""
+    was_training = model.training
+    model.eval()
+    loss_weights = LossWeights()
+    totals = Counter()
+    sums = Counter()
+    value_pred: list[float] = []
+    value_target: list[float] = []
+    iterator = iter(dataloader)
+
+    with torch.no_grad():
+        for _ in range(max_batches):
+            try:
+                batch_np = next(iterator)
+            except StopIteration:
+                break
+            boards, targets, legal_mask = _batch_to_torch(batch_np, device)
+            legal_mask = legal_mask.bool()
+            preds = model(boards)
+            breakdown = compute_losses(preds, targets, legal_mask=legal_mask, weights=loss_weights)
+
+            batch_size = int(boards.shape[0])
+            totals["rows"] += batch_size
+            totals["batches"] += 1
+            sums["policy_loss"] += breakdown.policy.item() * batch_size
+            sums["value_loss"] += breakdown.value.item() * batch_size
+            sums["stv_loss"] += breakdown.stv.item() * batch_size
+
+            policy_target = targets["policy"].float()
+            target_entropy = -(policy_target * policy_target.clamp_min(1e-12).log()).sum(dim=-1)
+            sums["target_entropy"] += target_entropy.sum().item()
+            masked_logits = preds["policy"].float().masked_fill(~legal_mask, -1e9)
+            pred_policy = torch.softmax(masked_logits, dim=-1)
+            target_best = policy_target.argmax(dim=-1)
+            pred_best = pred_policy.argmax(dim=-1)
+            sums["policy_top1"] += (pred_best == target_best).float().sum().item()
+            top3 = pred_policy.topk(k=min(3, pred_policy.shape[-1]), dim=-1).indices
+            top5 = pred_policy.topk(k=min(5, pred_policy.shape[-1]), dim=-1).indices
+            sums["policy_top3"] += (top3 == target_best[:, None]).any(dim=-1).float().sum().item()
+            sums["policy_top5"] += (top5 == target_best[:, None]).any(dim=-1).float().sum().item()
+            sums["target_best_pred_prob"] += pred_policy.gather(1, target_best[:, None]).sum().item()
+
+            wdl_pred = torch.softmax(preds["wdl"].float(), dim=-1)
+            wdl_target = targets["wdl"].float()
+            sums["value_argmax_acc"] += (
+                wdl_pred.argmax(dim=-1) == wdl_target.argmax(dim=-1)
+            ).float().sum().item()
+            value_pred.extend((wdl_pred[:, 0] - wdl_pred[:, 2]).detach().cpu().tolist())
+            value_target.extend((wdl_target[:, 0] - wdl_target[:, 2]).detach().cpu().tolist())
+
+    if was_training:
+        model.train()
+    rows = int(totals["rows"])
+    if rows == 0:
+        return {"rows": 0}
+    pred_arr = np.asarray(value_pred, dtype=np.float64)
+    target_arr = np.asarray(value_target, dtype=np.float64)
+    corr = 0.0
+    if pred_arr.size > 1 and float(pred_arr.std()) > 0.0 and float(target_arr.std()) > 0.0:
+        corr = float(np.corrcoef(pred_arr, target_arr)[0, 1])
+    policy_loss = sums["policy_loss"] / rows
+    target_entropy_mean = sums["target_entropy"] / rows
+    return {
+        "rows": rows,
+        "batches": int(totals["batches"]),
+        "policy_ce": round(policy_loss, 6),
+        "policy_target_entropy": round(target_entropy_mean, 6),
+        "policy_kl": round(policy_loss - target_entropy_mean, 6),
+        "policy_top1": round(sums["policy_top1"] / rows, 6),
+        "policy_top3": round(sums["policy_top3"] / rows, 6),
+        "policy_top5": round(sums["policy_top5"] / rows, 6),
+        "target_best_pred_prob": round(sums["target_best_pred_prob"] / rows, 6),
+        "value_ce": round(sums["value_loss"] / rows, 6),
+        "value_argmax_acc": round(sums["value_argmax_acc"] / rows, 6),
+        "value_scalar_corr": round(corr, 6),
+        "stv_ce": round(sums["stv_loss"] / rows, 6),
+    }
 
 
 _PROMOTION_META_SAMPLE_FILES = 512
@@ -524,8 +627,9 @@ def _build_version_metadata(
     replay_window_size: int | None,
     imitation_mix: float | None,
     selfplay_tranche_positions: int,
+    bootstrap_validation: dict | None = None,
 ) -> dict:
-    return {
+    metadata = {
         "version": version,
         "timestamp": timestamp,
         "positions_at_promote": positions_at_promote,
@@ -536,6 +640,9 @@ def _build_version_metadata(
         "selfplay_tranche_positions": selfplay_tranche_positions,
         "config_snapshot": asdict(cfg),
     }
+    if bootstrap_validation is not None:
+        metadata["bootstrap_validation"] = bootstrap_validation
+    return metadata
 
 
 def _build_promotion_summary(
@@ -548,6 +655,7 @@ def _build_promotion_summary(
     replay_window_size: int | None,
     imitation_mix: float | None,
     selfplay_tranche_positions: int,
+    bootstrap_validation: dict | None = None,
 ) -> dict:
     summary = {
         "version": version,
@@ -559,6 +667,8 @@ def _build_promotion_summary(
         "imitation_mix": imitation_mix,
         "selfplay_tranche_positions": selfplay_tranche_positions,
     }
+    if bootstrap_validation is not None:
+        summary["bootstrap_validation"] = bootstrap_validation
     if training_phase == "bootstrap" or selfplay_tranche_positions <= 0:
         summary["selfplay_summary"] = {
             "selection_basis": "bootstrap_export_has_no_recent_self_play_tranche",
@@ -602,6 +712,7 @@ def _run_bootstrap(cfg: AsyncConfig, model: torch.nn.Module,
         ds = ImitationBuffer(
             cfg.data_cache_dir / "imitation",
             max_positions=cfg.min_positions_to_start,
+            policy_sharpen_alpha=cfg.imitation_policy_sharpen_alpha,
         )
         dl = DataLoader(
             ds, batch_size=cfg.batch_size, num_workers=0,
@@ -610,6 +721,12 @@ def _run_bootstrap(cfg: AsyncConfig, model: torch.nn.Module,
         return ds, dl
 
     dataset, dataloader = reload_buffer()
+    logger.info(
+        "Bootstrap imitation policy sharpening alpha={:.2f}",
+        cfg.imitation_policy_sharpen_alpha,
+    )
+    pre_validation = _bootstrap_validation_snapshot(model, dataloader, device)
+    logger.info("Bootstrap validation before training: {}", pre_validation)
 
     for pg in optimizer.param_groups:
         pg['lr'] = cfg.bootstrap_learning_rate
@@ -677,6 +794,8 @@ def _run_bootstrap(cfg: AsyncConfig, model: torch.nn.Module,
 
     train_elapsed = time.time() - t0
     logger.info("Bootstrap training complete: {:,} steps in {:.0f}s", total_steps, train_elapsed)
+    post_validation = _bootstrap_validation_snapshot(model, dataloader, device)
+    logger.info("Bootstrap validation after training: {}", post_validation)
 
     # Export and promote v1. Self-play hasn't started yet, so positions = 0.
     new_version = 1
@@ -692,6 +811,10 @@ def _run_bootstrap(cfg: AsyncConfig, model: torch.nn.Module,
         selfplay_tranche_positions=bootstrap_selfplay_positions,
         source_version=0,
         training_phase="bootstrap",
+        bootstrap_validation={
+            "pre_training": pre_validation,
+            "post_training": post_validation,
+        },
     )
 
     logger.info("Promoted bootstrap model to v{} ({:,} steps, {:.0f}s)",
@@ -716,6 +839,7 @@ def _promote_model(
     selfplay_tranche_positions: int = 0,
     source_version: int | None = None,
     training_phase: str = "selfplay",
+    bootstrap_validation: dict | None = None,
 ) -> None:
     """Export ``model`` (or an override ``state_dict``) and publish as latest.
 
@@ -748,6 +872,7 @@ def _promote_model(
         replay_window_size=replay_window_size,
         imitation_mix=imitation_mix,
         selfplay_tranche_positions=selfplay_tranche_positions,
+        bootstrap_validation=bootstrap_validation,
     )
     promotion_summary = _build_promotion_summary(
         version=version,
@@ -758,6 +883,7 @@ def _promote_model(
         replay_window_size=replay_window_size,
         imitation_mix=imitation_mix,
         selfplay_tranche_positions=selfplay_tranche_positions,
+        bootstrap_validation=bootstrap_validation,
     )
 
     storage.put_file(version_onnx_key, local_onnx)
@@ -1129,6 +1255,7 @@ def run_trainer(cfg: AsyncConfig) -> None:
             window_size=window,
             s3_prefix=storage.SELFPLAY_PREFIX,
             imitation_mix=mix,
+            imitation_policy_sharpen_alpha=cfg.imitation_policy_sharpen_alpha,
         )
         dl = DataLoader(
             ds, batch_size=cfg.batch_size, num_workers=0,

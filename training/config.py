@@ -151,6 +151,12 @@ class AsyncConfig(_BaseConfig):
     imitation_temperature: float = (
         200.0  # softmax temperature for policy targets and exploration sampling
     )
+    # Re-sharpen already-generated soft imitation policies. The current depth-5
+    # corpus stores only softmaxed probabilities, not raw minimax scores, so
+    # this approximates lowering target temperature without regenerating data:
+    # p' = normalize(p ** alpha). alpha=4 turns the original T=200 targets into
+    # roughly T=50 targets while preserving teacher ranking.
+    imitation_policy_sharpen_alpha: float = 4.0
     imitation_wdl_lambda: float = 0.5  # blend: λ*sigmoid(eval) + (1-λ)*game_outcome
     bootstrap_steps: int = (
         150_000  # more optimization passes now that bootstrap uses ~2M imitation positions
@@ -267,6 +273,10 @@ class AsyncConfig(_BaseConfig):
         _check(
             self.imitation_mix_decay_end_version >= 1,
             "imitation_mix_decay_end_version must be >= 1",
+        )
+        _check(
+            self.imitation_policy_sharpen_alpha >= 1.0,
+            "imitation_policy_sharpen_alpha must be >= 1.0",
         )
         _check(bool(self.run_id), "run_id must be non-empty")
 
