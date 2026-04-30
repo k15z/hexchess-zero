@@ -10,6 +10,7 @@ from training.data import (
     build_targets_dict,
     load_imitation_npz,
     load_selfplay_npz,
+    sharpen_policy,
 )
 
 
@@ -209,3 +210,32 @@ def test_load_imitation_npz_raises_on_missing_legal_masks(tmp_path: Path):
     _write_imitation_npz(path, include_legal_masks=False)
     with pytest.raises(KeyError, match="legal_masks"):
         load_imitation_npz(path)
+
+
+def test_sharpen_policy_preserves_support_and_normalizes():
+    policy = np.array([[0.5, 0.25, 0.25, 0.0]], dtype=np.float32)
+    sharpened = sharpen_policy(policy, 2.0)
+    assert sharpened.dtype == np.float32
+    assert sharpened[0, 0] > policy[0, 0]
+    assert sharpened[0, 3] == 0.0
+    assert sharpened.sum(axis=1) == pytest.approx([1.0])
+
+
+def test_load_imitation_npz_can_sharpen_policy(tmp_path: Path):
+    path = tmp_path / "imit.npz"
+    boards = np.zeros((1, 22, 11, 11), dtype=np.float32)
+    policies = np.array([[0.5, 0.25, 0.25, 0.0]], dtype=np.float32)
+    legal_masks = np.array([[True, True, True, True]])
+    outcomes = np.array([[1.0, 0.0, 0.0]], dtype=np.float32)
+    np.savez_compressed(
+        str(path),
+        boards=boards,
+        policies=policies,
+        legal_masks=legal_masks,
+        outcomes=outcomes,
+    )
+
+    batch = load_imitation_npz(path, policy_sharpen_alpha=2.0)
+    assert batch.policy[0, 0] > policies[0, 0]
+    assert batch.policy[0, 3] == 0.0
+    assert batch.policy.sum(axis=1) == pytest.approx([1.0])

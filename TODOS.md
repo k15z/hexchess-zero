@@ -10,4 +10,5 @@
 
 ## Do when we wipe S3
 
+- **Regenerate imitation data with raw minimax move scores** — the current bootstrap corpus only stores already-softmaxed policy targets, so we can only re-sharpen them approximately. On the next clean run, store per-legal-move minimax scores (or regenerate targets at a lower temperature) so bootstrap policy targets can be calibrated without losing score-gap information.
 - **Switch to UUIDs for IDs** — replace sequential/string IDs for `game_id`, `instance_id`, `elo_game_run_id`, etc. with UUIDs to avoid collisions and simplify distributed coordination.

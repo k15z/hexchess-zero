@@ -85,6 +85,20 @@ _SELFPLAY_REQUIRED_KEYS = (
 )
 
 
+def sharpen_policy(policy: np.ndarray, alpha: float) -> np.ndarray:
+    """Sharpen row-wise policy distributions while preserving support/ranking."""
+    if alpha == 1.0:
+        return policy.astype(np.float32, copy=False)
+    if alpha < 1.0:
+        raise ValueError("policy sharpen alpha must be >= 1.0")
+    sharpened = np.power(policy.astype(np.float32), alpha)
+    row_sums = sharpened.sum(axis=1, keepdims=True)
+    valid = row_sums[:, 0] > 0.0
+    sharpened[valid] /= row_sums[valid]
+    sharpened[~valid] = policy.astype(np.float32, copy=False)[~valid]
+    return sharpened.astype(np.float32, copy=False)
+
+
 def _check_required_keys(
     data: np.lib.npyio.NpzFile, required: tuple[str, ...], path: Path
 ) -> None:
@@ -104,7 +118,11 @@ def _check_required_keys(
         )
 
 
-def load_imitation_npz(path: str | Path) -> TrainingBatch:
+def load_imitation_npz(
+    path: str | Path,
+    *,
+    policy_sharpen_alpha: float = 1.0,
+) -> TrainingBatch:
     """Load an imitation .npz as a TrainingBatch.
 
     Missing fields are filled with sensible defaults:
@@ -123,7 +141,10 @@ def load_imitation_npz(path: str | Path) -> TrainingBatch:
     _check_required_keys(data, _IMITATION_REQUIRED_KEYS, path)
 
     boards = np.asarray(data["boards"]).astype(np.float32)
-    policy = np.asarray(data["policies"]).astype(np.float32)
+    policy = sharpen_policy(
+        np.asarray(data["policies"]).astype(np.float32),
+        policy_sharpen_alpha,
+    )
     legal_mask = np.asarray(data["legal_masks"]).astype(bool)
     wdl = np.asarray(data["outcomes"]).astype(np.float32)
     n = boards.shape[0]

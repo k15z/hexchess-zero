@@ -23,6 +23,7 @@ def test_defaults_instantiate_and_validate():
     assert cfg.imitation_mix_end == pytest.approx(0.0)
     assert cfg.imitation_mix_for_version(1) == pytest.approx(0.0)
     assert cfg.imitation_mix_for_version(5) == pytest.approx(0.0)
+    assert cfg.imitation_policy_sharpen_alpha == pytest.approx(4.0)
     assert cfg.window_c > 0
     assert cfg.promote_every_new_positions == 2_500_000
 
@@ -51,6 +52,13 @@ def test_validate_rejects_empty_run_id():
     cfg = AsyncConfig()
     cfg.run_id = ""
     with pytest.raises(ValueError, match="run_id"):
+        cfg.validate()
+
+
+def test_validate_rejects_bad_imitation_sharpen_alpha():
+    cfg = AsyncConfig()
+    cfg.imitation_policy_sharpen_alpha = 0.5
+    with pytest.raises(ValueError, match="imitation_policy_sharpen_alpha"):
         cfg.validate()
 
 
