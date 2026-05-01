@@ -190,7 +190,7 @@ impl SearchConfig {
                 n_full: 800,
                 n_fast: 800,
             },
-            use_lcb: true,
+            use_lcb: false,
             draw_utility: 0.0,
             two_fold_as_draw: true,
             rng_seed: None,
@@ -1230,7 +1230,7 @@ impl MctsSearch {
         }
 
         let best_child_idx = if temperature < 1e-4 {
-            // Greedy: prefer LCB when enabled (eval mode). Falls back to
+            // Greedy: prefer LCB when explicitly enabled. Falls back to
             // visit-max if no child has any visits yet.
             if self.config.use_lcb {
                 self.lcb_best_child_idx(&root_children).unwrap_or_else(|| {
@@ -1479,7 +1479,7 @@ impl MctsSearch {
     /// Build an auxiliary policy target representing the visit distribution
     /// over the opponent's reply (the grandchildren of the root, under the
     /// child `extract_result`'s greedy branch would play). Uses LCB selection
-    /// when `config.use_lcb` is set to stay consistent with the played move
+    /// when `config.use_lcb` is explicitly set to stay consistent with the played move
     /// in eval mode, otherwise falls back to visit-max. Returns `None` if
     /// the root has no children, or the selected child is unexpanded / has
     /// no visits.
@@ -2262,7 +2262,7 @@ mod tests {
         assert_eq!(e.fpu_reduction, 0.2);
         assert!(e.dirichlet.is_none());
         assert_eq!(e.forced_playout_k, 0.0);
-        assert!(e.use_lcb);
+        assert!(!e.use_lcb);
         assert_eq!(e.pcr.p_full, 1.0);
         assert_eq!(e.draw_utility, 0.0);
     }
@@ -2576,15 +2576,13 @@ mod tests {
         assert_eq!(best.to, legal[1].to);
     }
 
-    /// Regression: `SearchConfig::eval()` sets `use_lcb = true`, but until we
-    /// fixed extract_result, greedy selection still went through
-    /// `max_by_key(visit_count)`. Drives extract_result end-to-end and
-    /// asserts the LCB winner is played even when visit-max would not choose
-    /// it — and that the policy target still tracks visit counts.
+    /// LCB remains available as an explicit opt-in, but eval defaults use
+    /// visit-max because LCB was too eager to select low-visit moves in early
+    /// bootstrap models. This verifies the opt-in path still works.
     #[test]
     fn extract_result_honors_lcb_when_enabled() {
         let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
-        search.set_config(SearchConfig::eval());
+        search.config_mut().use_lcb = true;
         assert!(search.config().use_lcb);
 
         let state = GameState::new();
@@ -2749,14 +2747,14 @@ mod tests {
         assert!((sum - 1.0).abs() < 1e-4, "aux sum = {sum}");
     }
 
-    /// Invariant: under eval mode, `aux_opponent_policy` must describe the
+    /// Invariant: when LCB is enabled, `aux_opponent_policy` must describe the
     /// opponent replies under the child that `extract_result` actually plays
     /// — not the visit-max child, which can differ under LCB. Regression
     /// guard for the divergence Codex flagged on PR #106.
     #[test]
-    fn aux_opponent_policy_matches_lcb_played_child_in_eval_mode() {
+    fn aux_opponent_policy_matches_lcb_played_child_when_enabled() {
         let mut search = MctsSearch::new(Box::new(HeuristicEvaluator::default()));
-        search.set_config(SearchConfig::eval());
+        search.config_mut().use_lcb = true;
 
         let state = GameState::new();
         let legal = state.legal_moves();
