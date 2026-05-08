@@ -8,7 +8,7 @@ Bucket layout:
     models/latest.meta.json               {"version": N, "timestamp": "..."}
     models/approved.onnx                  Model currently approved for self-play
     models/approved.meta.json             {"version": N, "timestamp": "..."}
-    models/checkpoint.pt                  PyTorch training checkpoint
+    models/checkpoint.pt                  PyTorch weights for the last promoted model
     models/versions/{N}.onnx              Immutable version snapshots
     models/versions/{N}.pt                Immutable version checkpoints
     models/versions/{N}.meta.json         Immutable per-version metadata
@@ -16,6 +16,8 @@ Bucket layout:
     data/selfplay/v{N}/{ts}_{rand}_n{count}.npz
     data/imitation/{ts}_{rand}_n{count}.npz
 
+    state/trainer/live_weights.pt         Latest in-progress trainer weights
+    state/trainer/live_weights.meta.json  Metadata for live_weights.pt
     state/evals/v{N}/gate_summary.json
     state/evals/v{N}/benchmark_summary.json
     state/evals/v{N}/decision.json
@@ -55,6 +57,8 @@ EVALS_PREFIX = "state/evals/"
 RUNS_PREFIX = "state/runs/"
 HEARTBEATS_PREFIX = "heartbeats/"
 TRAINER_METRICS = "state/trainer_metrics.json"
+TRAINER_LIVE_WEIGHTS = "state/trainer/live_weights.pt"
+TRAINER_LIVE_WEIGHTS_META = "state/trainer/live_weights.meta.json"
 BENCHMARK_RESULTS_PREFIX = "benchmarks/results/"
 EVAL_PROMOTION_LOCK = f"{EVALS_PREFIX}promotion.lock"
 

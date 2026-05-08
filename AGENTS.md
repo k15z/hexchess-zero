@@ -63,7 +63,7 @@ AlphaZero-style self-play training loop. All shared state lives in S3 (DigitalOc
 
 - **storage.py** - S3 abstraction layer. Key constants, upload/download helpers, position counting from filenames. All shared I/O goes through this module.
 - **worker.py** - Continuous self-play loop. Polls S3 for model updates, plays games using MCTS, flushes `.npz` batches to S3. During bootstrap (no model), generates minimax imitation data with process-pool parallelism.
-- **trainer_loop.py** - Continuous trainer. Samples from a sliding-window replay buffer (downloads from S3), emits periodic trainer summaries for observability, and promotes as soon as the fresh-position threshold is met at a reload/poll boundary. KataGo-style token bucket throttles training to match data production rate.
+- **trainer_loop.py** - Continuous trainer. Samples from a sliding-window replay buffer (downloads from S3), emits periodic trainer summaries for observability, and promotes as soon as the fresh-position threshold is met at a reload/poll boundary. KataGo-style token bucket throttles training to match data production rate. Use **trainer summary** for the observability cadence (`summary_interval_steps`, currently 1000 steps) and **candidate promotion threshold** for the fresh-self-play gate (`promote_every_new_positions`, currently 2_500_000 positions since the last promotion); these are different concepts and should not be conflated.
 - **model.py** - `HexChessNet`: 8 SE residual blocks (144 filters) with KataGo-style global pooling at blocks 2 and 5. Input `(22, 11, 11)` in STM frame. Heads: main policy, terminal WDL value, moves-left (MLH), short-term value (STV), and auxiliary opponent policy.
 - **export.py** - PyTorch -> ONNX export.
 - **elo.py** - Shared evaluation play types: `Player` protocol, `MinimaxPlayer`, `MctsPlayer`, game play with per-player timing, plus legacy OpenSkill helpers retained for offline scripts.
@@ -91,7 +91,7 @@ All training artifacts are stored in S3 (configured via `.env`):
 models/
   latest.onnx              # current model for inference
   latest.meta.json         # {"version": N, "timestamp": "...", "positions_at_promote": M}
-  checkpoint.pt            # PyTorch training checkpoint
+  checkpoint.pt            # PyTorch weights for the last promoted model; not a live in-progress trainer snapshot
   versions/{N}.onnx        # immutable version snapshots
 
 data/
@@ -100,6 +100,8 @@ data/
   imitation/{ts}_{rand}_n{count}.npz
 
 state/
+  trainer/live_weights.pt         # latest in-progress trainer weights for ad-hoc inspection
+  trainer/live_weights.meta.json  # metadata for live_weights.pt (summary, steps, timestamp, published_version)
   evals/v{N}/gate_summary.json
   evals/v{N}/benchmark_summary.json
   evals/v{N}/decision.json
@@ -114,6 +116,8 @@ heartbeats/
 ```
 
 Position count is encoded in each `.npz` filename (`_n{count}`) so the trainer can count positions via S3 LIST without opening files.
+
+`models/checkpoint.pt` deserves special care: despite the generic name, it is currently written only during `_promote_model(...)` and is effectively an alias for the most recently promoted model's PyTorch weights. Trainer startup prefers `models/versions/{current_version}.pt` when present and only falls back to `models/checkpoint.pt` if the versioned `.pt` is missing. Do not assume `checkpoint.pt` reflects the trainer's current in-memory state or provides resumable optimizer/training state.
 
 ## Workflow
 
@@ -148,6 +152,10 @@ kubectl set image deployment/evaluation-service evaluation=ghcr.io/k15z/hexchess
 - Move indices must stay deterministic - any change to the move table breaks all existing training data and models
 - Board tensor embedding: `col = q + 5, row = r + 5` maps hex cells into the 11x11 grid
 - S3 key constants are defined in `training/storage.py` - never use raw string keys elsewhere
+- Use precise training-cadence terms:
+  - **trainer summary** = one observability/reporting chunk of optimizer work controlled by `summary_interval_steps` (currently 1000, but configurable)
+  - **candidate promotion threshold** = the fresh-self-play gate controlled by `promote_every_new_positions` (currently 2_500_000, but configurable)
+  - A trainer summary is not a candidate, and crossing one summary boundary does not imply a new model export
 - `.env` file contains S3 credentials (BUCKET_NAME, ACCESS_KEY, SECRET_KEY, ENDPOINT) - gitignored, never committed
 - MCTS evaluations and tournaments must use >=800 simulations (the production default, matching AlphaZero/Lc0). Lower sim counts produce misleading results because the NN's learned policy advantage only compounds with sufficient search depth
 - The k3s cluster nodes (`kevz-infra-*`) are Hetzner servers. Never delete Hetzner servers without filtering by name - always exclude `kevz-infra-*` to avoid destroying the cluster
