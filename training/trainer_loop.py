@@ -1139,6 +1139,39 @@ def _publish_trainer_metrics(
     _check_loss_stall(history)
 
 
+def _publish_live_weights(
+    cfg: AsyncConfig,
+    model: torch.nn.Module,
+    *,
+    published_version: int,
+    summary: int,
+    total_steps: int,
+    n_total: int,
+    positions_at_last_promote: int,
+) -> None:
+    """Publish the current in-memory trainer weights for ad-hoc inspection.
+
+    This artifact is intentionally separate from ``models/checkpoint.pt``:
+    it is a best-effort snapshot of the live trainer state, not a promoted
+    model and not a resumable optimizer checkpoint.
+    """
+    cfg.ensure_cache_dirs()
+    local_pt = cfg.model_cache_dir / "live_weights.pt"
+    torch.save(model.state_dict(), local_pt)
+    storage.put_file(storage.TRAINER_LIVE_WEIGHTS, local_pt)
+    storage.put_json(
+        storage.TRAINER_LIVE_WEIGHTS_META,
+        {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "published_version": published_version,
+            "summary": summary,
+            "total_steps": total_steps,
+            "n_total": n_total,
+            "positions_at_last_promote": positions_at_last_promote,
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # Main trainer loop
 # ---------------------------------------------------------------------------
@@ -1546,3 +1579,15 @@ def run_trainer(cfg: AsyncConfig) -> None:
             )
         except Exception as _exc:  # noqa: BLE001
             logger.warning("Failed to publish trainer metrics to S3: {}", _exc)
+        try:
+            _publish_live_weights(
+                cfg,
+                model,
+                published_version=current_version,
+                summary=summary,
+                total_steps=total_steps_all_time,
+                n_total=n_total,
+                positions_at_last_promote=positions_at_last_promote,
+            )
+        except Exception as _exc:  # noqa: BLE001
+            logger.warning("Failed to publish live trainer weights to S3: {}", _exc)

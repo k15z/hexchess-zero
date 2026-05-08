@@ -150,3 +150,44 @@ def test_promote_model_writes_versioned_metadata_and_summary(monkeypatch, tmp_pa
     assert json_writes[storage.promotion_summary_key(7)] == {"version": 7, "summary": "ok"}
     assert json_writes[storage.LATEST_META]["version_metadata_key"] == storage.version_meta_key(7)
     assert json_writes[storage.LATEST_META]["promotion_summary_key"] == storage.promotion_summary_key(7)
+
+
+def test_publish_live_weights_writes_separate_inspection_artifact(monkeypatch, tmp_path):
+    cfg = AsyncConfig(run_id="test-run")
+    monkeypatch.setattr(config_module, "_cache_root", lambda: tmp_path)
+
+    file_uploads: list[str] = []
+    json_writes: dict[str, dict] = {}
+
+    monkeypatch.setattr(
+        storage,
+        "put_file",
+        lambda key, local_path: file_uploads.append(key),
+    )
+    monkeypatch.setattr(
+        storage,
+        "put_json",
+        lambda key, obj: json_writes.setdefault(key, obj),
+    )
+
+    model = torch.nn.Linear(1, 1)
+    trainer_loop._publish_live_weights(
+        cfg,
+        model,
+        published_version=3,
+        summary=12,
+        total_steps=12_345,
+        n_total=987_654,
+        positions_at_last_promote=500_000,
+    )
+
+    assert file_uploads == [storage.TRAINER_LIVE_WEIGHTS]
+    assert json_writes[storage.TRAINER_LIVE_WEIGHTS_META]["published_version"] == 3
+    assert json_writes[storage.TRAINER_LIVE_WEIGHTS_META]["summary"] == 12
+    assert json_writes[storage.TRAINER_LIVE_WEIGHTS_META]["total_steps"] == 12_345
+    assert json_writes[storage.TRAINER_LIVE_WEIGHTS_META]["n_total"] == 987_654
+    assert (
+        json_writes[storage.TRAINER_LIVE_WEIGHTS_META]["positions_at_last_promote"]
+        == 500_000
+    )
+    assert "timestamp" in json_writes[storage.TRAINER_LIVE_WEIGHTS_META]
