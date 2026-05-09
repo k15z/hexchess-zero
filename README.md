@@ -83,7 +83,7 @@ All parameters live in `training/config.py`. Key dials:
 | `reload_interval` | 1,000 | Re-scan S3 every N steps to pick up fresh worker output and re-check promotion eligibility. |
 | `max_train_steps_per_new_data` | 4.0 | KataGo-style token bucket: target training passes per new data point. Throttles the trainer when workers fall behind. |
 | `min_positions_to_start` | 200,000 | Bootstrap gate: self-play training won't start until this many positions exist. |
-| `promote_every_new_positions` | 2,500,000 | Minimum fresh self-play positions required between promotions. |
+| `promote_every_new_positions` | 1,000,000 | Minimum fresh self-play positions required between candidate exports after v1 catch-up. |
 | `imitation_mix_start` / `imitation_mix_end` / `imitation_mix_decay_end_version` | 0.3 / 0.0 / 5 | Early versions mix in minimax imitation data, then decay to pure self-play. |
 
 #### Bootstrap (Imitation)

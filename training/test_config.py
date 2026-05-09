@@ -25,7 +25,7 @@ def test_defaults_instantiate_and_validate():
     assert cfg.imitation_mix_for_version(5) == pytest.approx(0.0)
     assert cfg.imitation_policy_sharpen_alpha == pytest.approx(4.0)
     assert cfg.window_c > 0
-    assert cfg.promote_every_new_positions == 2_500_000
+    assert cfg.promote_every_new_positions == 1_000_000
 
 
 def test_run_id_env_override(monkeypatch):

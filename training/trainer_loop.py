@@ -96,7 +96,67 @@ def _read_positions_at_last_promote() -> int:
     except KeyError:
         # No metadata at all — bootstrap case
         return 0
+    if "positions_at_promote" not in meta and int(meta.get("version", 0)) <= 1:
+        logger.warning(
+            "latest.meta.json for v{} is missing positions_at_promote; "
+            "treating the v1 catch-up watermark as 0",
+            meta.get("version", 0),
+        )
+        return 0
     return meta["positions_at_promote"]
+
+
+def _use_full_selfplay_window(cfg: AsyncConfig, version: int) -> bool:
+    """Return whether this trainer version should train over all self-play data."""
+    return version < cfg.train_all_selfplay_until_version
+
+
+def _replay_window_size(cfg: AsyncConfig, n_total: int, version: int) -> int:
+    """Return the effective replay-window size for a trainer version."""
+    if _use_full_selfplay_window(cfg, version):
+        return n_total
+    return sublinear_window_size(
+        n_total, c=cfg.window_c, alpha=cfg.window_alpha, beta=cfg.window_beta,
+    )
+
+
+def _catchup_target_steps(cfg: AsyncConfig, n_total: int) -> int:
+    """Optimizer steps needed for the v1 corpus catch-up pass budget."""
+    if n_total <= 0:
+        return 0
+    samples = n_total * cfg.catchup_passes_over_existing_selfplay
+    return max(1, int(samples // cfg.batch_size))
+
+
+def _catchup_candidate_due(
+    cfg: AsyncConfig,
+    *,
+    current_version: int,
+    catchup_target_steps: int,
+    catchup_steps_completed: int,
+) -> bool:
+    return (
+        _use_full_selfplay_window(cfg, current_version)
+        and catchup_target_steps > 0
+        and catchup_steps_completed >= catchup_target_steps
+    )
+
+
+def _make_train_bucket_for_version(cfg: AsyncConfig, version: int) -> TrainBucket:
+    if _use_full_selfplay_window(cfg, version):
+        target_passes = cfg.catchup_passes_over_existing_selfplay
+        max_seed = None
+        max_tokens = None
+    else:
+        target_passes = cfg.max_train_steps_per_new_data
+        max_seed = cfg.summary_interval_steps * cfg.batch_size
+        max_tokens = float(cfg.summary_interval_steps * cfg.batch_size)
+    return TrainBucket(
+        target_passes,
+        batch_size=cfg.batch_size,
+        max_seed=max_seed,
+        max_tokens=max_tokens,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +233,29 @@ class TrainBucket:
         # `consume()` drives `_tokens` negative on a step we should have
         # waited out.
         return self._tokens >= self.batch_size
+
+    def state_dict(self) -> dict:
+        return {
+            "target_passes": self.target_passes,
+            "batch_size": self.batch_size,
+            "max_seed": self._max_seed,
+            "max_tokens": self._max_tokens,
+            "tokens": self._tokens,
+            "prev_positions": self._prev_positions,
+            "cumulative_positions": self._cumulative_positions,
+            "last_new": self._last_new,
+            "last_added": self._last_added,
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        if int(state.get("batch_size", self.batch_size)) != self.batch_size:
+            raise ValueError("cannot restore TrainBucket with different batch_size")
+        self._tokens = float(state.get("tokens", 0.0))
+        prev = state.get("prev_positions")
+        self._prev_positions = None if prev is None else int(prev)
+        self._cumulative_positions = int(state.get("cumulative_positions", 0))
+        self._last_new = int(state.get("last_new", 0))
+        self._last_added = float(state.get("last_added", 0.0))
 
 
 # ---------------------------------------------------------------------------
@@ -797,10 +880,10 @@ def _run_bootstrap(cfg: AsyncConfig, model: torch.nn.Module,
     post_validation = _bootstrap_validation_snapshot(model, dataloader, device)
     logger.info("Bootstrap validation after training: {}", post_validation)
 
-    # Export and promote v1. Self-play hasn't started yet, so positions = 0.
+    # Export and approve v1. Self-play hasn't started yet, so positions = 0.
     new_version = 1
     bootstrap_selfplay_positions = storage.count_positions(storage.SELFPLAY_PREFIX)
-    _promote_model(
+    _publish_candidate_model(
         cfg,
         model,
         new_version,
@@ -817,16 +900,16 @@ def _run_bootstrap(cfg: AsyncConfig, model: torch.nn.Module,
         },
     )
 
-    logger.info("Promoted bootstrap model to v{} ({:,} steps, {:.0f}s)",
+    logger.info("Published and approved bootstrap model v{} ({:,} steps, {:.0f}s)",
                 new_version, total_steps, train_elapsed)
     return new_version
 
 
 # ---------------------------------------------------------------------------
-# Model promotion
+# Candidate publishing
 # ---------------------------------------------------------------------------
 
-def _promote_model(
+def _publish_candidate_model(
     cfg: AsyncConfig,
     model: torch.nn.Module,
     version: int,
@@ -847,8 +930,8 @@ def _promote_model(
     to disk and exported to ONNX instead of ``model.state_dict()``. The
     live trainer weights are not mutated.
 
-    ``positions_at_promote`` is persisted in the meta.json so the trainer
-    can resume the promotion cadence watermark after a restart.
+    ``positions_at_promote`` is kept for bucket compatibility with existing
+    v1 metadata; it is the self-play position count at candidate export time.
     """
     cfg.ensure_cache_dirs()
 
@@ -965,7 +1048,7 @@ def _promotion_check_ready(
     return new_positions >= threshold and total_steps > last_attempt_step
 
 
-def _maybe_promote(
+def _maybe_publish_candidate(
     cfg: AsyncConfig,
     model: torch.nn.Module,
     *,
@@ -978,17 +1061,33 @@ def _maybe_promote(
     total_steps_all_time: int,
     last_promotion_attempt_step: int,
     log_skip: bool = False,
+    force_candidate: bool = False,
+    force_reason: str | None = None,
 ) -> tuple[int, int, int, bool]:
-    """Export/promote if the current trainer state is eligible.
+    """Export a new candidate if the current trainer state is eligible.
 
     Returns ``(current_version, positions_at_last_promote,
     last_promotion_attempt_step, promoted)`` with updated values.
     """
     new_positions = n_total - positions_at_last_promote
-    if new_positions < cfg.promote_every_new_positions:
+    if _use_full_selfplay_window(cfg, current_version) and not force_candidate:
         if log_skip:
             logger.info(
-                "Promotion not yet eligible — only {:,} new positions since v{} "
+                "Candidate export deferred in v{} full-corpus mode until "
+                "catch-up passes complete",
+                current_version,
+            )
+        return (
+            current_version,
+            positions_at_last_promote,
+            last_promotion_attempt_step,
+            False,
+        )
+
+    if not force_candidate and new_positions < cfg.promote_every_new_positions:
+        if log_skip:
+            logger.info(
+                "Candidate export not yet eligible — only {:,} new positions since v{} "
                 "(need {:,})",
                 new_positions, current_version, cfg.promote_every_new_positions,
             )
@@ -999,7 +1098,7 @@ def _maybe_promote(
             False,
         )
 
-    if not _promotion_check_ready(
+    if not force_candidate and not _promotion_check_ready(
         new_positions=new_positions,
         threshold=cfg.promote_every_new_positions,
         total_steps=total_steps_all_time,
@@ -1017,7 +1116,7 @@ def _maybe_promote(
     # Build SWA candidate weights (fall back to raw if buffer empty).
     averaged_sd = swa_buf.average()
     if averaged_sd is None:
-        logger.info("SWA buffer empty, using raw trainer weights for promotion")
+        logger.info("SWA buffer empty, using raw trainer weights for candidate export")
         averaged_sd = {k: v.detach().cpu().clone()
                        for k, v in model.state_dict().items()}
     else:
@@ -1038,10 +1137,15 @@ def _maybe_promote(
         del scratch
 
     new_version = current_version + 1
-    replay_window_size = sublinear_window_size(
-        n_total, c=cfg.window_c, alpha=cfg.window_alpha, beta=cfg.window_beta,
-    )
-    _promote_model(
+    if force_candidate:
+        logger.info(
+            "Candidate export forced for v{} -> v{}: {}",
+            current_version,
+            current_version + 1,
+            force_reason or "manual trainer condition",
+        )
+    replay_window_size = _replay_window_size(cfg, n_total, current_version)
+    _publish_candidate_model(
         cfg, model, new_version,
         state_dict=averaged_sd,
         positions_at_promote=n_total,
@@ -1052,7 +1156,7 @@ def _maybe_promote(
         training_phase="selfplay",
     )
     logger.info(
-        "Promoted to v{} | total steps: {:,}",
+        "Published candidate v{} | total steps: {:,}",
         new_version, total_steps_all_time,
     )
     return new_version, n_total, last_promotion_attempt_step, True
@@ -1172,6 +1276,136 @@ def _publish_live_weights(
     )
 
 
+def _move_optimizer_state_to_device(
+    optimizer: optim.Optimizer,
+    device: torch.device,
+) -> None:
+    for state in optimizer.state.values():
+        for key, value in list(state.items()):
+            if isinstance(value, torch.Tensor):
+                state[key] = value.to(device)
+
+
+def _optimizer_state_dict_to_cpu(optimizer: optim.Optimizer) -> dict:
+    def _copy_to_cpu(value):
+        if isinstance(value, torch.Tensor):
+            return value.detach().to("cpu").clone()
+        if isinstance(value, dict):
+            return {k: _copy_to_cpu(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_copy_to_cpu(v) for v in value]
+        if isinstance(value, tuple):
+            return tuple(_copy_to_cpu(v) for v in value)
+        return value
+
+    return _copy_to_cpu(optimizer.state_dict())
+
+
+def _load_trainer_resume_checkpoint(
+    cfg: AsyncConfig,
+    *,
+    current_version: int,
+    model: torch.nn.Module,
+    optimizer: optim.Optimizer,
+    bucket: TrainBucket,
+    swa_buf: SwaSnapshotBuffer,
+    bn_refresh_batches: deque[torch.Tensor],
+    device: torch.device,
+) -> dict | None:
+    """Restore in-progress trainer state if it matches the current candidate."""
+    if storage.head(storage.TRAINER_RESUME_CHECKPOINT) is None:
+        return None
+
+    cfg.ensure_cache_dirs()
+    local_pt = cfg.model_cache_dir / "trainer_resume_checkpoint.pt"
+    storage.get_file(storage.TRAINER_RESUME_CHECKPOINT, local_pt)
+    state = torch.load(local_pt, map_location=device, weights_only=False)
+    checkpoint_version = int(state.get("current_version", -1))
+    if checkpoint_version != current_version:
+        logger.info(
+            "Ignoring trainer resume checkpoint for v{}; latest candidate is v{}",
+            checkpoint_version,
+            current_version,
+        )
+        return None
+
+    model.load_state_dict(state["model_state"])
+    optimizer.load_state_dict(state["optimizer_state"])
+    _move_optimizer_state_to_device(optimizer, device)
+    bucket.load_state_dict(state.get("bucket_state", {}))
+    swa_buf.load_state_dict(state.get("swa_state", {}))
+    bn_refresh_batches.clear()
+    for batch in state.get("bn_refresh_batches", []):
+        bn_refresh_batches.append(batch.detach().to("cpu").clone())
+    logger.info(
+        "Restored trainer resume checkpoint for v{} at {:,} optimizer steps",
+        current_version,
+        int(state.get("total_steps_all_time", 0)),
+    )
+    return state
+
+
+def _publish_trainer_resume_checkpoint(
+    cfg: AsyncConfig,
+    model: torch.nn.Module,
+    optimizer: optim.Optimizer,
+    *,
+    current_version: int,
+    report_index: int,
+    total_steps_all_time: int,
+    fresh_run_steps: int,
+    positions_at_last_promote: int,
+    last_promotion_attempt_step: int,
+    bucket: TrainBucket,
+    swa_buf: SwaSnapshotBuffer,
+    samples_since_last_snapshot: int,
+    catchup_steps_completed: int,
+    bn_refresh_batches: deque[torch.Tensor],
+    n_total: int,
+) -> None:
+    """Persist enough trainer state to resume without throwing away optimizer work."""
+    cfg.ensure_cache_dirs()
+    local_pt = cfg.model_cache_dir / "trainer_resume_checkpoint.pt"
+    checkpoint = {
+        "format_version": 1,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "current_version": current_version,
+        "report_index": report_index,
+        "total_steps_all_time": total_steps_all_time,
+        "fresh_run_steps": fresh_run_steps,
+        "positions_at_last_promote": positions_at_last_promote,
+        "last_promotion_attempt_step": last_promotion_attempt_step,
+        "n_total": n_total,
+        "model_state": {
+            k: v.detach().to("cpu").clone() for k, v in model.state_dict().items()
+        },
+        "optimizer_state": _optimizer_state_dict_to_cpu(optimizer),
+        "bucket_state": bucket.state_dict(),
+        "swa_state": swa_buf.state_dict(),
+        "samples_since_last_snapshot": samples_since_last_snapshot,
+        "catchup_steps_completed": catchup_steps_completed,
+        "bn_refresh_batches": [
+            batch.detach().to("cpu").clone() for batch in bn_refresh_batches
+        ],
+    }
+    torch.save(checkpoint, local_pt)
+    storage.put_file(storage.TRAINER_RESUME_CHECKPOINT, local_pt)
+    storage.put_json(
+        storage.TRAINER_RESUME_CHECKPOINT_META,
+        {
+            "timestamp": checkpoint["timestamp"],
+            "current_version": current_version,
+            "report_index": report_index,
+            "total_steps_all_time": total_steps_all_time,
+            "fresh_run_steps": fresh_run_steps,
+            "positions_at_last_promote": positions_at_last_promote,
+            "n_total": n_total,
+            "bucket_tokens": bucket.tokens,
+            "catchup_steps_completed": catchup_steps_completed,
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # Main trainer loop
 # ---------------------------------------------------------------------------
@@ -1193,14 +1427,13 @@ def run_trainer(cfg: AsyncConfig) -> None:
     else:
         device = torch.device("cpu")
     current_n_total = storage.count_positions(storage.SELFPLAY_PREFIX)
-    initial_window = sublinear_window_size(
-        current_n_total, c=cfg.window_c, alpha=cfg.window_alpha, beta=cfg.window_beta,
-    )
-    logger.info("Trainer starting on device: {} | N_total={:,} window={:,} "
-                "steps/summary={}",
-                device, current_n_total, initial_window, cfg.summary_interval_steps)
 
     current_version = _read_model_version()
+    initial_window = _replay_window_size(cfg, current_n_total, current_version)
+    logger.info("Trainer starting on device: {} | N_total={:,} window={:,} "
+                "steps/summary={} full_corpus_mode={}",
+                device, current_n_total, initial_window, cfg.summary_interval_steps,
+                _use_full_selfplay_window(cfg, current_version))
 
     model = build_model(cfg).to(device)
     if current_version > 0:
@@ -1240,10 +1473,7 @@ def run_trainer(cfg: AsyncConfig) -> None:
     summary = 0
     total_steps_all_time = 0
     fresh_run_steps = 0  # for LR warmup — resets on promotion is NOT needed, it's "fresh run"
-    bucket = TrainBucket(cfg.max_train_steps_per_new_data,
-                         batch_size=cfg.batch_size,
-                         max_seed=cfg.summary_interval_steps * cfg.batch_size,
-                         max_tokens=float(cfg.summary_interval_steps * cfg.batch_size))
+    bucket = _make_train_bucket_for_version(cfg, current_version)
 
     # SWA snapshot buffer + sample counter.
     # Build EMA-derived promotion weights from config: w_i = decay^i, then normalize.
@@ -1270,14 +1500,42 @@ def run_trainer(cfg: AsyncConfig) -> None:
     bn_refresh_batches: deque[torch.Tensor] = deque(
         maxlen=cfg.swa_bn_refresh_batches
     )
+    catchup_steps_completed = 0
+
+    restored = _load_trainer_resume_checkpoint(
+        cfg,
+        current_version=current_version,
+        model=model,
+        optimizer=optimizer,
+        bucket=bucket,
+        swa_buf=swa_buf,
+        bn_refresh_batches=bn_refresh_batches,
+        device=device,
+    )
+    if restored is not None:
+        summary = int(restored.get("report_index", summary))
+        total_steps_all_time = int(
+            restored.get("total_steps_all_time", total_steps_all_time)
+        )
+        fresh_run_steps = int(restored.get("fresh_run_steps", fresh_run_steps))
+        positions_at_last_promote = int(
+            restored.get("positions_at_last_promote", positions_at_last_promote)
+        )
+        last_promotion_attempt_step = int(
+            restored.get("last_promotion_attempt_step", last_promotion_attempt_step)
+        )
+        samples_since_last_snapshot = int(
+            restored.get("samples_since_last_snapshot", samples_since_last_snapshot)
+        )
+        catchup_steps_completed = int(
+            restored.get("catchup_steps_completed", catchup_steps_completed)
+        )
 
     ac_dtype = _autocast_dtype(device)
 
     def reload_buffer() -> tuple[ReplayBuffer, DataLoader, int]:
         n_total = storage.count_positions(storage.SELFPLAY_PREFIX)
-        window = sublinear_window_size(
-            n_total, c=cfg.window_c, alpha=cfg.window_alpha, beta=cfg.window_beta,
-        )
+        window = _replay_window_size(cfg, n_total, current_version)
         # Imitation mix is decayed against the *current* model version
         # (captured from the enclosing scope, which advances on promotion)
         # so the teacher signal fades as self-play matures — see
@@ -1308,19 +1566,47 @@ def run_trainer(cfg: AsyncConfig) -> None:
 
         logger.info("")
         logger.info("=" * 60)
-        logger.info("Trainer summary {} | model v{} | N_total={:,} window={:,}",
-                    summary, current_version, n_total, dataset.window_size)
+        logger.info(
+            "Trainer report {} | model v{} | N_total={:,} window={:,} "
+            "full_corpus_mode={}",
+            summary,
+            current_version,
+            n_total,
+            dataset.window_size,
+            _use_full_selfplay_window(cfg, current_version),
+        )
         logger.info("=" * 60)
 
         bucket.update(n_total, window_size=dataset.window_size)
 
-        if not bucket.has_budget():
+        catchup_target_steps = 0
+        if _use_full_selfplay_window(cfg, current_version):
+            catchup_target_steps = _catchup_target_steps(cfg, n_total)
+            logger.info(
+                "V1 catch-up: training over all {:,} self-play samples; "
+                "{:,}/{:,} steps before v{} candidate",
+                dataset.total_positions,
+                catchup_steps_completed,
+                catchup_target_steps,
+                current_version + 1,
+            )
+
+        stop_report_for_candidate = _catchup_candidate_due(
+            cfg,
+            current_version=current_version,
+            catchup_target_steps=catchup_target_steps,
+            catchup_steps_completed=catchup_steps_completed,
+        )
+
+        if not stop_report_for_candidate and not bucket.has_budget():
             logger.info("Train bucket empty ({:.0f} tokens), waiting for new data...",
                         bucket.tokens)
             while not bucket.has_budget():
                 time.sleep(30)
                 n_total = storage.count_positions(storage.SELFPLAY_PREFIX)
                 bucket.update(n_total, window_size=dataset.window_size)
+                if _use_full_selfplay_window(cfg, current_version):
+                    catchup_target_steps = _catchup_target_steps(cfg, n_total)
                 if not bucket.has_budget():
                     logger.info("  Still waiting... bucket={:.0f} tokens, {:,} cumulative",
                                 bucket.tokens, bucket._cumulative_positions)
@@ -1347,19 +1633,32 @@ def run_trainer(cfg: AsyncConfig) -> None:
         logger.info("Training for {} steps (batch_size={})...",
                     cfg.summary_interval_steps, cfg.batch_size)
 
-        while step < cfg.summary_interval_steps:
+        while step < cfg.summary_interval_steps and not stop_report_for_candidate:
             if not bucket.has_budget():
+                if _catchup_candidate_due(
+                    cfg,
+                    current_version=current_version,
+                    catchup_target_steps=catchup_target_steps,
+                    catchup_steps_completed=catchup_steps_completed,
+                ):
+                    stop_report_for_candidate = True
+                    break
                 logger.info("  Bucket empty mid-summary at step {}, waiting...", step)
                 while not bucket.has_budget():
                     time.sleep(30)
                     n_total = storage.count_positions(storage.SELFPLAY_PREFIX)
                     bucket.update(n_total, window_size=dataset.window_size)
+                    if _use_full_selfplay_window(cfg, current_version):
+                        catchup_target_steps = _catchup_target_steps(cfg, n_total)
+                    was_full_corpus_mode = _use_full_selfplay_window(
+                        cfg, current_version
+                    )
                     (
                         current_version,
                         positions_at_last_promote,
                         last_promotion_attempt_step,
                         promoted,
-                    ) = _maybe_promote(
+                    ) = _maybe_publish_candidate(
                         cfg,
                         model,
                         current_version=current_version,
@@ -1373,6 +1672,8 @@ def run_trainer(cfg: AsyncConfig) -> None:
                     )
                     if promoted:
                         dataset, dataloader, n_total = reload_buffer()
+                        if was_full_corpus_mode:
+                            bucket = _make_train_bucket_for_version(cfg, current_version)
                         bucket.update(n_total, window_size=dataset.window_size)
 
             for batch_np in dataloader:
@@ -1433,8 +1734,17 @@ def run_trainer(cfg: AsyncConfig) -> None:
                 step += 1
                 total_steps_all_time += 1
                 fresh_run_steps += 1
+                if _use_full_selfplay_window(cfg, current_version):
+                    catchup_steps_completed += 1
                 bucket.consume()
                 samples_since_last_snapshot += cfg.batch_size
+                if _catchup_candidate_due(
+                    cfg,
+                    current_version=current_version,
+                    catchup_target_steps=catchup_target_steps,
+                    catchup_steps_completed=catchup_steps_completed,
+                ):
+                    stop_report_for_candidate = True
 
                 # SWA snapshot.
                 if samples_since_last_snapshot >= cfg.swa_snapshot_every_samples:
@@ -1487,17 +1797,22 @@ def run_trainer(cfg: AsyncConfig) -> None:
                 if step % cfg.reload_interval == 0 and step < cfg.summary_interval_steps:
                     dataset, dataloader, n_total = reload_buffer()
                     bucket.update(n_total, window_size=dataset.window_size)
+                    if _use_full_selfplay_window(cfg, current_version):
+                        catchup_target_steps = _catchup_target_steps(cfg, n_total)
                     logger.info(
                         "  Reloaded: {} files, {:,} pos (window={:,}) | bucket: {:.0f}",
                         len(dataset.files), dataset.total_positions,
                         dataset.window_size, bucket.tokens,
+                    )
+                    was_full_corpus_mode = _use_full_selfplay_window(
+                        cfg, current_version
                     )
                     (
                         current_version,
                         positions_at_last_promote,
                         last_promotion_attempt_step,
                         promoted,
-                    ) = _maybe_promote(
+                    ) = _maybe_publish_candidate(
                         cfg,
                         model,
                         current_version=current_version,
@@ -1511,6 +1826,8 @@ def run_trainer(cfg: AsyncConfig) -> None:
                     )
                     if promoted:
                         dataset, dataloader, n_total = reload_buffer()
+                        if was_full_corpus_mode:
+                            bucket = _make_train_bucket_for_version(cfg, current_version)
                         bucket.update(n_total, window_size=dataset.window_size)
                         logger.info(
                             "  Reloaded after promotion: {} files, {:,} pos "
@@ -1520,10 +1837,22 @@ def run_trainer(cfg: AsyncConfig) -> None:
                         )
                     break
 
+            if stop_report_for_candidate:
+                logger.info(
+                    "Ending trainer report early after completing v{} catch-up "
+                    "target ({:,}/{:,} steps)",
+                    current_version,
+                    catchup_steps_completed,
+                    catchup_target_steps,
+                )
+                break
+
         latest_n_total = storage.count_positions(storage.SELFPLAY_PREFIX)
         if latest_n_total != n_total:
             n_total = latest_n_total
             bucket.update(n_total, window_size=dataset.window_size)
+            if _use_full_selfplay_window(cfg, current_version):
+                catchup_target_steps = _catchup_target_steps(cfg, n_total)
 
         train_elapsed = time.time() - train_t0
         avg_policy = summary_policy_loss / max(step, 1)
@@ -1538,12 +1867,18 @@ def run_trainer(cfg: AsyncConfig) -> None:
             avg_mlh, avg_stv, avg_aux,
         )
 
+        force_catchup_candidate = _catchup_candidate_due(
+            cfg,
+            current_version=current_version,
+            catchup_target_steps=catchup_target_steps,
+            catchup_steps_completed=catchup_steps_completed,
+        )
         (
             current_version,
             positions_at_last_promote,
             last_promotion_attempt_step,
             _promoted,
-        ) = _maybe_promote(
+        ) = _maybe_publish_candidate(
             cfg,
             model,
             current_version=current_version,
@@ -1554,8 +1889,23 @@ def run_trainer(cfg: AsyncConfig) -> None:
             device=device,
             total_steps_all_time=total_steps_all_time,
             last_promotion_attempt_step=last_promotion_attempt_step,
-            log_skip=True,
+            log_skip=not force_catchup_candidate,
+            force_candidate=force_catchup_candidate,
+            force_reason=(
+                f"completed {catchup_steps_completed:,} catch-up steps over "
+                f"{n_total:,} existing self-play samples"
+                if force_catchup_candidate
+                else None
+            ),
         )
+        if _promoted:
+            catchup_steps_completed = 0
+            if force_catchup_candidate:
+                bucket = _make_train_bucket_for_version(cfg, current_version)
+            bucket.update(
+                n_total,
+                window_size=_replay_window_size(cfg, n_total, current_version),
+            )
 
         summary_elapsed = time.time() - summary_t0
         notify_training_summary(
@@ -1591,3 +1941,23 @@ def run_trainer(cfg: AsyncConfig) -> None:
             )
         except Exception as _exc:  # noqa: BLE001
             logger.warning("Failed to publish live trainer weights to S3: {}", _exc)
+        try:
+            _publish_trainer_resume_checkpoint(
+                cfg,
+                model,
+                optimizer,
+                current_version=current_version,
+                report_index=summary,
+                total_steps_all_time=total_steps_all_time,
+                fresh_run_steps=fresh_run_steps,
+                positions_at_last_promote=positions_at_last_promote,
+                last_promotion_attempt_step=last_promotion_attempt_step,
+                bucket=bucket,
+                swa_buf=swa_buf,
+                samples_since_last_snapshot=samples_since_last_snapshot,
+                catchup_steps_completed=catchup_steps_completed,
+                bn_refresh_batches=bn_refresh_batches,
+                n_total=n_total,
+            )
+        except Exception as _exc:  # noqa: BLE001
+            logger.warning("Failed to publish trainer resume checkpoint to S3: {}", _exc)
