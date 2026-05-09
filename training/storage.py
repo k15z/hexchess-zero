@@ -18,6 +18,8 @@ Bucket layout:
 
     state/trainer/live_weights.pt         Latest in-progress trainer weights
     state/trainer/live_weights.meta.json  Metadata for live_weights.pt
+    state/trainer/resume_checkpoint.pt    Resumable trainer state
+    state/trainer/resume_checkpoint.meta.json
     state/evals/v{N}/gate_summary.json
     state/evals/v{N}/benchmark_summary.json
     state/evals/v{N}/decision.json
@@ -59,6 +61,8 @@ HEARTBEATS_PREFIX = "heartbeats/"
 TRAINER_METRICS = "state/trainer_metrics.json"
 TRAINER_LIVE_WEIGHTS = "state/trainer/live_weights.pt"
 TRAINER_LIVE_WEIGHTS_META = "state/trainer/live_weights.meta.json"
+TRAINER_RESUME_CHECKPOINT = "state/trainer/resume_checkpoint.pt"
+TRAINER_RESUME_CHECKPOINT_META = "state/trainer/resume_checkpoint.meta.json"
 BENCHMARK_RESULTS_PREFIX = "benchmarks/results/"
 EVAL_PROMOTION_LOCK = f"{EVALS_PREFIX}promotion.lock"
 

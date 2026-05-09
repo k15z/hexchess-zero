@@ -55,6 +55,26 @@ class SwaSnapshotBuffer:
         cpu_copy = {k: v.detach().to("cpu").clone() for k, v in state_dict.items()}
         self._snaps.appendleft(cpu_copy)
 
+    def state_dict(self) -> dict:
+        """Return a serializable copy of the buffered snapshots."""
+        return {
+            "max_snapshots": self.max_snapshots,
+            "promotion_weights": self.promotion_weights,
+            "snapshots": [
+                {k: v.detach().to("cpu").clone() for k, v in snap.items()}
+                for snap in self._snaps
+            ],
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        """Restore buffered snapshots saved by :meth:`state_dict`."""
+        snapshots = state.get("snapshots", [])
+        self._snaps.clear()
+        for snap in snapshots[: self.max_snapshots]:
+            self._snaps.append(
+                {k: v.detach().to("cpu").clone() for k, v in snap.items()}
+            )
+
     def average(self) -> dict[str, torch.Tensor] | None:
         """Return the promotion-weighted average of the buffered snapshots.
 

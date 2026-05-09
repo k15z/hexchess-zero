@@ -55,12 +55,18 @@ class _BaseConfig:
     l2_regularization: float = 3e-5  # KataGo weight decay (plan §4.3)
     grad_clip_norm: float = 5.0  # plan §4.3
     lr_warmup_steps: int = 2_000  # plan §4.3
-    # Produce candidates materially less often. The previous 300k cadence
-    # allowed very weak nets to replace self-play before the replay window had
-    # enough fresh signal to stabilize, so we now wait for a meaningfully
-    # larger tranche of new data between promotions.
-    promote_every_new_positions: int = 2_500_000
+    # Produce candidates from a meaningful tranche of fresh self-play while
+    # still keeping the evaluation service fed often enough to iterate. The
+    # trainer-side action is a candidate export; the evaluation service owns
+    # approval for workers.
+    promote_every_new_positions: int = 1_000_000
     runtime_health_check_every_steps: int = 500
+    # Existing production buckets may already contain v1 self-play before this
+    # trainer is deployed. Until v2 exists, train against the entire self-play
+    # corpus and allow a v2 candidate after the configured number of passes over
+    # that corpus, even if the normal fresh-position threshold is not reached.
+    train_all_selfplay_until_version: int = 2
+    catchup_passes_over_existing_selfplay: float = 4.0
 
     # --- Imitation mix (bootstrap only; replay stays pure self-play) ---
     # Keep the explicit minimax bootstrap to get a sane v1, but remove
@@ -230,6 +236,14 @@ class AsyncConfig(_BaseConfig):
         _check(
             self.promote_every_new_positions > 0,
             "promote_every_new_positions must be > 0",
+        )
+        _check(
+            self.train_all_selfplay_until_version >= 1,
+            "train_all_selfplay_until_version must be >= 1",
+        )
+        _check(
+            self.catchup_passes_over_existing_selfplay > 0,
+            "catchup_passes_over_existing_selfplay must be > 0",
         )
         _check(self.num_simulations > 0, "num_simulations must be > 0")
 

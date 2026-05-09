@@ -1,5 +1,9 @@
-"""Tests for trainer promotion cadence helpers."""
+"""Tests for trainer candidate-export cadence helpers."""
 
+import torch
+
+from training.config import AsyncConfig
+from training import trainer_loop
 from training.trainer_loop import _promotion_check_ready
 
 
@@ -28,3 +32,32 @@ def test_promotion_check_not_ready_without_new_training_progress():
         total_steps=2_000,
         last_attempt_step=2_000,
     )
+
+
+def test_full_corpus_mode_defers_threshold_export_until_catchup(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        trainer_loop,
+        "_publish_candidate_model",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    cfg = AsyncConfig()
+    cfg.train_all_selfplay_until_version = 2
+    cfg.promote_every_new_positions = 300_000
+
+    current_version, watermark, attempt_step, published = trainer_loop._maybe_publish_candidate(
+        cfg,
+        torch.nn.Linear(1, 1),
+        current_version=1,
+        positions_at_last_promote=0,
+        n_total=1_100_000,
+        swa_buf=trainer_loop.SwaSnapshotBuffer(max_snapshots=1, promotion_weights=(1.0,)),
+        bn_refresh_batches=[],
+        device=torch.device("cpu"),
+        total_steps_all_time=10_000,
+        last_promotion_attempt_step=-1,
+    )
+
+    assert (current_version, watermark, attempt_step, published) == (1, 0, -1, False)
+    assert calls == []

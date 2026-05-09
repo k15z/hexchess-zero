@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+from collections import deque
 
 import numpy as np
 import pytest
@@ -88,7 +89,7 @@ def test_build_recent_selfplay_summary_reports_sampled_metrics(monkeypatch):
     assert summary["root_entropy"]["sampled_positions"] == 6
 
 
-def test_promote_model_writes_versioned_metadata_and_summary(monkeypatch, tmp_path):
+def test_publish_candidate_model_writes_versioned_metadata_and_summary(monkeypatch, tmp_path):
     cfg = AsyncConfig(run_id="test-run")
     monkeypatch.setattr(config_module, "_cache_root", lambda: tmp_path)
     monkeypatch.setattr(
@@ -123,7 +124,7 @@ def test_promote_model_writes_versioned_metadata_and_summary(monkeypatch, tmp_pa
     )
 
     model = torch.nn.Linear(1, 1)
-    trainer_loop._promote_model(
+    trainer_loop._publish_candidate_model(
         cfg,
         model,
         7,
@@ -191,3 +192,72 @@ def test_publish_live_weights_writes_separate_inspection_artifact(monkeypatch, t
         == 500_000
     )
     assert "timestamp" in json_writes[storage.TRAINER_LIVE_WEIGHTS_META]
+
+
+def test_publish_resume_checkpoint_writes_resumable_state(monkeypatch, tmp_path):
+    cfg = AsyncConfig(run_id="test-run")
+    monkeypatch.setattr(config_module, "_cache_root", lambda: tmp_path)
+
+    file_uploads: list[str] = []
+    json_writes: dict[str, dict] = {}
+
+    monkeypatch.setattr(
+        storage,
+        "put_file",
+        lambda key, local_path: file_uploads.append(key),
+    )
+    monkeypatch.setattr(
+        storage,
+        "put_json",
+        lambda key, obj: json_writes.setdefault(key, obj),
+    )
+
+    model = torch.nn.Linear(1, 1)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    bucket = trainer_loop.TrainBucket(4.0, batch_size=256)
+    bucket.update(1_000)
+    swa_buf = trainer_loop.SwaSnapshotBuffer(max_snapshots=1, promotion_weights=(1.0,))
+
+    trainer_loop._publish_trainer_resume_checkpoint(
+        cfg,
+        model,
+        optimizer,
+        current_version=1,
+        report_index=4,
+        total_steps_all_time=1234,
+        fresh_run_steps=1234,
+        positions_at_last_promote=0,
+        last_promotion_attempt_step=-1,
+        bucket=bucket,
+        swa_buf=swa_buf,
+        samples_since_last_snapshot=512,
+        catchup_steps_completed=1234,
+        bn_refresh_batches=deque([torch.zeros(2, 22, 11, 11)]),
+        n_total=1_100_000,
+    )
+
+    assert file_uploads == [storage.TRAINER_RESUME_CHECKPOINT]
+    meta = json_writes[storage.TRAINER_RESUME_CHECKPOINT_META]
+    assert meta["current_version"] == 1
+    assert meta["total_steps_all_time"] == 1234
+    assert meta["catchup_steps_completed"] == 1234
+    assert meta["n_total"] == 1_100_000
+
+
+def test_optimizer_state_dict_to_cpu_does_not_mutate_live_optimizer():
+    model = torch.nn.Linear(1, 1)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
+
+    loss = model(torch.ones(1, 1)).sum()
+    loss.backward()
+    optimizer.step()
+
+    live_slot = next(iter(optimizer.state.values()))
+    live_momentum = live_slot["momentum_buffer"]
+
+    checkpoint_state = trainer_loop._optimizer_state_dict_to_cpu(optimizer)
+    checkpoint_slot = next(iter(checkpoint_state["state"].values()))
+
+    assert live_slot["momentum_buffer"] is live_momentum
+    assert checkpoint_slot["momentum_buffer"] is not live_momentum
+    assert checkpoint_slot["momentum_buffer"].device.type == "cpu"
