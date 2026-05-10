@@ -16,7 +16,7 @@ permissions:
 
 env:
   # Tags to keep (never delete these)
-  KEEP_TAGS: 'cpu cuda'
+  KEEP_TAGS: 'cpu cuda buildcache-cpu-amd64 buildcache-cpu-arm64 buildcache-cuda-amd64'
   # Keep images newer than this many days
   KEEP_DAYS: 30
   # Always keep at least this many pinned (cpu-<sha>/cuda-<sha>) versions
