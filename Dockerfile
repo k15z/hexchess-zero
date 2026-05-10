@@ -18,10 +18,9 @@ COPY Cargo.toml Cargo.lock README.md LICENSE ./
 COPY engine/ engine/
 COPY bindings/ bindings/
 
-# Cache cargo registry/git + target dir across builds. With buildx + the
-# gha cache exporter (mode=max) these mounts persist between CI runs, so
-# incremental rebuilds only recompile changed crates instead of the whole
-# dep graph each time.
+# Cache cargo registry/git + target dir across builds. With buildx remote
+# cache export, incremental rebuilds only recompile changed crates instead of
+# the whole dependency graph each time.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/build/target,sharing=locked \
@@ -30,21 +29,51 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # Stage 2: Runtime
 FROM python:3.13-slim
 
-# TORCH_VARIANT: "cpu" for CPU-only (smaller image), "cu121" for CUDA 12.1
+# TORCH_VARIANT: "cpu" for CPU-only (smaller image), "cu126" for CUDA 12.6
 ARG TORCH_VARIANT=cpu
+ARG TORCH_VERSION=2.11.0
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_ROOT_USER_ACTION=ignore
 
 WORKDIR /app
 
 COPY pyproject.toml ./
-COPY training/ training/
 
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install . \
-    --index-url https://download.pytorch.org/whl/${TORCH_VARIANT} \
+# Install third-party dependencies before copying app code. Most image builds
+# change training/ only, and keeping dependencies in their own layer avoids
+# rebuilding and re-exporting the large Torch/CUDA layer on those merges.
+RUN --mount=type=cache,target=/root/.cache/pip <<'SH'
+set -e
+python - <<'PY' > /tmp/runtime-requirements.txt
+import tomllib
+import os
+
+with open("pyproject.toml", "rb") as f:
+    dependencies = tomllib.load(f)["project"]["dependencies"]
+
+torch_requirement = f"torch=={os.environ['TORCH_VERSION']}+{os.environ['TORCH_VARIANT']}"
+
+for dependency in dependencies:
+    name = dependency.split(";", 1)[0].strip().lower()
+    if name.startswith("hexchess-zero"):
+        continue
+    if name.startswith("torch"):
+        print(torch_requirement)
+        continue
+    print(dependency)
+PY
+pip install -r /tmp/runtime-requirements.txt \
+    --index-url "https://download.pytorch.org/whl/${TORCH_VARIANT}" \
     --extra-index-url https://pypi.org/simple
+SH
 
 COPY --from=builder /build/wheels/*.whl /tmp/
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install /tmp/*.whl && rm /tmp/*.whl
+    pip install --no-deps /tmp/*.whl && rm /tmp/*.whl
+
+COPY training/ training/
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-deps .
 
 ENTRYPOINT ["python", "-m", "training"]
