@@ -242,68 +242,19 @@ def test_positions_watermark_requires_explicit_field_after_v1(monkeypatch):
         trainer_loop._read_positions_at_last_promote()
 
 
-def test_v1_uses_full_selfplay_window_for_catchup():
+def test_replay_window_always_uses_sublinear_formula():
     cfg = trainer_loop.AsyncConfig()
-    cfg.train_all_selfplay_until_version = 2
 
-    assert trainer_loop._replay_window_size(cfg, 1_100_000, 1) == 1_100_000
-    assert trainer_loop._use_full_selfplay_window(cfg, 1)
-    assert not trainer_loop._use_full_selfplay_window(cfg, 2)
+    assert trainer_loop._replay_window_size(cfg, 1_100_000) == 239_453
 
 
-def test_catchup_target_steps_cover_existing_samples():
-    cfg = trainer_loop.AsyncConfig()
-    cfg.batch_size = 256
-    cfg.catchup_passes_over_existing_selfplay = 4.0
-
-    assert trainer_loop._catchup_target_steps(cfg, 1_100_000) == 17187
-
-
-def test_catchup_candidate_due_at_target_before_v2():
-    cfg = trainer_loop.AsyncConfig()
-    cfg.train_all_selfplay_until_version = 2
-
-    assert trainer_loop._catchup_candidate_due(
-        cfg,
-        current_version=1,
-        catchup_target_steps=17_187,
-        catchup_steps_completed=17_187,
-    )
-    assert not trainer_loop._catchup_candidate_due(
-        cfg,
-        current_version=2,
-        catchup_target_steps=17_187,
-        catchup_steps_completed=17_187,
-    )
-    assert not trainer_loop._catchup_candidate_due(
-        cfg,
-        current_version=1,
-        catchup_target_steps=17_187,
-        catchup_steps_completed=17_186,
-    )
-
-
-def test_v1_train_bucket_is_not_seed_capped():
+def test_train_bucket_is_seed_capped_for_all_versions():
     cfg = trainer_loop.AsyncConfig()
     cfg.summary_interval_steps = 1000
     cfg.batch_size = 256
-    cfg.train_all_selfplay_until_version = 2
     cfg.max_train_steps_per_new_data = 2.0
-    cfg.catchup_passes_over_existing_selfplay = 4.0
 
-    bucket = trainer_loop._make_train_bucket_for_version(cfg, 1)
-    bucket.update(1_100_000, window_size=1_100_000)
-
-    assert bucket.tokens == 4_400_000.0
-
-
-def test_post_catchup_train_bucket_is_seed_capped():
-    cfg = trainer_loop.AsyncConfig()
-    cfg.summary_interval_steps = 1000
-    cfg.batch_size = 256
-    cfg.train_all_selfplay_until_version = 2
-
-    bucket = trainer_loop._make_train_bucket_for_version(cfg, 2)
+    bucket = trainer_loop._make_train_bucket(cfg)
     bucket.update(1_100_000, window_size=1_100_000)
 
     assert bucket.tokens == 256_000.0

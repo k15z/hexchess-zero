@@ -159,7 +159,7 @@ If the trainer is outpacing data production, it sleeps rather than overfitting o
 | `window_c` / `window_alpha` / `window_beta` | 25,000 / 0.75 / 0.4 | Sublinear replay-window parameters |
 | `summary_interval_steps` | 3,000 | Steps between trainer summaries |
 | `reload_interval` | 1,000 | S3 refresh interval for fresh data and promotion checks |
-| `promote_every_new_positions` | 1,000,000 | Minimum fresh self-play positions required between candidate exports after v1 catch-up |
+| `promote_every_new_positions` | 1,000,000 | Minimum fresh self-play positions required between candidate exports |
 | `imitation_mix_start` / `imitation_mix_end` / `imitation_mix_decay_end_version` | 0.3 / 0.0 / 5 | Early-version imitation mixing schedule |
 
 
