@@ -1039,7 +1039,10 @@ def _needs_anchor_backfill(approved_version: int) -> bool:
         summary = storage.get_json(storage.eval_benchmark_summary_key(approved_version))
     except KeyError:
         return True
-    return summary.get("status") != "complete"
+    status = summary.get("status")
+    if status in {"complete", "approved"}:
+        return not bool(summary.get("budget_complete", False))
+    return True
 
 
 def _next_benchmark_opponent(summary: dict) -> str | None:
@@ -1266,15 +1269,9 @@ def run_evaluation_service(simulations: int = 800) -> None:
                     )
                     continue
                 _promote_candidate(candidate_version, versions[candidate_version])
-                approved_version = _read_approved_version()
-                gate_summary, benchmark_summary, decision = _refresh_artifacts(
-                    version=target_version,
-                    approved_version=approved_version,
-                    records=records,
-                    include_gate=include_gate,
-                )
                 decision = dict(decision)
                 decision["status"] = "promoted"
+                decision["promoted_from_version"] = current_approved_version
                 decision["promoted_at"] = datetime.now(timezone.utc).isoformat()
                 _write_artifacts(
                     version=target_version,
