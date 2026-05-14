@@ -121,7 +121,11 @@ def test_empty_snapshot_has_expected_shape(store: DashboardStore) -> None:
     snap = store.snapshot()
 
     assert snap["model"] == {"version": 0, "promoted_at": None, "positions_at_promote": None}
-    assert snap["approved_model"] == {"version": 0, "promoted_at": None}
+    assert snap["approved_model"] == {
+        "version": 0,
+        "promoted_at": None,
+        "positions_at_promote": None,
+    }
     assert snap["evaluations"]["versions"] == []
     assert snap["evaluations"]["focus"] is None
     assert snap["recent_games"] == []
@@ -207,6 +211,18 @@ def test_trainer_metrics_sync(fake: FakeStorage, store: DashboardStore) -> None:
         storage.TRAINER_METRICS,
         {"summaries": [{"summary": 9, "loss_policy": 0.5, "version": 6}]},
     )
+    fake.put_json(
+        storage.TRAINER_LIVE_WEIGHTS_META,
+        {"summary": 9, "n_total": 1234, "positions_at_last_promote": 1000},
+    )
+    fake.put_json(
+        storage.TRAINER_RESUME_CHECKPOINT_META,
+        {"report_index": 9, "bucket_tokens": 4321.0},
+    )
 
     store.refresh_once()
-    assert store.snapshot()["trainer_metrics"]["summaries"][0]["summary"] == 9
+    snap = store.snapshot()
+    assert snap["trainer_metrics"]["summaries"][0]["summary"] == 9
+    assert snap["trainer_live_weights"]["n_total"] == 1234
+    assert snap["trainer_resume_checkpoint"]["bucket_tokens"] == 4321.0
+    assert snap["config"]["promote_every_new_positions"] > 0

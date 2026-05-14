@@ -73,7 +73,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 def run_dashboard(cfg: AsyncConfig, port: int = 8080) -> None:
     """Start the dashboard HTTP server."""
-    store = DashboardStore(interval=60.0)
+    store = DashboardStore(interval=60.0, cfg=cfg)
     print("Dashboard: priming store from S3 ...")
     store.start()
     DashboardHandler.cfg = cfg

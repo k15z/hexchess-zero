@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from . import storage
+from .config import AsyncConfig
 
 _RECENT_GAMES_TAIL = 40
 _EVAL_MAX_VERSIONS = 8
@@ -17,9 +18,15 @@ _HEARTBEAT_STALE_SECONDS = 2 * 60 * 60
 class DashboardStore:
     """Background-synced, thread-safe dashboard state."""
 
-    def __init__(self, storage_mod=storage, interval: float = 60.0) -> None:
+    def __init__(
+        self,
+        storage_mod=storage,
+        interval: float = 60.0,
+        cfg: AsyncConfig | None = None,
+    ) -> None:
         self._s = storage_mod
         self._interval = interval
+        self._cfg = cfg or AsyncConfig()
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -27,9 +34,17 @@ class DashboardStore:
         self._etag_meta: str | None = None
         self._etag_approved_meta: str | None = None
         self._etag_trainer: str | None = None
+        self._etag_live_weights: str | None = None
+        self._etag_resume_checkpoint: str | None = None
         self._model: dict = {"version": 0, "promoted_at": None, "positions_at_promote": None}
-        self._approved_model: dict = {"version": 0, "promoted_at": None}
+        self._approved_model: dict = {
+            "version": 0,
+            "promoted_at": None,
+            "positions_at_promote": None,
+        }
         self._trainer_metrics: dict = {}
+        self._trainer_live_weights: dict = {}
+        self._trainer_resume_checkpoint: dict = {}
 
         self._sp_files: dict[str, tuple[int, str]] = {}
         self._im_files: dict[str, tuple[int, str]] = {}
@@ -91,6 +106,7 @@ class DashboardStore:
             lambda data: {
                 "version": data.get("version", 0),
                 "promoted_at": data.get("timestamp"),
+                "positions_at_promote": data.get("positions_at_promote"),
             },
             fallback=self._approved_model,
         )
@@ -108,6 +124,18 @@ class DashboardStore:
                 ],
             },
             fallback=self._trainer_metrics,
+        )
+        self._trainer_live_weights = self._sync_etagged_json(
+            storage.TRAINER_LIVE_WEIGHTS_META,
+            "_etag_live_weights",
+            lambda data: dict(data),
+            fallback=self._trainer_live_weights,
+        )
+        self._trainer_resume_checkpoint = self._sync_etagged_json(
+            storage.TRAINER_RESUME_CHECKPOINT_META,
+            "_etag_resume_checkpoint",
+            lambda data: dict(data),
+            fallback=self._trainer_resume_checkpoint,
         )
         self._sync_evaluations()
         self._sync_data(storage.SELFPLAY_PREFIX, self._sp_files, "_sp_agg")
@@ -319,6 +347,11 @@ class DashboardStore:
             return {
                 "model": dict(self._model),
                 "approved_model": dict(self._approved_model),
+                "config": {
+                    "promote_every_new_positions": self._cfg.promote_every_new_positions,
+                    "summary_interval_steps": self._cfg.summary_interval_steps,
+                    "max_train_steps_per_new_data": self._cfg.max_train_steps_per_new_data,
+                },
                 "evaluations": {
                     "focus_version": self._focus_version,
                     "versions": list(self._eval_versions),
@@ -336,6 +369,8 @@ class DashboardStore:
                     "models": list(self._snapshots),
                 },
                 "trainer_metrics": dict(self._trainer_metrics),
+                "trainer_live_weights": dict(self._trainer_live_weights),
+                "trainer_resume_checkpoint": dict(self._trainer_resume_checkpoint),
                 "benchmark_versions": list(self._benchmark_versions),
                 "benchmark_results": {key: dict(value) for key, value in self._benchmark_results.items()},
                 "timestamp": self._last_sync or datetime.now(timezone.utc).isoformat(),
