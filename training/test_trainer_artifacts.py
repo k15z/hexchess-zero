@@ -231,7 +231,6 @@ def test_publish_resume_checkpoint_writes_resumable_state(monkeypatch, tmp_path)
         bucket=bucket,
         swa_buf=swa_buf,
         samples_since_last_snapshot=512,
-        catchup_steps_completed=1234,
         bn_refresh_batches=deque([torch.zeros(2, 22, 11, 11)]),
         n_total=1_100_000,
     )
@@ -240,7 +239,6 @@ def test_publish_resume_checkpoint_writes_resumable_state(monkeypatch, tmp_path)
     meta = json_writes[storage.TRAINER_RESUME_CHECKPOINT_META]
     assert meta["current_version"] == 1
     assert meta["total_steps_all_time"] == 1234
-    assert meta["catchup_steps_completed"] == 1234
     assert meta["n_total"] == 1_100_000
 
 

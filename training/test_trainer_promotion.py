@@ -34,7 +34,7 @@ def test_promotion_check_not_ready_without_new_training_progress():
     )
 
 
-def test_full_corpus_mode_defers_threshold_export_until_catchup(monkeypatch):
+def test_threshold_export_publishes_without_version_special_case(monkeypatch):
     calls = []
     monkeypatch.setattr(
         trainer_loop,
@@ -43,7 +43,6 @@ def test_full_corpus_mode_defers_threshold_export_until_catchup(monkeypatch):
     )
 
     cfg = AsyncConfig()
-    cfg.train_all_selfplay_until_version = 2
     cfg.promote_every_new_positions = 300_000
 
     current_version, watermark, attempt_step, published = trainer_loop._maybe_publish_candidate(
@@ -59,5 +58,10 @@ def test_full_corpus_mode_defers_threshold_export_until_catchup(monkeypatch):
         last_promotion_attempt_step=-1,
     )
 
-    assert (current_version, watermark, attempt_step, published) == (1, 0, -1, False)
-    assert calls == []
+    assert (current_version, watermark, attempt_step, published) == (
+        2,
+        1_100_000,
+        10_000,
+        True,
+    )
+    assert len(calls) == 1

@@ -61,13 +61,6 @@ class _BaseConfig:
     # approval for workers.
     promote_every_new_positions: int = 1_000_000
     runtime_health_check_every_steps: int = 500
-    # Existing production buckets may already contain v1 self-play before this
-    # trainer is deployed. Until v2 exists, train against the entire self-play
-    # corpus and allow a v2 candidate after the configured number of passes over
-    # that corpus, even if the normal fresh-position threshold is not reached.
-    train_all_selfplay_until_version: int = 2
-    catchup_passes_over_existing_selfplay: float = 4.0
-
     # --- Imitation mix (bootstrap only; replay stays pure self-play) ---
     # Keep the explicit minimax bootstrap to get a sane v1, but remove
     # imitation from the replay buffer entirely for the next run. This
@@ -236,14 +229,6 @@ class AsyncConfig(_BaseConfig):
         _check(
             self.promote_every_new_positions > 0,
             "promote_every_new_positions must be > 0",
-        )
-        _check(
-            self.train_all_selfplay_until_version >= 1,
-            "train_all_selfplay_until_version must be >= 1",
-        )
-        _check(
-            self.catchup_passes_over_existing_selfplay > 0,
-            "catchup_passes_over_existing_selfplay must be > 0",
         )
         _check(self.num_simulations > 0, "num_simulations must be > 0")
 
