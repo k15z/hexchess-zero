@@ -1146,6 +1146,7 @@ def _publish_trainer_metrics(
     avg_mlh: float,
     avg_stv: float,
     avg_aux: float,
+    avg_total: float,
 ) -> None:
     """Append a trainer-summary record to ``state/trainer_metrics.json``.
 
@@ -1177,6 +1178,7 @@ def _publish_trainer_metrics(
         "loss_mlh": round(avg_mlh, 6),
         "loss_stv": round(avg_stv, 6),
         "loss_aux": round(avg_aux, 6),
+        "loss_total": round(avg_total, 6),
     })
     if len(history) > 200:
         history = history[-200:]
@@ -1728,11 +1730,12 @@ def run_trainer(cfg: AsyncConfig) -> None:
         avg_mlh = summary_mlh_loss / max(step, 1)
         avg_stv = summary_stv_loss / max(step, 1)
         avg_aux = summary_aux_loss / max(step, 1)
+        avg_total = summary_total_loss / max(step, 1)
         logger.info(
             "Summary done: {} steps in {:.0f}s | policy={:.4f} value={:.4f} "
-            "mlh={:.4f} stv={:.4f} aux={:.4f}",
+            "mlh={:.4f} stv={:.4f} aux={:.4f} total={:.4f}",
             step, train_elapsed, avg_policy, avg_value,
-            avg_mlh, avg_stv, avg_aux,
+            avg_mlh, avg_stv, avg_aux, avg_total,
         )
 
         (
@@ -1778,6 +1781,7 @@ def run_trainer(cfg: AsyncConfig) -> None:
                 avg_mlh=avg_mlh,
                 avg_stv=avg_stv,
                 avg_aux=avg_aux,
+                avg_total=avg_total,
             )
         except Exception as _exc:  # noqa: BLE001
             logger.warning("Failed to publish trainer metrics to S3: {}", _exc)

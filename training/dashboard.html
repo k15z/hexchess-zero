@@ -253,6 +253,61 @@
     background: var(--text);
   }
 
+  .bar-list {
+    display: grid;
+    gap: 10px;
+  }
+
+  .bar-row {
+    display: grid;
+    gap: 6px;
+  }
+
+  .bar-meta {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    color: var(--text-muted);
+    font-size: 11px;
+  }
+
+  .bar-track {
+    height: 5px;
+    border-radius: 3px;
+    background: var(--bg-muted);
+    overflow: hidden;
+  }
+
+  .bar-fill {
+    height: 100%;
+    background: var(--text);
+  }
+
+  .chart-wrap {
+    margin-bottom: 12px;
+  }
+
+  .chart {
+    width: 100%;
+    height: 112px;
+    background: var(--bg-muted);
+    border-radius: 4px;
+    display: block;
+  }
+
+  .chart-legend {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 6px;
+    color: var(--text-muted);
+    font-size: 11px;
+  }
+
+  .dim {
+    color: var(--text-muted);
+  }
+
   /* --- Rows --- */
   .row-list {
     display: grid;
@@ -408,7 +463,8 @@
       grid-template-columns: 1fr;
     }
     th:nth-child(4), td:nth-child(4),
-    th:nth-child(5), td:nth-child(5) {
+    th:nth-child(5), td:nth-child(5),
+    th:nth-child(6), td:nth-child(6) {
       display: none;
     }
   }
@@ -428,6 +484,16 @@ function fmt(n, digits = 0) {
   return String(n);
 }
 
+function esc(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  }[ch]));
+}
+
 function ago(ts) {
   if (!ts) return '\u2014';
   const seconds = (Date.now() - new Date(ts).getTime()) / 1000;
@@ -439,7 +505,7 @@ function ago(ts) {
 }
 
 function statusClass(status) {
-  if (['approved', 'promote', 'promoted', 'baseline_ready', 'complete'].includes(status)) return 'pass';
+  if (['approved', 'promote', 'promoted', 'baseline_ready', 'complete', 'baseline'].includes(status)) return 'pass';
   if (['rejected', 'rejected_pending', 'fail'].includes(status)) return 'fail';
   return 'pending';
 }
@@ -451,7 +517,64 @@ function statusLabel(status) {
   if (status === 'rejected_pending') return 'failing, collecting';
   if (status === 'promote') return 'ready';
   if (status === 'baseline_ready') return 'baseline ready';
+  if (status === 'baseline') return 'approved';
   return status.replaceAll('_', ' ');
+}
+
+function pct(n, d) {
+  if (!d || !Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(100, Math.round((n / d) * 100)));
+}
+
+function latestSummary(data) {
+  const summaries = data.trainer_metrics?.summaries || [];
+  return summaries.length ? summaries[summaries.length - 1] : {};
+}
+
+function isActiveCandidate(data, focus) {
+  const approvedVersion = Number(data.approved_model?.version || 0);
+  return !!(focus && Number(focus.version || 0) > approvedVersion);
+}
+
+function benchmarkBudget(benchmark) {
+  const entries = Object.values(benchmark?.per_opponent || {});
+  return entries.reduce((sum, entry) => sum + Number(entry.budget_games || 0), 0);
+}
+
+function benchmarkCompleted(benchmark) {
+  const entries = Object.values(benchmark?.per_opponent || {});
+  return entries.reduce((sum, entry) => sum + Number(entry.games || 0), 0);
+}
+
+function totalLoss(entry) {
+  if (entry.loss_total != null) return Number(entry.loss_total);
+  return ['loss_policy', 'loss_value', 'loss_mlh', 'loss_stv', 'loss_aux']
+    .reduce((sum, key) => sum + Number(entry[key] || 0), 0);
+}
+
+function trainerState(data) {
+  const live = data.trainer_live_weights || {};
+  const resume = data.trainer_resume_checkpoint || {};
+  const summary = latestSummary(data);
+  const selfplay = data.data?.selfplay || {};
+  const model = data.model || {};
+  const approved = data.approved_model || {};
+  const threshold = Number(data.config?.promote_every_new_positions || 0);
+  const nTotal = Math.max(
+    Number(live.n_total || 0),
+    Number(resume.n_total || 0),
+    Number(summary.n_total || 0),
+    Number(selfplay.total_positions || 0)
+  );
+  const watermark = Number(
+    live.positions_at_last_promote ??
+    resume.positions_at_last_promote ??
+    approved.positions_at_promote ??
+    model.positions_at_promote ??
+    0
+  );
+  const fresh = Math.max(0, nTotal - watermark);
+  return { live, resume, summary, nTotal, watermark, fresh, threshold };
 }
 
 function renderHeader(data, focus) {
@@ -461,16 +584,22 @@ function renderHeader(data, focus) {
   const gate = (focus && focus.gate) || {};
   const benchmark = (focus && focus.benchmark) || {};
   const focusVersion = focus ? focus.version : null;
+  const active = isActiveCandidate(data, focus);
+  const state = trainerState(data);
+  const benchBudget = benchmarkBudget(benchmark);
+  const benchDone = benchmarkCompleted(benchmark);
 
-  const headline = focusVersion && focusVersion > (approved.version || 0)
+  const headline = active
     ? `v${focusVersion} is on trial`
     : approved.version
-      ? `v${approved.version} is the current baseline`
+      ? `v${approved.version} is approved`
       : 'waiting for the first approved model';
 
-  const sub = focusVersion && focusVersion > (approved.version || 0)
+  const sub = active
     ? `The service is only tracking one decision path: candidate v${focusVersion} against approved v${approved.version}. Gate evidence and anchor regressions below are the promotion record.`
-    : 'No newer immutable snapshot is currently ahead of the approved model. The dashboard stays focused on evaluation evidence, not standings.';
+    : 'No immutable snapshot is currently ahead of the approved model. This view shows the approved anchor fingerprint, trainer cadence, and data freshness.';
+
+  const primaryStatus = active ? decision.status : 'baseline';
 
   return `
     <section class="hero">
@@ -481,7 +610,7 @@ function renderHeader(data, focus) {
           <div class="hero-sub">${sub}</div>
         </div>
         <div class="hero-meta">
-          <div class="pill ${statusClass(decision.status)}">${statusLabel(decision.status)}</div>
+          <div class="pill ${statusClass(primaryStatus)}">${statusLabel(primaryStatus)}</div>
           <div class="pill">latest v${fmt(model.version)}</div>
           <div class="pill">approved v${fmt(approved.version)}</div>
           <div class="pill">synced ${ago(data.timestamp)}</div>
@@ -489,24 +618,24 @@ function renderHeader(data, focus) {
       </div>
       <div class="hero-strip">
         <div class="stat">
-          <div class="stat-label">Current Candidate</div>
-          <div class="stat-value">${focusVersion && focusVersion > (approved.version || 0) ? `v${focusVersion}` : 'none'}</div>
-          <div class="stat-meta">${focusVersion ? `decision ${statusLabel(decision.status)}` : 'no pending candidate above approved'}</div>
+          <div class="stat-label">${active ? 'Current Candidate' : 'Approved Model'}</div>
+          <div class="stat-value">${active ? `v${focusVersion}` : approved.version ? `v${approved.version}` : '\u2014'}</div>
+          <div class="stat-meta">${active ? `decision ${statusLabel(decision.status)}` : approved.promoted_at ? `approved ${ago(approved.promoted_at)}` : 'approved pointer not published'}</div>
         </div>
         <div class="stat">
-          <div class="stat-label">Gate Record</div>
-          <div class="stat-value">${gate.games ? `${gate.wins}-${gate.losses}-${gate.draws}` : '\u2014'}</div>
-          <div class="stat-meta">${gate.games ? `score ${fmt(gate.score, 3)} over ${fmt(gate.games)} games` : 'no gate games yet'}</div>
+          <div class="stat-label">${active ? 'Gate Record' : 'Fresh Self-play'}</div>
+          <div class="stat-value">${active ? (gate.games ? `${fmt(gate.wins)}-${fmt(gate.losses)}-${fmt(gate.draws)}` : '\u2014') : fmt(state.fresh)}</div>
+          <div class="stat-meta">${active ? (gate.games ? `score ${fmt(gate.score, 3)} over ${fmt(gate.games)} games` : 'no gate games yet') : state.threshold ? `${fmt(state.threshold)} needed for the next candidate` : 'candidate threshold unavailable'}</div>
         </div>
         <div class="stat">
           <div class="stat-label">Anchor Coverage</div>
-          <div class="stat-value">${benchmark.games ? fmt(benchmark.games) : '\u2014'}</div>
+          <div class="stat-value">${benchBudget ? `${fmt(benchDone)}/${fmt(benchBudget)}` : benchmark.games ? fmt(benchmark.games) : '\u2014'}</div>
           <div class="stat-meta">${benchmark.status ? `${statusLabel(benchmark.status)} across fixed anchors` : 'anchor suite not started'}</div>
         </div>
         <div class="stat">
-          <div class="stat-label">Promotion Pointer</div>
-          <div class="stat-value">${approved.version ? `v${approved.version}` : '\u2014'}</div>
-          <div class="stat-meta">${approved.promoted_at ? `approved ${ago(approved.promoted_at)}` : 'no approved pointer yet'}</div>
+          <div class="stat-label">Trainer Summary</div>
+          <div class="stat-value">${state.summary.summary ? `#${fmt(state.summary.summary)}` : '\u2014'}</div>
+          <div class="stat-meta">${state.summary.ts ? `${fmt(state.summary.steps || 0)} steps, ${ago(state.summary.ts)}` : 'no trainer summary yet'}</div>
         </div>
       </div>
     </section>
@@ -521,7 +650,8 @@ function renderGate(focus) {
 
   const confidence = gate.confidence || {};
   const sprt = gate.sprt || {};
-  const progress = Math.min(100, Math.round(((gate.games || 0) / 100) * 100));
+  const budget = gate.budget_games || 100;
+  const progress = pct(gate.games || 0, budget);
   return `
     <section class="panel">
       <div class="panel-head">
@@ -550,7 +680,7 @@ function renderGate(focus) {
           </div>
         </div>
         <div class="meter">
-          <div class="kv-line"><span class="kv-key">Games Collected</span><span class="kv-value">${fmt(gate.games)} / 100</span></div>
+          <div class="kv-line"><span class="kv-key">Games Collected</span><span class="kv-value">${fmt(gate.games)} / ${fmt(budget)}</span></div>
           <div class="meter-track"><div class="meter-fill" style="width:${progress}%"></div></div>
         </div>
         <div class="kv" style="margin-top:16px">
@@ -563,28 +693,64 @@ function renderGate(focus) {
   `;
 }
 
-function renderBenchmark(focus) {
+function renderApprovedOverview(data, focus) {
+  const model = data.model || {};
+  const approved = data.approved_model || {};
+  const state = trainerState(data);
+  return `
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <div class="panel-title">Approved Pointer</div>
+          <div class="panel-sub">Workers follow the approved model, not the latest candidate export</div>
+        </div>
+        <span class="tag pass">approved</span>
+      </div>
+      <div class="panel-body">
+        <div class="kv">
+          <div class="kv-line"><span class="kv-key">Approved Version</span><span class="kv-value">v${fmt(approved.version)}</span></div>
+          <div class="kv-line"><span class="kv-key">Latest Export</span><span class="kv-value">v${fmt(model.version)}</span></div>
+          <div class="kv-line"><span class="kv-key">Approved At</span><span class="kv-value">${ago(approved.promoted_at)}</span></div>
+          <div class="kv-line"><span class="kv-key">Trainer Watermark</span><span class="kv-value">${fmt(state.watermark)} positions</span></div>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderBenchmark(focus, active) {
   const benchmark = focus && focus.benchmark;
   if (!benchmark) {
     return `<section class="panel"><div class="panel-head"><div><div class="panel-title">Benchmarks</div><div class="panel-sub">Fixed anchors</div></div></div><div class="panel-body"><div class="empty">No benchmark summary for the focused version yet.</div></div></section>`;
   }
 
-  const rows = Object.values(benchmark.per_opponent || {}).map(entry => `
+  const rows = Object.values(benchmark.per_opponent || {}).map(entry => {
+    const budget = entry.budget_games || 0;
+    const progress = pct(entry.games || 0, budget);
+    return `
     <tr>
-      <td><strong>${entry.opponent}</strong><br><span class="mono">${statusLabel(entry.status)}</span></td>
+      <td><strong>${esc(entry.opponent)}</strong><br><span class="mono">${statusLabel(entry.status)}</span></td>
       <td class="r">${fmt(entry.score, 3)}</td>
+      <td class="r">${entry.reference_score == null ? '\u2014' : fmt(entry.reference_score, 3)}</td>
       <td class="r">${entry.target_score == null ? '\u2014' : fmt(entry.target_score, 3)}</td>
-      <td class="r">${fmt(entry.games)}</td>
-      <td class="r">${fmt(entry.confidence?.ci_half_width, 3)}</td>
+      <td class="r">${fmt(entry.games)} / ${fmt(budget)}</td>
+      <td class="r">${progress}%</td>
     </tr>
-  `).join('');
+  `}).join('');
+
+  const title = benchmark.reference_available ? 'Anchor Regression' : 'Anchor Fingerprint';
+  const sub = benchmark.reference_available
+    ? 'Candidate must stay within fixed-anchor tolerance from the approved reference'
+    : active
+      ? 'Collecting anchor scores before a reference exists'
+      : 'Approved model scores against fixed anchors';
 
   return `
     <section class="panel">
       <div class="panel-head">
         <div>
-          <div class="panel-title">Benchmarks</div>
-          <div class="panel-sub">Candidate vs fixed anchors</div>
+          <div class="panel-title">${title}</div>
+          <div class="panel-sub">${sub}</div>
         </div>
         <span class="tag ${statusClass(benchmark.status)}">${statusLabel(benchmark.status)}</span>
       </div>
@@ -597,12 +763,12 @@ function renderBenchmark(focus) {
           </div>
           <div class="mini">
             <div class="label">Regression Rule</div>
-            <div class="value">${benchmark.reference_available ? 'live' : 'seed'}</div>
-            <div class="meta">${benchmark.reference_available ? 'candidate must stay within anchor tolerance' : 'collecting baseline anchor fingerprints'}</div>
+            <div class="value">${benchmark.reference_available ? 'active' : 'baseline'}</div>
+            <div class="meta">${benchmark.reference_available ? 'floors are reference minus tolerance' : 'scores define future reference floors'}</div>
           </div>
           <div class="mini">
-            <div class="label">Termination Mix</div>
-            <div class="value">${Object.keys(benchmark.termination_mix || {}).length}</div>
+            <div class="label">Avg Length</div>
+            <div class="value">${fmt(benchmark.move_time_stats?.average_game_length_moves, 1)}</div>
             <div class="meta">${Object.entries(benchmark.termination_mix || {}).map(([k, v]) => `${k}:${v}`).join(' ') || 'no games yet'}</div>
           </div>
         </div>
@@ -611,23 +777,41 @@ function renderBenchmark(focus) {
             <tr>
               <th>Anchor</th>
               <th class="r">Score</th>
+              <th class="r">Reference</th>
               <th class="r">Floor</th>
               <th class="r">Games</th>
-              <th class="r">CI</th>
+              <th class="r">Done</th>
             </tr>
           </thead>
-          <tbody>${rows || `<tr><td colspan="5" class="empty">No anchor data yet.</td></tr>`}</tbody>
+          <tbody>${rows || `<tr><td colspan="6" class="empty">No anchor data yet.</td></tr>`}</tbody>
         </table>
       </div>
     </section>
   `;
 }
 
-function renderDecision(focus) {
+function renderDecision(data, focus, active) {
   const decision = (focus && focus.decision) || {};
+  if (!active) {
+    const state = trainerState(data);
+    return `
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <div class="panel-title">Trainer Cadence</div>
+            <div class="panel-sub">Fresh self-play gate for the next candidate export</div>
+          </div>
+        </div>
+        <div class="panel-body">
+          ${renderCadenceBody(state, data)}
+        </div>
+      </section>
+    `;
+  }
+
   const reasons = (decision.reasons || []).map(reason => `
     <div class="row">
-      <div><strong>${reason}</strong></div>
+      <div><strong>${esc(reason)}</strong></div>
       <div class="right"><span>${ago(decision.updated_at)}</span></div>
     </div>
   `).join('');
@@ -656,17 +840,28 @@ function renderDecision(focus) {
   `;
 }
 
+function candidatePoints(game) {
+  const candidate = game.candidate;
+  if (!candidate) return '\u2014';
+  if (game.outcome === 'draw') return '0.5';
+  const candidateWon = (game.outcome === 'white' && game.white === candidate) ||
+    (game.outcome === 'black' && game.black === candidate);
+  return candidateWon ? '1.0' : '0.0';
+}
+
 function renderGames(data) {
   const games = data.recent_games || [];
   if (!games.length) {
     return `<section class="panel"><div class="panel-head"><div><div class="panel-title">Recent Games</div><div class="panel-sub">Immutable evaluation records</div></div></div><div class="panel-body"><div class="empty">No evaluation games have been recorded for the focused version yet.</div></div></section>`;
   }
-  const rows = [...games].reverse().map(game => `
+  const shown = [...games].reverse().slice(0, 18);
+  const rows = shown.map(game => `
     <tr>
-      <td><span class="tag ${statusClass(game.eval_type)}">${game.eval_type}</span></td>
-      <td>${game.white} vs ${game.black}<br><span class="mono">pair ${game.pair_id || '\u2014'} / game ${game.pair_game_index ?? '\u2014'}</span></td>
-      <td class="r">${game.outcome}</td>
+      <td><span class="tag ${statusClass(game.eval_type)}">${esc(game.eval_type)}</span></td>
+      <td>${esc(game.white)} vs ${esc(game.black)}<br><span class="mono">pair ${esc(game.pair_id || '\u2014')} / game ${game.pair_game_index ?? '\u2014'}</span></td>
+      <td class="r">${esc(game.outcome)}<br><span class="dim">candidate ${candidatePoints(game)}</span></td>
       <td class="r">${fmt(game.moves)}</td>
+      <td class="r">${esc(game.termination || '\u2014')}<br><span class="dim">${fmt((game.white_time || 0) + (game.black_time || 0), 1)}s</span></td>
       <td class="r">${ago(game.timestamp)}</td>
     </tr>
   `).join('');
@@ -675,7 +870,7 @@ function renderGames(data) {
       <div class="panel-head">
         <div>
           <div class="panel-title">Recent Games</div>
-          <div class="panel-sub">Latest immutable records under the focused evaluation version</div>
+          <div class="panel-sub">Latest ${fmt(shown.length)} immutable records under the focused evaluation version</div>
         </div>
       </div>
       <div class="panel-body">
@@ -686,6 +881,7 @@ function renderGames(data) {
               <th>Players</th>
               <th class="r">Outcome</th>
               <th class="r">Moves</th>
+              <th class="r">End</th>
               <th class="r">Age</th>
             </tr>
           </thead>
@@ -699,19 +895,28 @@ function renderGames(data) {
 function renderVersions(data) {
   const evals = data.evaluations || {};
   const summaries = evals.summaries || {};
+  const approvedVersion = Number(data.approved_model?.version || 0);
   const rows = (evals.versions || []).slice().reverse().map(version => {
     const summary = summaries[`v${version}`] || {};
     const decision = summary.decision || {};
     const gate = summary.gate || {};
     const benchmark = summary.benchmark || {};
+    const isBaseline = Number(version) <= approvedVersion && ['promoted', 'baseline_ready', 'complete'].includes(decision.status);
+    const gateText = isBaseline
+      ? 'baseline'
+      : gate.games == null
+        ? 'no gate'
+        : `${fmt(gate.games)}/${fmt(gate.budget_games || 100)} gate`;
+    const benchText = benchmark.games == null ? 'no anchors' : `${fmt(benchmark.games)}/${fmt(benchmarkBudget(benchmark) || benchmark.games)} anchors`;
+    const rowStatus = Number(version) === approvedVersion ? 'approved' : statusLabel(decision.status);
     return `
       <div class="row">
         <div>
           <strong>v${version}</strong>
-          <span>gate ${statusLabel(gate.status)} · benchmark ${statusLabel(benchmark.status)}</span>
+          <span>${gateText} · ${benchText}</span>
         </div>
         <div class="right">
-          <strong>${statusLabel(decision.status)}</strong>
+          <strong>${rowStatus}</strong>
           <span>${ago(decision.updated_at)}</span>
         </div>
       </div>
@@ -736,21 +941,32 @@ function renderVersions(data) {
 
 function renderWorkers(data) {
   const workers = Object.entries(data.workers || {});
-  const rows = workers.map(([name, info]) => `
+  const rows = workers
+    .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+    .map(([name, info]) => `
     <div class="row">
       <div>
-        <strong>${name}</strong>
+        <strong>${esc(name)}</strong>
         <span>model v${fmt(info.model_version)} · ${fmt(info.total_games)} games</span>
       </div>
       <div class="right">
         <strong>${ago(info.timestamp)}</strong>
-        <span>${info.hostname || ''}</span>
+        <span>${esc(info.hostname || '')}</span>
       </div>
     </div>
   `).join('');
 
   const selfplay = data.data?.selfplay || {};
   const imitation = data.data?.imitation || {};
+  const byVersion = Object.entries(selfplay.by_version || {})
+    .sort((a, b) => Number(String(b[0]).replace('v', '')) - Number(String(a[0]).replace('v', '')))
+    .map(([version, entry]) => `
+      <div class="bar-row">
+        <div class="bar-meta"><strong>${esc(version)}</strong><span>${fmt(entry.positions)} positions · ${fmt(entry.count)} files</span></div>
+        <div class="bar-track"><div class="bar-fill" style="width:${pct(entry.positions || 0, selfplay.total_positions || 0)}%"></div></div>
+      </div>
+    `).join('');
+
   return `
     <section class="panel">
       <div class="panel-head">
@@ -780,6 +996,58 @@ function renderWorkers(data) {
         <div class="row-list">
           ${rows || '<div class="empty">No worker heartbeats available.</div>'}
         </div>
+        <div class="bar-list" style="margin-top:16px">
+          ${byVersion || '<div class="empty">No self-play version breakdown available.</div>'}
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderCadenceBody(state, data) {
+  const progress = pct(state.fresh, state.threshold);
+  const summarySteps = data.config?.summary_interval_steps;
+  return `
+    <div class="summary-grid">
+      <div class="mini">
+        <div class="label">Fresh Positions</div>
+        <div class="value">${fmt(state.fresh)}</div>
+        <div class="meta">since ${fmt(state.watermark)} watermark</div>
+      </div>
+      <div class="mini">
+        <div class="label">Next Candidate</div>
+        <div class="value">${state.threshold ? `${progress}%` : '\u2014'}</div>
+        <div class="meta">${state.threshold ? `${fmt(Math.max(0, state.threshold - state.fresh))} positions remaining` : 'threshold unavailable'}</div>
+      </div>
+      <div class="mini">
+        <div class="label">Bucket</div>
+        <div class="value">${fmt(state.resume.bucket_tokens, 0)}</div>
+        <div class="meta">${summarySteps ? `${fmt(summarySteps)} steps per summary` : 'summary cadence unavailable'}</div>
+      </div>
+    </div>
+    <div class="meter">
+      <div class="kv-line"><span class="kv-key">Candidate Progress</span><span class="kv-value">${fmt(state.fresh)} / ${fmt(state.threshold)}</span></div>
+      <div class="meter-track"><div class="meter-fill" style="width:${progress}%"></div></div>
+    </div>
+    <div class="kv" style="margin-top:16px">
+      <div class="kv-line"><span class="kv-key">Live Weights</span><span class="kv-value">${state.live.timestamp ? `${ago(state.live.timestamp)} at summary #${fmt(state.live.summary)}` : '\u2014'}</span></div>
+      <div class="kv-line"><span class="kv-key">Total Trainer Steps</span><span class="kv-value">${fmt(state.live.total_steps ?? state.resume.total_steps_all_time ?? state.summary.total_steps)}</span></div>
+      <div class="kv-line"><span class="kv-key">Self-play Total</span><span class="kv-value">${fmt(state.nTotal)}</span></div>
+    </div>
+  `;
+}
+
+function renderCadence(data) {
+  return `
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <div class="panel-title">Trainer Cadence</div>
+          <div class="panel-sub">Candidate export progress from live trainer metadata</div>
+        </div>
+      </div>
+      <div class="panel-body">
+        ${renderCadenceBody(trainerState(data), data)}
       </div>
     </section>
   `;
@@ -788,25 +1056,27 @@ function renderWorkers(data) {
 function renderLossChart(summaries) {
   if (summaries.length < 2) return '';
   const W = 320, H = 100, PAD = 4;
-  const totals = summaries.map(e => (e.loss_policy || 0) + (e.loss_value || 0));
-  const mn = Math.min(...totals) - 0.01, mx = Math.max(...totals) + 0.01;
+  const totals = summaries.map(totalLoss);
+  const rawMn = Math.min(...totals), rawMx = Math.max(...totals);
+  const spread = Math.max(0.01, rawMx - rawMn);
+  const mn = rawMn - spread * 0.08, mx = rawMx + spread * 0.08;
   const scaleX = i => PAD + i / (totals.length - 1) * (W - 2 * PAD);
   const scaleY = v => H - PAD - (v - mn) / (mx - mn) * (H - 2 * PAD);
   const pts = totals.map((v, i) => `${scaleX(i).toFixed(1)},${scaleY(v).toFixed(1)}`).join(' ');
   const latest = totals[totals.length - 1];
   const oldest = totals[0];
   const delta = latest - oldest;
-  const trend = delta < -0.01 ? '↓' : delta > 0.01 ? '↑' : '→';
+  const trend = delta < -0.01 ? 'down' : delta > 0.01 ? 'up' : 'flat';
   return `
-    <div style="margin-bottom:8px">
-      <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:${H}px;background:var(--bg-muted);border-radius:4px">
+    <div class="chart-wrap">
+      <svg viewBox="0 0 ${W} ${H}" class="chart">
         <polyline points="${pts}" fill="none" stroke="var(--text)" stroke-width="1.5" stroke-linejoin="round"/>
         <circle cx="${scaleX(totals.length-1)}" cy="${scaleY(latest)}" r="3" fill="var(--text)"/>
-        <text x="${W-PAD}" y="${PAD+8}" text-anchor="end" fill="var(--text-muted)" font-size="9"
-          font-family="var(--mono)">policy+value ${latest.toFixed(3)} ${trend} Δ${delta.toFixed(3)}</text>
-        <text x="${PAD}" y="${H-PAD}" fill="var(--text-muted)" font-size="9"
-          font-family="var(--mono)">${summaries.length} summaries</text>
       </svg>
+      <div class="chart-legend">
+        <span>total loss ${latest.toFixed(3)} (${trend}, delta ${delta.toFixed(3)})</span>
+        <span>${summaries.length} summaries</span>
+      </div>
     </div>`;
 }
 
@@ -814,16 +1084,16 @@ function renderTrainer(data) {
   const summaries = data.trainer_metrics?.summaries || [];
   const chart = renderLossChart(summaries);
   const rows = summaries.slice(-6).reverse().map(entry => {
-    const total = ((entry.loss_policy || 0) + (entry.loss_value || 0)).toFixed(3);
+    const total = totalLoss(entry).toFixed(3);
     return `
     <div class="row">
       <div>
         <strong>#${fmt(entry.summary)}</strong>
-        <span>v${fmt(entry.version)} · P ${fmt(entry.loss_policy, 3)} V ${fmt(entry.loss_value, 3)} = ${total}</span>
+        <span>v${fmt(entry.version)} · total ${total} · P ${fmt(entry.loss_policy, 3)} V ${fmt(entry.loss_value, 3)} MLH ${fmt(entry.loss_mlh, 3)} STV ${fmt(entry.loss_stv, 3)} Aux ${fmt(entry.loss_aux, 3)}</span>
       </div>
       <div class="right">
-        <strong>${fmt(entry.n_total || entry.positions_seen || entry.positions || 0)}</strong>
-        <span>positions</span>
+        <strong>${fmt(entry.steps)}</strong>
+        <span>${ago(entry.ts)}</span>
       </div>
     </div>`;
   }).join('');
@@ -833,7 +1103,7 @@ function renderTrainer(data) {
       <div class="panel-head">
         <div>
           <div class="panel-title">Trainer</div>
-          <div class="panel-sub">Loss trend (policy + value)</div>
+          <div class="panel-sub">Published summaries across all training heads</div>
         </div>
       </div>
       <div class="panel-body">
@@ -848,19 +1118,21 @@ function renderTrainer(data) {
 
 function render(data) {
   const focus = data.evaluations?.focus || null;
+  const active = isActiveCandidate(data, focus);
   document.getElementById('app').innerHTML = `
     ${renderHeader(data, focus)}
     <div class="grid">
       <div class="stack">
-        ${renderGate(focus)}
-        ${renderBenchmark(focus)}
+        ${active ? renderGate(focus) : renderApprovedOverview(data, focus)}
+        ${renderBenchmark(focus, active)}
         ${renderGames(data)}
       </div>
       <div class="stack">
-        ${renderDecision(focus)}
-        ${renderVersions(data)}
+        ${renderDecision(data, focus, active)}
+        ${active ? renderCadence(data) : ''}
         ${renderWorkers(data)}
         ${renderTrainer(data)}
+        ${renderVersions(data)}
       </div>
     </div>
   `;
