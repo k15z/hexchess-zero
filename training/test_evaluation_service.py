@@ -196,10 +196,26 @@ def test_needs_anchor_backfill_requires_complete_baseline(monkeypatch):
     monkeypatch.setattr(
         evaluation_service.storage,
         "get_json",
-        lambda key: {"status": "complete"},
+        lambda key: {"status": "complete", "budget_complete": True},
     )
 
     assert evaluation_service._needs_anchor_backfill(5) is False
+
+    monkeypatch.setattr(
+        evaluation_service.storage,
+        "get_json",
+        lambda key: {"status": "approved", "budget_complete": True},
+    )
+
+    assert evaluation_service._needs_anchor_backfill(5) is False
+
+    monkeypatch.setattr(
+        evaluation_service.storage,
+        "get_json",
+        lambda key: {"status": "approved", "budget_complete": False},
+    )
+
+    assert evaluation_service._needs_anchor_backfill(5) is True
 
 
 def test_build_decision_requires_gate_and_benchmarks_for_promotion():
@@ -419,7 +435,7 @@ def test_player_provider_downloads_model_and_reports_hash(monkeypatch, tmp_path:
     assert spec.local_sha256 == hashlib.sha256(payload).hexdigest()
 
 
-def test_run_service_refreshes_promoted_artifacts_with_new_approved_version(
+def test_run_service_preserves_promoted_gate_artifacts(
     monkeypatch,
     tmp_path,
 ):
@@ -485,6 +501,7 @@ def test_run_service_refreshes_promoted_artifacts_with_new_approved_version(
                 "version": version,
                 "approved_version": None if gate_summary is None else gate_summary["approved_version"],
                 "status": decision["status"],
+                "promoted_from_version": decision.get("promoted_from_version"),
             }
         )
         if decision["status"] == "promoted":
@@ -496,9 +513,10 @@ def test_run_service_refreshes_promoted_artifacts_with_new_approved_version(
     with pytest.raises(SystemExit):
         evaluation_service.run_evaluation_service(simulations=800)
 
-    assert refresh_calls == [5, 6]
+    assert refresh_calls == [5]
     assert write_calls[-1] == {
         "version": 6,
-        "approved_version": 6,
+        "approved_version": 5,
         "status": "promoted",
+        "promoted_from_version": 5,
     }
